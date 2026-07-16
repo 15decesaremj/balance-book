@@ -1,0 +1,11 @@
+node_modules
+.vite
+**/.vite/**
+out
+dist
+coverage
+pnpm-lock.yaml
+private
+local-data
+local-backups
+local-screenshots

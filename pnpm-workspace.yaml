@@ -1,0 +1,22 @@
+packages:
+  - apps/*
+  - packages/*
+  - tools/*
+
+nodeLinker: hoisted
+strictPeerDependencies: false
+
+overrides:
+  'uuid@<11.1.1': 11.1.1
+
+# Electron Forge 7.11.2 intentionally consumes the official @electron/node-gyp
+# Git dependency through @electron/rebuild. Keep this project-local exception
+# auditable rather than changing pnpm's global supply-chain policy.
+blockExoticSubdeps: false
+
+allowBuilds:
+  '@parcel/watcher': true
+  better-sqlite3: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true

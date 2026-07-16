@@ -1,0 +1,102 @@
+# Changelog
+
+## Unreleased
+
+- Defined the repeatable **Published Status** workflow: clean private development state, a sanitized clean-history public mirror, software-only signed release assets, independent post-download verification, reversible blank-onboarding testing, and a final File Explorer plus uninstall/install handoff.
+- Added initial-build and later-sync clean-history mirror tooling, a signed seven-file public-release assembler, and a fail-closed publication checker that binds repository trees, release tags, downloaded artifacts, packaged/installed executables, hashes, versions, and publisher identity.
+- Clarified that a fresh onboarding simulation renames retained app data instead of deleting it, and documented a no-merge restoration path.
+
+- Added a flexible installment-loan setup solver that accepts partial lender facts, labels every calculated field, derives payment, APR, balance, origin, term, maturity, or payoff when the facts constrain a solution, and refuses contradictory or underdetermined setups instead of silently guessing.
+- Added exact monthly and biweekly dated amortization, fully amortizing and explicit balloon/bullet structures, separate total cash draft and debt-service amounts, and a visible principal/interest/remaining-balance schedule with contractual maturity distinct from modeled payoff.
+- Made loan-payment records explicit: a regular-draft override reconciles cash without duplicating the generated payment, while additional principal reduces the liability on its exact date, caps at outstanding principal, accelerates payoff, lowers future interest, and leaves normal drafts in place.
+- Added one authoritative per-card revolving-debt snapshot across Cards, Overview, and Net Worth: latest statement, amount currently due, open-cycle activity, total current balance, available credit, and balance carrying remain distinct. Paid-in-full cards carry zero without erasing statement balances or history, and partial or overdue payments remain visible.
+- Added effective-dated card and line-of-credit retirement/reactivation. The closure date is the first blocked purchase date; existing debt, the final earlier cycle, historical statements, and payoff cash remain active while new purchases, baselines, cycles, Spending Power, and advisor eligibility stop.
+- Stopped future-cycle generation from inventing an already-past synthetic statement when onboarding history is absent, while retaining same-day obligations and real stored overdue statements.
+- Reconciled Overview and per-card Spending Power to one native total-position runway: the minimum bank-cash-plus-money-owed position from each card's modeled payment date forward, less the global protected threshold. The dashboard now defaults to Expected, shows the limiting-date account/receivable breakdown plus a separate payment-date funding snapshot, and keeps cash-only and negative-account warnings visible without replacing the runway answer.
+- Fixed production packaging so SQLite build inputs are staged before Forge's Electron-ABI rebuild, then the runtime-only staging hook preserves that rebuilt binary instead of overwriting it with the development Node-ABI copy.
+- Preserved paycheck destination editor order independently from per-account early-arrival timing, so reopening a routed paycheck keeps every numbered destination, allocation rule, and amount attached to the row the user originally entered.
+- Added atomic multi-account paycheck routing around one official payday and total take-home, with fixed destination amounts, one calculated remainder, account-specific calendar-day early arrivals, and an inspectable upcoming-deposit preview.
+- Made the cash forecast expand the official pay schedule before applying each account's arrival timing. Only destination legs enter cash, so no aggregate paycheck, duplicate inflow, or transfer-in-transit artifact is created.
+- Reworked raise planning to use whole-paycheck take-home and an explicit destination for the increase, while optional bonuses require their own destination and date. Payroll deductions already included in take-home are never subtracted again.
+- Kept routed paychecks together across create, edit, and delete operations. Financial Records identifies grouped legs and directs edits to Income and raises instead of allowing one allocation to drift from its plan.
+- Hardened paycheck schedules against omitted semimonthly starts, duplicate plan or allocation identities, and stale linked raises. Base-pay timing edits now cascade cadence, end date, and matching account arrival timing to a linked raise atomically, or reject the edit if its effective payday would no longer exist.
+- Added dated Money Owed receipts with an explicit deposit account, a first-of-next-month entry default, and mutually exclusive one-time, fixed-recurring, or bill-relative timing. Bill-relative receipts follow the real recurring bill date across short months and replace recorded actual receipts exactly once.
+- Passed 380 synthetic unit and integration tests across 36 files for the current 1.1 source, including the new debt lifecycle, solver, amortization, payment-allocation, receivable timing, refinance, backup, and renderer contracts.
+- Built an offline, explicitly unsigned Windows x64 Squirrel 1.1.0 candidate and passed the packaged-application smoke check. The full Playwright journey could not run in the restricted build sandbox, so unrestricted end-to-end, signing, and fresh-disposable-profile lifecycle gates remain before public release.
+
+## 1.0.0 - 2026-07-15
+
+- Promoted the local-first financial operations application to the V1 release line with exact version pinning, dark-first daily-driver workflows, editable inputs, per-card safe-spending guidance, account-level low points, and timing-aware funding actions.
+- Upgraded portable recovery to the authenticated V2 format: AES-256-GCM encryption with scrypt, strict envelope and record-graph validation, atomic writes and restore, destination credential preservation, and full-fidelity audit/import lineage.
+- Added a repeatable Windows x64 Squirrel release workflow, stable upgrade identity, native uninstall helper, exact three-file private handoff validation, installed/package hash and signature checks, and a clearly separated local unsigned-candidate lane.
+- Hardened Electron navigation, permissions, IPC sender validation, renderer isolation, Content Security Policy, native-module packaging, and release privacy checks.
+- Added the MIT license, third-party notices, contributor and support guidance, security and threat-model documentation, issue and pull-request templates, Dependabot configuration, signed-release gates, and a clean-history public-mirror requirement.
+- Expanded the deterministic suite to 172 passing engine, domain, database, migration, backup, renderer-contract, and control assertions, including adversarial encrypted-backup cases and credential-preserving cross-profile restore.
+
+## 0.6.0 - 2026-07-15
+
+- Rebuilt the visual system as a dark-first, premium financial workspace with a calmer hierarchy, rounded surfaces, accessible brand and status colors, responsive page selection, larger controls, and a phone-native daily ledger. Both explicit themes pass the serious/critical axe gate.
+- Made Overview answer “How much can I safely spend on each card?” directly. Every card now shows its cash-backed amount, true cash-payment date, current-cycle activity, future total-position and liquid-cash lows, funding-account low and date, protected minimum, and any earlier funding dependency; the purchase advisor still verifies exact amounts across every eligible card.
+- Made card timing truthful at lifecycle edges: deliberately manual cards no longer receive invented dates or setup nags, past-due statements with a future scheduled payment remain visible and funded, and a locked overdue statement without payment timing makes capacity explicitly indeterminate instead of disappearing.
+- Expanded Cards into an editable statement operating record with coming-due balance, open-cycle spending, next modeled statement, complete past-month history, baseline handoff, and incomplete/manual timing guidance. Optional first-load import also preserves timing-incomplete manual cards and their explicit dated cash payments without inventing statement rules.
+- Reworked recurring money owed into occurrence-specific accrual and receipt ledgers. Early, late, partial, and later-installment payments settle only the selected occurrence; cash received before the following shared expense accrues correctly; future “received” dates are rejected before either cash or the owed asset changes.
+- Corrected net worth so current rolled cash and receivables agree with the daily forecast, non-liquid/restricted cash remains an owned asset in contractual and economic net worth, and only liquidity-designated cash enters the liquid position.
+- Made every major input reachable through a guided editor while keeping Financial Records as the canonical library. The advanced creator is collapsed by default, setup actions deep-link to filtered record types, and income/raise/bonus, bills, card cycles, loans/refinance, receivables, assets, cash accounts, and guardrails all propagate into their native outputs.
+- Re-audited the native engine against reference-ledger fixtures without translating spreadsheet formulas. Intentional differences require an explicit classification, and manual card values plus long-run baseline facts remain source evidence in ignored local reports.
+- Hardened recovery and first-load import safety: migration backups now use a WAL-consistent SQLite snapshot, local seed tooling requires an explicit directory and live opt-in, repeated runs are no-ops, user-created or edited records block replacement, and existing credentials are preserved.
+- Expanded the committed suite to 164 engine, domain, database, contract, and control tests plus the full Electron input-to-output journey. Added exact synthetic regressions for card lifecycle boundaries, combined-scenario eligibility, recurring-receivable occurrence identity and settlement edits, future receipts, non-liquid cash, staged imports before policy creation, contextual record routes, mobile account balances, dark/light accessibility, and the WAL backup defect.
+
+## 0.5.0 - 2026-07-15
+
+- Turned Balance Book into a rolling daily operating view: dated opening balances are replayed through the native expected ledger to establish today, then expected and protected forecasts run forward from the current date instead of repeatedly starting at an old workbook snapshot.
+- Added a dedicated Income and raises workspace for typed paychecks, bonuses, commissions, self-employment income, partner contributions, and other income, with one-time, weekly, biweekly, monthly, and semimonthly timing, certainty, destination account, optional end dates, notes, and exact before/after forecast impact.
+- Added raise planning from an existing recurring income stream using a new net deposit, an added net amount, or a percentage, plus an effective date, projected or confirmed status, and an optional one-time bonus saved atomically with the raise.
+- Made per-account minimums, preferred buffers, transfer lead times, liquidity inclusion, and source-account eligibility first-class controls. The effective global minimum is the larger of the consolidated override and the sum of included account minimums, so account protections automatically populate the portfolio-level guardrail.
+- Reworked funding guidance around timing-aware, jointly reserved transfer suggestions. Recurring transfers preserve their debit/credit pairing, delayed transfers remain visible as in-transit cash without reducing consolidated ownership, and Funding Actions show initiation, arrival, amount, and source surplus after all modeled reservations.
+- Added a purchase advisor that evaluates every card through its native statement cycle and payment policy, ranks fundable options, shows the exact added card payment and settlement date, includes reward context, and offers a prefilled transfer when a safe source exists.
+- Made saved card scenarios retain their card, purchase date, cycle, and settlement semantics when duplicated, combined, or converted into a real commitment.
+- Extended missing card cycles from editable card timing terms, carried detailed card activity into the owning cycle once, and made static card Spending Power cash-backed: for full-statement cards it combines available forecast margin with unused statement-estimate headroom while preserving both consolidated and funding-account floors. Non-full-statement or incomplete timing cases are labeled indeterminate instead of implying false capacity.
+- Tightened forecast semantics so every active outflow remains in protected cash while only confirmed inflows can fund it; expected and uncertain income states now have truthful controls and messages.
+- Expanded synthetic input-to-output coverage for income cadence, raise and bonus certainty, account/global guardrail propagation, delayed and recurring transfers, joint source allocation, card-cycle purchase impact, generated future cycles, and invalid timing/floor combinations. The Electron journey now exercises the same controls, resulting overview/forecast changes, mobile layout, and serious/critical accessibility checks.
+- Revalidated ignored local import fixtures against dated reference-ledger rows: account cash, consolidated cash, and receivables reconcile at stored-cent precision with documented integer-cent normalization. Spreadsheet formulas are never runtime mechanics.
+
+## 0.4.0 - 2026-07-14
+
+- Rebuilt Overview around per-card Spending Power, statement obligations, current-cycle spending, future total-position lows, and funding-account shortfalls.
+- Added each card's future liquid-cash low alongside its total-position and funding-account lows, so receivables cannot be mistaken for spendable cash.
+- Replaced the summary forecast with an auditable daily ledger for total position, liquid cash, money owed, each cash account, and the native events that caused every change.
+- Added native recurring receivable accruals and settlements while keeping cash, money owed, and income distinct.
+- Added guided complete-field editors for card statements and history, loans, receivables, assets, and investments; retained Financial Records as the canonical advanced library rather than the primary day-to-day interface.
+- Added guided cash-account and forecast-event editing to Financial Records, including recurrence, payment method, card assignment, certainty, status, and conservative treatment, while preserving source lineage.
+- Added editable protected-floor, preferred-buffer, conservative-receipt, and forecast-horizon guardrails in Settings, and made Baseline's editing routes explicit.
+- Prefilled refinance comparisons from active loans and added native payment, total-interest, residual-balance, non-amortizing-quote, closing-cash, funding-account-low, consolidated-low, and safe-to-deploy calculations.
+- Rebuilt onboarding as a truthful, resumable progressive setup: only the first cash account and protected floor are required, then a 15-section Assets/Liabilities/Timing/Review flow shows ready, needs-decision, reviewed, and not-applicable states with warnings and a final check.
+- Added typed onboarding metadata for available balances, account notes, card issuer/last four, loan lender/type/original and maturity details, investment contributions/match/restrictions/linked liabilities, and shared-expense links/payment instruments.
+- Made workbook import review show imported and current values, import and last-change times, forecast impact, related records, warnings, and direct per-value edit actions.
+- Labeled every daily forecast event as actual, locked, estimated, hypothetical, or planned and showed whether it appears in both forecast views or expected only.
+- Integrated detailed card-funded records into open-cycle spending and its later cash payment exactly once, added an explicit "already included in cycle total" treatment for aggregate baselines, and added Expected/Conservative Spending Power views that use the same native card obligations.
+- Made record deletion dependency-safe, honored liquid-asset and active-loan semantics in net worth, and made optional financial fields genuinely clearable.
+- Added proper Squirrel install/update/uninstall lifecycle handling so the per-user installer creates and removes application shortcuts without launching a stale setup process.
+- Corrected optional workbook import so blank card history remains unknown, active timing terms are authoritative, money owed is itemized, and distinct recurring shared-expense receipts remain separate.
+- Expanded the synthetic engine, persistence, contract, installer-lifecycle, and onboarding suite with receivable roll-forward, per-card Spending Power, refinance math, editable guardrails, truthful first-use behavior, and destructive-history protections.
+
+## 0.2.0 - 2026-07-14
+
+- Rebuilt Overview as a calm, decision-first cash plan with stronger hierarchy, active navigation, expected/conservative inspection, a protected-floor status summary, action queue, account lows, an accessible cash path, upcoming cash events, and wider-position context.
+- Corrected date presentation so ISO financial dates never shift across time zones and counted underfunded accounts distinctly instead of counting every affected day.
+- Reworked optional local import so a workbook supplies only initial data and reconciliation evidence: opening balances come from an explicit as-of row, semantic records are normalized, and expected account paths can be checked at cent precision for a configured horizon.
+- Added safe pre-seed database backup, field-level lineage for all imported attributes, user-edit conflict preservation, source checksum verification, and blank-profile isolation checks.
+
+## 0.1.1 - 2026-07-13
+
+- Added the pure financial domain and forecast engine with exact money, timezone-free dates, card cycles, loans, receivables, net worth, scenarios, and 23 synthetic golden cases.
+- Added local profile/password access, isolated SQLite persistence, a working setup/forecast/scenario desktop slice, profile themes, and Electron end-to-end accessibility checks.
+- Added complete-core desktop sections, resumable onboarding/review, multi-account records and transfers, card terms/cycles, loan payoff/refinance, partial receivable settlements, rewards, assets/net worth, scenario lifecycle/combined evaluation, reconciliation, and explainable overview metrics.
+- Added schema migrations through version 5, pre-migration backups, encrypted portable backup/restore, JSON/CSV export, validated JSON import, guarded profile reset, immutable audit evidence, and workbook import lineage/conflict protection.
+- Added idempotent ignored local import tooling while preserving blank-profile isolation and leaving credentials unset.
+- Added Windows CI, packaging/release-readiness documentation, 39 unit/integration tests, and an expanded both-theme Electron/axe journey.
+
+## 0.1.0 - 2026-07-13
+
+- Established the local-first Electron foundation and repository privacy controls.
+- Added a packaged Electron launch-and-interaction smoke test and verified the initial shell visually.

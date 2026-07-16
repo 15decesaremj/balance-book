@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a product improvement without sharing private data
+title: '[Feature]: '
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the general use case with invented examples. Do not include real financial records, credentials, databases, backups, exports, workbooks, user paths, or screenshots containing private information.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What decision or workflow is difficult today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed experience
+      description: Describe the outcome and user flow, not just an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: textarea
+    id: safety
+    attributes:
+      label: Financial, privacy, and security considerations
+      description: Note how the proposal could affect conservative guidance, local-only behavior, stored data, imports, exports, or backups.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: This request uses only synthetic examples and contains no credentials or private information.
+          required: true

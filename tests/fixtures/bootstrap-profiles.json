@@ -1,0 +1,12 @@
+[
+  {
+    "id": "profile-owner",
+    "displayName": "Owner",
+    "username": "owner"
+  },
+  {
+    "id": "profile-new-user",
+    "displayName": "New User",
+    "username": "newuser"
+  }
+]

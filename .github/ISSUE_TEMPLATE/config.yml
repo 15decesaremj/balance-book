@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/15decesaremj/balance-book/security/advisories/new
+    about: Report a vulnerability privately. Do not disclose it in a public issue.
+  - name: Support and privacy guidance
+    url: https://github.com/15decesaremj/balance-book/blob/main/SUPPORT.md
+    about: Read support limits and the rules for protecting financial data.

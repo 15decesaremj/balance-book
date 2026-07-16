@@ -1,0 +1,82 @@
+name: Bug report
+description: Report a reproducible problem using synthetic data only
+title: '[Bug]: '
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve Balance Book. Do not include real financial records, credentials, databases, backups, exports, workbooks, user paths, logs, or screenshots containing private information. Report security vulnerabilities privately as described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Balance Book version
+      description: Find the version in the application or installer filename.
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and architecture
+      placeholder: Windows 11, x64
+    validations:
+      required: true
+  - type: dropdown
+    id: build-source
+    attributes:
+      label: Build source
+      options:
+        - Signed GitHub release
+        - Local unsigned release candidate
+        - Source development build
+        - Other or unknown
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem and its impact without including private data.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Synthetic reproduction steps
+      description: Use invented names, dates, and amounts.
+      placeholder: |
+        1. Create a synthetic cash account with an invented balance.
+        2. Add an invented scheduled event.
+        3. Open the forecast.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional synthetic context
+      description: Paste only content you have reviewed and confirmed contains no personal or financial data.
+    validations:
+      required: false
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I reviewed this report and every attachment; it contains only synthetic data and no credentials or private information.
+          required: true
+        - label: This report does not describe a security vulnerability.
+          required: true

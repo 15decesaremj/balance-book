@@ -1,0 +1,65 @@
+# Dependencies and build output
+node_modules/
+.pnpm-store/
+.vite/
+dist/
+out/
+coverage/
+*.tsbuildinfo
+playwright-report/
+test-results/
+*.log
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+.privacy-patterns.local
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Private financial inputs and local application state
+private/
+local-data/
+local-backups/
+local-screenshots/
+local-releases/
+local-release-work/
+*.xlsx
+*.xls
+*.xlsm
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.db
+*.db-wal
+*.db-shm
+*.balancebook-backup
+*.backup
+
+# Local exports and screenshots
+exports/
+screenshots/
+balance-book-export.json
+accounts.csv
+events.csv
+cards.csv
+loans.csv
+receivables.csv
+assets.csv
+reconciliations.csv
+refinance-plans.csv
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
