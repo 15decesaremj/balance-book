@@ -7,6 +7,14 @@
   --balance-glass-border: rgba(196, 222, 255, 0.14);
   --balance-glass-highlight: rgba(255, 255, 255, 0.08);
   --balance-glass-shadow: 0 22px 52px rgba(0, 0, 0, 0.22);
+  --balance-nav-foreground: #c0cad7;
+  --balance-nav-active-foreground: #f7fbff;
+  --balance-nav-active-background: transparent;
+  --balance-nav-active-gradient: linear-gradient(
+    135deg,
+    rgba(62, 132, 244, 0.74),
+    rgba(72, 102, 225, 0.62)
+  );
   --balance-skeleton-base: rgba(137, 166, 207, 0.13);
   --balance-skeleton-highlight: rgba(190, 214, 247, 0.24);
   --balance-skeleton-panel: rgba(21, 31, 44, 0.72);
@@ -50,6 +58,10 @@ html[data-theme='light'] {
   --balance-glass-border: rgba(56, 91, 130, 0.14);
   --balance-glass-highlight: rgba(255, 255, 255, 0.72);
   --balance-glass-shadow: 0 22px 52px rgba(45, 67, 94, 0.12);
+  --balance-nav-foreground: #445268;
+  --balance-nav-active-foreground: #ffffff;
+  --balance-nav-active-background: #0f5fca;
+  --balance-nav-active-gradient: linear-gradient(135deg, #0f5fca, #154ca7);
   --balance-skeleton-base: rgba(57, 87, 126, 0.1);
   --balance-skeleton-highlight: rgba(83, 130, 196, 0.2);
   --balance-skeleton-panel: rgba(255, 255, 255, 0.8);
@@ -62,6 +74,17 @@ html[data-theme='light'] body {
   background:
     radial-gradient(circle at 8% -8%, rgba(65, 112, 255, 0.14), transparent 34rem),
     radial-gradient(circle at 92% 5%, rgba(36, 186, 235, 0.12), transparent 34rem), #eef3f9;
+}
+
+html[data-theme='light'] .balance-nav-button {
+  color: var(--balance-nav-foreground) !important;
+  transition-property: transform, box-shadow !important;
+}
+
+html[data-theme='light'] .balance-nav-button[aria-current='page'] {
+  color: var(--balance-nav-active-foreground) !important;
+  background-color: var(--balance-nav-active-background) !important;
+  background-image: var(--balance-nav-active-gradient) !important;
 }
 
 html[data-theme='dark'] {

@@ -226,20 +226,21 @@ const useStyles = makeStyles({
   },
   navButton: {
     minHeight: '42px',
-    color: tokens.colorNeutralForeground2,
+    color: 'var(--balance-nav-foreground)',
     borderRadius: tokens.borderRadiusCircular,
     paddingInline: tokens.spacingHorizontalM,
-    transitionProperty: 'background-color, color, transform, box-shadow',
+    transitionProperty: 'transform, box-shadow',
     transitionDuration: tokens.durationNormal,
     '&:hover': {
       backgroundColor: 'color-mix(in srgb, var(--balance-glass-highlight) 54%, transparent)',
     },
-  },
-  navButtonActive: {
-    color: '#f7fbff',
-    backgroundImage: 'linear-gradient(135deg, rgba(62, 132, 244, 0.74), rgba(72, 102, 225, 0.62))',
-    fontWeight: tokens.fontWeightSemibold,
-    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 10px 24px rgba(25, 87, 199, 0.22)',
+    '&[aria-current="page"]': {
+      color: 'var(--balance-nav-active-foreground)',
+      backgroundColor: 'var(--balance-nav-active-background)',
+      backgroundImage: 'var(--balance-nav-active-gradient)',
+      fontWeight: tokens.fontWeightSemibold,
+      boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 10px 24px rgba(25, 87, 199, 0.22)',
+    },
   },
   navIcon: {
     width: '24px',
@@ -1030,7 +1031,7 @@ const AppShell = ({
                 return (
                   <Button
                     key={path}
-                    className={`${styles.navButton} ${active ? styles.navButtonActive : ''}`}
+                    className={`${styles.navButton} balance-nav-button`}
                     appearance="subtle"
                     aria-current={active ? 'page' : undefined}
                     onClick={() => navigate(path)}
