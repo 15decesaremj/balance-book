@@ -334,8 +334,25 @@ export interface ProjectedCardDebtCycle {
   cycle: CreditCardCycle;
   obligationCents: MoneyCents;
   interestOnCarryCents: MoneyCents;
+  /** Explicit dated cash payments assigned to this cycle. */
+  explicitPaymentCents: MoneyCents;
+  /** Policy-driven cash still generated on the cycle's payment date. */
+  generatedPaymentCents: MoneyCents;
+  /** Explicit cash above the modeled debt, retained as credit against later open activity. */
+  excessPaymentCents: MoneyCents;
   paymentCents: MoneyCents;
   carryingBalanceAfterPaymentCents: MoneyCents;
+  balanceCreditAfterPaymentCents: MoneyCents;
+}
+
+export interface ScheduledCardPayment {
+  id: string;
+  date: PlainDateString;
+  amountCents: MoneyCents;
+  /** Planned/scheduled rows are forecast instructions; confirmed/paid rows are cash evidence. */
+  status?: ForecastEvent['status'];
+  /** Optional exact statement/cycle target. Unlinked payments are assigned by payment date. */
+  cycleId?: string;
 }
 
 /**
@@ -349,6 +366,8 @@ export const projectCardDebtSchedule = (input: {
   cardCycles: CreditCardCycle[];
   asOfDate?: PlainDateString;
   openingCarryingBalance?: { cents: MoneyCents; asOfDate: PlainDateString };
+  scheduledPayments?: readonly ScheduledCardPayment[];
+  /** @deprecated Prefer dated `scheduledPayments`; retained for pure-model compatibility. */
   explicitPaymentCentsByCycleId?: Readonly<Record<string, MoneyCents>>;
 }): ProjectedCardDebtCycle[] => {
   const card = creditCardSchema.parse(input.card);
@@ -369,7 +388,62 @@ export const projectCardDebtSchedule = (input: {
         compareDates(left.dueOn, right.dueOn) ||
         left.id.localeCompare(right.id),
     );
+  const cycleById = new Map(cycles.map((cycle) => [cycle.id, cycle]));
+  const paymentDateFor = (cycle: CreditCardCycle): PlainDateString =>
+    cycle.paymentOn ?? cycle.dueOn;
+  const scheduledPayments: ScheduledCardPayment[] = [
+    ...(input.scheduledPayments ?? []).map((payment) => ({
+      id: payment.id,
+      date: plainDateSchema.parse(payment.date),
+      amountCents: moneyCentsSchema.nonnegative().parse(payment.amountCents),
+      ...(payment.status === undefined ? {} : { status: payment.status }),
+      ...(payment.cycleId === undefined ? {} : { cycleId: payment.cycleId }),
+    })),
+    ...Object.entries(input.explicitPaymentCentsByCycleId ?? {}).flatMap(
+      ([cycleId, amountCents]): ScheduledCardPayment[] => {
+        const cycle = cycleById.get(cycleId);
+        if (!cycle) return [];
+        return [
+          {
+            id: `legacy-explicit-card-payment:${cycleId}`,
+            cycleId,
+            date: paymentDateFor(cycle),
+            amountCents: moneyCentsSchema.nonnegative().parse(amountCents),
+          },
+        ];
+      },
+    ),
+  ].sort(
+    (left, right) =>
+      compareDates(left.date, right.date) ||
+      (left.cycleId ?? '').localeCompare(right.cycleId ?? '') ||
+      left.id.localeCompare(right.id),
+  );
+  if (new Set(scheduledPayments.map((payment) => payment.id)).size !== scheduledPayments.length) {
+    throw new Error('Scheduled card payment IDs must be unique');
+  }
+  const paymentsByCycleId = new Map<string, ScheduledCardPayment[]>();
+  for (const payment of scheduledPayments) {
+    const linkedCycle = payment.cycleId ? cycleById.get(payment.cycleId) : undefined;
+    // An exact cycle link cannot make a later payment retroactively satisfy an earlier due date.
+    // Once that date has passed, apply the payment to the first subsequent modeled cycle instead.
+    const eligibleLinkedCycle =
+      linkedCycle && compareDates(payment.date, paymentDateFor(linkedCycle)) <= 0
+        ? linkedCycle
+        : undefined;
+    const exactDateCycle = cycles.find((cycle) => paymentDateFor(cycle) === payment.date);
+    const nextPaymentCycle = cycles.find(
+      (cycle) => compareDates(paymentDateFor(cycle), payment.date) >= 0,
+    );
+    const targetCycle = eligibleLinkedCycle ?? exactDateCycle ?? nextPaymentCycle;
+    if (!targetCycle) continue;
+    paymentsByCycleId.set(targetCycle.id, [
+      ...(paymentsByCycleId.get(targetCycle.id) ?? []),
+      payment,
+    ]);
+  }
   let carryCents: MoneyCents = 0;
+  let balanceCreditCents: MoneyCents = 0;
   let openingBalanceApplied = false;
   return cycles.map((cycle) => {
     if (
@@ -378,9 +452,16 @@ export const projectCardDebtSchedule = (input: {
       compareDates(cycle.closesOn, openingCarryingBalance.asOfDate) > 0
     ) {
       carryCents = openingCarryingBalance.cents;
+      balanceCreditCents = 0;
       openingBalanceApplied = true;
     }
     const locked = cycle.lockedStatementCents;
+    if (locked !== undefined) {
+      // An issuer statement is authoritative for debt at its close. It already reflects older
+      // residuals and credits, so neither may be replayed into the locked amount.
+      carryCents = 0;
+      balanceCreditCents = 0;
+    }
     const interestOnCarryCents =
       locked !== undefined || carryCents === 0 || card.aprBasisPoints === undefined
         ? 0
@@ -392,11 +473,16 @@ export const projectCardDebtSchedule = (input: {
               .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
               .toNumber(),
           );
-    const obligationCents = moneyCentsSchema.parse(
+    const beforeCreditCents = moneyCentsSchema.parse(
       locked !== undefined
         ? locked
         : projectedCycleObligation(card, cycle) + carryCents + interestOnCarryCents,
     );
+    const creditAppliedCents = moneyCentsSchema.parse(
+      Math.min(beforeCreditCents, balanceCreditCents),
+    );
+    const obligationCents = moneyCentsSchema.parse(beforeCreditCents - creditAppliedCents);
+    balanceCreditCents = moneyCentsSchema.parse(balanceCreditCents - creditAppliedCents);
     const policyPaymentCents = scheduledCardPayment(
       card,
       creditCardCycleSchema.parse({
@@ -404,26 +490,65 @@ export const projectCardDebtSchedule = (input: {
         projectionOverrideCents: obligationCents,
       }),
     );
-    const explicitPaymentCents = moneyCentsSchema
-      .nonnegative()
-      .parse(input.explicitPaymentCentsByCycleId?.[cycle.id] ?? 0);
-    const paymentDate = cycle.paymentOn ?? cycle.dueOn;
+    const paymentDate = paymentDateFor(cycle);
+    const assignedExplicitPayments = paymentsByCycleId.get(cycle.id) ?? [];
+    // Once a statement is recorded as paid, its actualPaymentCents is the authoritative debt fact.
+    // A still-planned/scheduled event is only a superseded forecast instruction. Confirmed/paid
+    // rows remain useful cash evidence, so they can suppress an otherwise generated cash record.
+    const explicitPayments =
+      cycle.state === 'paid'
+        ? assignedExplicitPayments.filter(
+            (payment) => payment.status === 'confirmed' || payment.status === 'paid',
+          )
+        : assignedExplicitPayments;
+    const explicitPaymentCents = moneyCentsSchema.parse(
+      explicitPayments.reduce((total, payment) => total + payment.amountCents, 0),
+    );
+    const explicitOnOrBeforePaymentCents = moneyCentsSchema.parse(
+      explicitPayments
+        .filter((payment) => compareDates(payment.date, paymentDate) <= 0)
+        .reduce((total, payment) => total + payment.amountCents, 0),
+    );
     const overdueWithoutRecordedPayment =
       asOfDate !== undefined && compareDates(paymentDate, asOfDate) < 0 && cycle.state !== 'paid';
-    const intendedPaymentCents =
+    const actualStatementPaymentCents =
       cycle.state === 'paid'
-        ? (cycle.actualPaymentCents ?? cycle.lockedStatementCents ?? 0)
-        : overdueWithoutRecordedPayment
-          ? 0
-          : Math.max(policyPaymentCents, explicitPaymentCents);
-    const paymentCents = moneyCentsSchema.parse(Math.min(obligationCents, intendedPaymentCents));
-    carryCents = moneyCentsSchema.parse(Math.max(0, obligationCents - paymentCents));
+        ? moneyCentsSchema
+            .nonnegative()
+            .parse(cycle.actualPaymentCents ?? cycle.lockedStatementCents ?? obligationCents)
+        : 0;
+    const generatedPaymentCents = moneyCentsSchema.parse(
+      cycle.state === 'paid' || overdueWithoutRecordedPayment
+        ? 0
+        : Math.max(
+            0,
+            policyPaymentCents - Math.min(obligationCents, explicitOnOrBeforePaymentCents),
+          ),
+    );
+    // A paid statement and its confirmed cash rows are representations of the same release. The
+    // recorded statement amount controls carry/credit; explicit evidence is used by the cash-event
+    // materializer only to generate any missing remainder rather than being added again here.
+    const totalCashPaymentCents = moneyCentsSchema.parse(
+      cycle.state === 'paid'
+        ? actualStatementPaymentCents
+        : explicitPaymentCents + generatedPaymentCents,
+    );
+    const paymentCents = moneyCentsSchema.parse(Math.min(obligationCents, totalCashPaymentCents));
+    const excessPaymentCents = moneyCentsSchema.parse(
+      Math.max(0, totalCashPaymentCents - obligationCents),
+    );
+    carryCents = moneyCentsSchema.parse(obligationCents - paymentCents);
+    balanceCreditCents = moneyCentsSchema.parse(balanceCreditCents + excessPaymentCents);
     return {
       cycle,
       obligationCents,
       interestOnCarryCents,
+      explicitPaymentCents,
+      generatedPaymentCents,
+      excessPaymentCents,
       paymentCents,
       carryingBalanceAfterPaymentCents: carryCents,
+      balanceCreditAfterPaymentCents: balanceCreditCents,
     };
   });
 };
@@ -475,6 +600,11 @@ export interface CardSpendingPower {
     accountId: string;
     endingBalanceCents: MoneyCents;
   }>;
+  futureAccountLows: Array<{
+    accountId: string;
+    endingBalanceCents: MoneyCents;
+    date: PlainDateString;
+  }>;
   paymentDatePositionCents?: MoneyCents;
   paymentDateCashCents?: MoneyCents;
   paymentDateReceivableCents?: MoneyCents;
@@ -491,8 +621,10 @@ export interface CardSpendingPower {
 /**
  * Spending Power is total-position runway, never available credit. For each card,
  * locate the cycle a purchase made on the as-of date would enter, then report the
- * lowest projected bank-cash-plus-receivables position from that cycle's payment
- * date forward. Cash-only and per-account constraints remain separate diagnostics.
+ * lowest projected bank-cash-plus-receivables position from that cycle's due date
+ * forward. Per-account lows use the current-cycle risk window: due date through the
+ * later of the limiting total-position date or actual payment date. This keeps a
+ * later, unrelated account episode with its future cycle/funding action.
  */
 export const calculateCardSpendingPower = (input: {
   cards: CreditCard[];
@@ -502,6 +634,7 @@ export const calculateCardSpendingPower = (input: {
   asOfDate: PlainDateString;
   hardFloorCents?: MoneyCents;
   accountHardFloorCentsById?: Record<string, MoneyCents>;
+  includedAccountIds?: string[];
 }): CardSpendingPower[] => {
   if (input.days.length === 0) return [];
   const eligibleCards = input.cards
@@ -546,10 +679,47 @@ export const calculateCardSpendingPower = (input: {
     }));
   const accountBalance = (day: CardSpendingPowerDay, accountId: string): MoneyCents | undefined => {
     const balance = day.accountBalances.find((account) => account.accountId === accountId);
-    return balance?.minimumBalanceCents ?? balance?.endingBalanceCents;
+    // Card runway answers a daily planning question (the balance carried after the payment day),
+    // while the forecast exposes intraday minima separately for conservative diagnostics.
+    return balance?.endingBalanceCents;
   };
   const hardFloorCents = input.hardFloorCents ?? 0;
   const configuredAccountFloors = Object.entries(input.accountHardFloorCentsById ?? {});
+  const includedAccountIds = [
+    ...new Set(
+      input.includedAccountIds ??
+        (configuredAccountFloors.length > 0
+          ? configuredAccountFloors.map(([accountId]) => accountId)
+          : daysInDateOrder.flatMap((day) =>
+              day.accountBalances.map((account) => account.accountId),
+            )),
+    ),
+  ];
+  const closingAccountLows = (
+    days: CardSpendingPowerDay[],
+  ): CardSpendingPower['futureAccountLows'] =>
+    includedAccountIds.flatMap((accountId) => {
+      const availableDays = days.filter((day) =>
+        day.accountBalances.some((account) => account.accountId === accountId),
+      );
+      if (availableDays.length === 0) return [];
+      const lowest = availableDays.reduce((current, candidate) => {
+        const currentBalance = current.accountBalances.find(
+          (account) => account.accountId === accountId,
+        )!.endingBalanceCents;
+        const candidateBalance = candidate.accountBalances.find(
+          (account) => account.accountId === accountId,
+        )!.endingBalanceCents;
+        return candidateBalance < currentBalance ? candidate : current;
+      });
+      return {
+        accountId,
+        endingBalanceCents: lowest.accountBalances.find(
+          (account) => account.accountId === accountId,
+        )!.endingBalanceCents,
+        date: lowest.date,
+      };
+    });
   return eligibleCards
     .map((rawCard): CardSpendingPower | undefined => {
       const card = creditCardSchema.parse(rawCard);
@@ -628,6 +798,7 @@ export const calculateCardSpendingPower = (input: {
           futurePositionLowCashCents: positionLow.consolidatedCashCents,
           futurePositionLowReceivableCents: receivableBalance(positionLow),
           futurePositionLowAccountBalances: positionAccountBalances(positionLow),
+          futureAccountLows: [],
           futureCashLowCents: cashBalance(cashLow),
           futureCashLowDate: cashLow.date,
           fundingAccountLowCents: moneyCentsSchema.parse(
@@ -636,19 +807,38 @@ export const calculateCardSpendingPower = (input: {
           fundingAccountLowDate: fundingLow.date,
         };
       }
-      const settlementDate = currentCycle.paymentOn ?? currentCycle.dueOn;
-      const paymentDateDay = daysInDateOrder.find((day) => day.date === settlementDate);
-      const eligibleDays = daysInDateOrder.filter(
-        (day) => compareDates(day.date, settlementDate) >= 0,
+      const runwayStartDate = currentCycle.dueOn;
+      const paymentDate = currentCycle.paymentOn ?? currentCycle.dueOn;
+      const paymentDateDay = daysInDateOrder.find((day) => day.date === paymentDate);
+      const runwayEligibleDays = daysInDateOrder.filter(
+        (day) => compareDates(day.date, runwayStartDate) >= 0,
       );
-      const days = eligibleDays.length > 0 ? eligibleDays : [daysInDateOrder.at(-1)!];
-      const positionLow = days.reduce((lowest, day) =>
+      const runwayDays =
+        runwayEligibleDays.length > 0 ? runwayEligibleDays : [daysInDateOrder.at(-1)!];
+      const paymentEligibleDays = daysInDateOrder.filter(
+        (day) => compareDates(day.date, paymentDate) >= 0,
+      );
+      const positionLow = runwayDays.reduce((lowest, day) =>
         day.totalPositionCents < lowest.totalPositionCents ? day : lowest,
       );
-      const cashLow = days.reduce((lowest, day) =>
+      const riskWindowEndDate =
+        compareDates(positionLow.date, paymentDate) >= 0 ? positionLow.date : paymentDate;
+      const riskWindowDays = runwayDays.filter(
+        (day) => compareDates(day.date, riskWindowEndDate) <= 0,
+      );
+      const riskWindowPaymentDays = paymentEligibleDays.filter(
+        (day) => compareDates(day.date, riskWindowEndDate) <= 0,
+      );
+      const diagnosticDays =
+        riskWindowPaymentDays.length > 0
+          ? riskWindowPaymentDays
+          : paymentEligibleDays.length > 0
+            ? [paymentEligibleDays[0]!]
+            : [daysInDateOrder.at(-1)!];
+      const cashLow = diagnosticDays.reduce((lowest, day) =>
         cashBalance(day) < cashBalance(lowest) ? day : lowest,
       );
-      const fundingLow = days.reduce((lowest, day) => {
+      const fundingLow = diagnosticDays.reduce((lowest, day) => {
         const candidate = accountBalance(day, card.fundingAccountId);
         const current = accountBalance(lowest, card.fundingAccountId);
         if (candidate === undefined || current === undefined) return lowest;
@@ -659,16 +849,16 @@ export const calculateCardSpendingPower = (input: {
       );
       const fundingAccountFloorCents =
         input.accountHardFloorCentsById?.[card.fundingAccountId] ?? 0;
-      const hasMissingAccountBalance = days.some((day) =>
+      const hasMissingAccountBalance = riskWindowDays.some((day) =>
         configuredAccountFloors.some(([accountId]) => accountBalance(day, accountId) === undefined),
       );
       const accountMargins = configuredAccountFloors.flatMap(([accountId, floorCents]) =>
-        days.flatMap((day) => {
+        diagnosticDays.flatMap((day) => {
           const balance = accountBalance(day, accountId);
           return balance === undefined ? [] : [balance - floorCents];
         }),
       );
-      const hasFundingAccountBalance = days.every(
+      const hasFundingAccountBalance = diagnosticDays.every(
         (day) => accountBalance(day, card.fundingAccountId) !== undefined,
       );
       const cashMarginCents = cashBalance(cashLow) - hardFloorCents;
@@ -690,7 +880,7 @@ export const calculateCardSpendingPower = (input: {
           : 0,
       );
       const prerequisiteDays = daysInDateOrder.filter(
-        (day) => compareDates(day.date, settlementDate) < 0,
+        (day) => compareDates(day.date, paymentDate) < 0,
       );
       let prePaymentShortfall:
         { cents: MoneyCents; date: PlainDateString; accountId?: string } | undefined;
@@ -722,7 +912,7 @@ export const calculateCardSpendingPower = (input: {
           ? 'indeterminate-overdue-payment-timing'
           : card.paymentPolicy !== 'full-statement'
             ? 'indeterminate-payment-policy'
-            : eligibleDays.length === 0
+            : runwayEligibleDays.length === 0 || paymentEligibleDays.length === 0
               ? 'indeterminate-payment-outside-horizon'
               : !hasFundingAccountBalance || hasMissingAccountBalance
                 ? 'indeterminate-account-balances'
@@ -763,6 +953,7 @@ export const calculateCardSpendingPower = (input: {
         futurePositionLowCashCents: positionLow.consolidatedCashCents,
         futurePositionLowReceivableCents: receivableBalance(positionLow),
         futurePositionLowAccountBalances: positionAccountBalances(positionLow),
+        futureAccountLows: closingAccountLows(riskWindowDays),
         ...(paymentDateDay === undefined
           ? {}
           : {

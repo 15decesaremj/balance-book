@@ -32,7 +32,7 @@ The local sign-in password protects access through the application. The live dat
 1. Create and verify an encrypted portable backup.
 2. Close Balance Book.
 3. Run the newer installer under the same Windows account.
-4. Launch the application and confirm the 1.1.0 version, profile access, forecast, and recent records.
+4. Launch the application and confirm the 1.1.1 version, profile access, forecast, and recent records.
 5. Review Cards and Loans: existing cards should remain active unless a closure was saved, legacy loans should default to fully amortizing, and prior loan-payment records should retain regular-draft behavior until explicitly reclassified as additional principal.
 
 The stable Squirrel identity upgrades the existing application instead of installing a second copy. Database migrations run locally. Release validation must cover supported upgrade paths before publication.

@@ -41,6 +41,7 @@ import {
   RefinancePage,
 } from './CorePages';
 import { DashboardPage } from './DashboardPage';
+import { ChartsPage } from './ChartsPage';
 import {
   countLogicalSetupIncomingCash,
   countPotentialSetupDuplicateEvents,
@@ -95,10 +96,9 @@ const useStyles = makeStyles({
     minHeight: '100vh',
     minWidth: 0,
     display: 'grid',
-    gridTemplateColumns: '240px minmax(0, 1fr)',
-    gridTemplateRows: '64px 1fr',
-    backgroundColor: tokens.colorNeutralBackground2,
-    backgroundImage: `radial-gradient(circle at 72% -10%, ${tokens.colorBrandBackground2} 0, transparent 34%)`,
+    gridTemplateColumns: '256px minmax(0, 1fr)',
+    gridTemplateRows: '72px 1fr',
+    backgroundColor: 'transparent',
     '@media (max-width: 900px)': {
       gridTemplateColumns: '1fr',
       gridTemplateRows: 'auto auto 1fr',
@@ -114,23 +114,27 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorBrandBackground,
     borderRadius: tokens.borderRadiusLarge,
     boxShadow: tokens.shadow8,
+    opacity: 0,
+    pointerEvents: 'none',
     transform: 'translateY(calc(-100% - 24px))',
-    transitionProperty: 'transform',
+    transitionProperty: 'transform, opacity',
     transitionDuration: tokens.durationNormal,
-    '&:focus': { transform: 'translateY(0)' },
+    '&:focus': { opacity: 1, pointerEvents: 'auto', transform: 'translateY(0)' },
   },
   header: {
     gridColumn: '2',
     gridRow: '1',
-    minHeight: '64px',
+    minHeight: '72px',
     minWidth: 0,
     padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalXXL}`,
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: tokens.spacingHorizontalL,
-    borderBottom: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
-    backgroundColor: tokens.colorNeutralBackground2,
+    borderBottom: '1px solid var(--balance-glass-border)',
+    backgroundColor: 'color-mix(in srgb, var(--balance-glass) 82%, transparent)',
+    backdropFilter: 'blur(26px) saturate(150%)',
+    boxShadow: 'inset 0 -1px 0 var(--balance-glass-highlight)',
     '@media (max-width: 900px)': { gridColumn: '1', gridRow: '2' },
   },
   brand: { display: 'grid', gap: '1px' },
@@ -144,13 +148,15 @@ const useStyles = makeStyles({
     height: '100vh',
     position: 'sticky',
     top: 0,
-    padding: tokens.spacingHorizontalL,
+    padding: '18px 16px',
     display: 'flex',
     flexDirection: 'column',
-    gap: tokens.spacingVerticalXL,
+    gap: tokens.spacingVerticalL,
     overflowY: 'auto',
-    borderRight: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
-    backgroundColor: tokens.colorNeutralBackground2,
+    borderRight: '1px solid var(--balance-glass-border)',
+    backgroundColor: 'color-mix(in srgb, var(--balance-glass-strong) 78%, transparent)',
+    backdropFilter: 'blur(32px) saturate(155%)',
+    boxShadow: 'inset -1px 0 0 var(--balance-glass-highlight), var(--balance-glass-shadow)',
     '@media (max-width: 900px)': {
       gridColumn: '1',
       gridRow: '1',
@@ -173,8 +179,12 @@ const useStyles = makeStyles({
   sidebarBrand: {
     display: 'grid',
     gap: '1px',
-    padding: `${tokens.spacingVerticalM} ${tokens.spacingHorizontalS} 0`,
+    padding: `${tokens.spacingVerticalL} ${tokens.spacingHorizontalL}`,
     minWidth: '190px',
+    border: '1px solid var(--balance-glass-border)',
+    borderRadius: '22px',
+    backgroundColor: 'color-mix(in srgb, var(--balance-glass-highlight) 34%, transparent)',
+    boxShadow: 'inset 0 1px 0 var(--balance-glass-highlight)',
     '& strong': {
       fontSize: tokens.fontSizeBase600,
       letterSpacing: '-0.025em',
@@ -187,7 +197,7 @@ const useStyles = makeStyles({
   },
   nav: {
     display: 'grid',
-    gap: tokens.spacingVerticalM,
+    gap: tokens.spacingVerticalS,
     alignItems: 'stretch',
     '& button': { justifyContent: 'flex-start' },
     '@media (max-width: 900px)': {
@@ -202,7 +212,7 @@ const useStyles = makeStyles({
   },
   navGroup: {
     display: 'grid',
-    gap: tokens.spacingVerticalXXS,
+    gap: '3px',
     '@media (max-width: 900px)': { display: 'flex' },
   },
   navLabel: {
@@ -215,16 +225,32 @@ const useStyles = makeStyles({
     '@media (max-width: 900px)': { display: 'none' },
   },
   navButton: {
-    minHeight: '40px',
+    minHeight: '42px',
     color: tokens.colorNeutralForeground2,
-    borderRadius: tokens.borderRadiusLarge,
+    borderRadius: tokens.borderRadiusCircular,
     paddingInline: tokens.spacingHorizontalM,
+    transitionProperty: 'background-color, color, transform, box-shadow',
+    transitionDuration: tokens.durationNormal,
+    '&:hover': {
+      backgroundColor: 'color-mix(in srgb, var(--balance-glass-highlight) 54%, transparent)',
+    },
   },
   navButtonActive: {
-    color: tokens.colorBrandForeground1,
-    backgroundColor: tokens.colorBrandBackground2,
+    color: '#f7fbff',
+    backgroundImage: 'linear-gradient(135deg, rgba(62, 132, 244, 0.74), rgba(72, 102, 225, 0.62))',
     fontWeight: tokens.fontWeightSemibold,
-    boxShadow: `inset 0 0 0 1px ${tokens.colorBrandStroke2}`,
+    boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 10px 24px rgba(25, 87, 199, 0.22)',
+  },
+  navIcon: {
+    width: '24px',
+    height: '24px',
+    display: 'inline-grid',
+    placeItems: 'center',
+    marginRight: tokens.spacingHorizontalS,
+    borderRadius: tokens.borderRadiusCircular,
+    color: 'inherit',
+    fontSize: tokens.fontSizeBase300,
+    backgroundColor: 'color-mix(in srgb, var(--balance-glass-highlight) 54%, transparent)',
   },
   sidebarFooter: {
     marginTop: 'auto',
@@ -235,10 +261,10 @@ const useStyles = makeStyles({
   content: {
     gridColumn: '2',
     gridRow: '2',
-    width: 'min(1480px, calc(100% - 56px))',
+    width: 'min(1480px, calc(100% - 64px))',
     minWidth: 0,
     margin: '0 auto',
-    padding: `36px 0 56px`,
+    padding: `40px 0 72px`,
     '@media (max-width: 900px)': {
       gridColumn: '1',
       gridRow: '3',
@@ -292,15 +318,40 @@ const useStyles = makeStyles({
   setupGroupGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(min(260px, 100%), 1fr))',
-    gap: tokens.spacingHorizontalM,
+    gap: tokens.spacingHorizontalL,
   },
   setupTopic: {
     minWidth: 0,
     padding: tokens.spacingHorizontalL,
     display: 'grid',
-    gap: tokens.spacingVerticalS,
+    gridTemplateColumns: '36px minmax(0, 1fr)',
+    gap: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalM}`,
     alignContent: 'start',
-    borderTop: `3px solid ${tokens.colorBrandStroke1}`,
+    border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusXLarge,
+    '& h3': { fontSize: tokens.fontSizeBase400, lineHeight: tokens.lineHeightBase400 },
+    '& > div:last-child': { gridColumn: '2' },
+  },
+  setupTopicStatus: {
+    width: '30px',
+    height: '30px',
+    display: 'grid',
+    placeItems: 'center',
+    borderRadius: tokens.borderRadiusCircular,
+    color: tokens.colorNeutralForegroundOnBrand,
+    backgroundColor: tokens.colorBrandBackground,
+    boxShadow: `0 7px 18px ${tokens.colorBrandBackground2}`,
+    fontWeight: tokens.fontWeightBold,
+  },
+  setupTopicStatusOpen: {
+    color: tokens.colorBrandForeground1,
+    backgroundColor: tokens.colorBrandBackground2,
+    boxShadow: `inset 0 0 0 1px ${tokens.colorBrandStroke2}`,
+  },
+  setupTopicBody: {
+    minWidth: 0,
+    display: 'grid',
+    gap: tokens.spacingVerticalXS,
   },
   setupCollapsible: {
     padding: `${tokens.spacingVerticalM} ${tokens.spacingHorizontalXL}`,
@@ -419,7 +470,10 @@ const optionalCardEstimatePolicy = z.union([
   z.literal(''),
   z.enum(['actual-reset', 'baseline-guardrail']),
 ]);
-const optionalCardPaymentPolicy = z.union([z.literal(''), z.enum(['full-statement', 'manual'])]);
+const optionalCardPaymentPolicy = z.union([
+  z.literal(''),
+  z.enum(['full-statement', 'minimum', 'fixed', 'manual']),
+]);
 const setupBaseSchema = z.object({
   balanceAsOf: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter a date'),
   accountName: z.string().trim().min(1, 'Enter an account name'),
@@ -436,6 +490,8 @@ const setupBaseSchema = z.object({
   cardStatementCloseDay: optionalDayText,
   cardEstimatePolicy: optionalCardEstimatePolicy,
   cardPaymentPolicy: optionalCardPaymentPolicy,
+  cardMinimumPayment: optionalMoneyText,
+  cardFixedPayment: optionalMoneyText,
   hardFloor: moneyText,
   preferredFloor: optionalMoneyText,
 });
@@ -465,6 +521,8 @@ const addOptionalCardIssue = (
     | 'cardStatementCloseDay'
     | 'cardEstimatePolicy'
     | 'cardPaymentPolicy'
+    | 'cardMinimumPayment'
+    | 'cardFixedPayment'
   >,
   context: z.RefinementCtx,
 ): void => {
@@ -475,7 +533,9 @@ const addOptionalCardIssue = (
     values.cardPaymentPolicy,
   ];
   const timingValues = [values.cardPaymentDay, values.cardStatementCloseDay];
-  if ([...coreValues, ...timingValues].every((value) => value === '')) return;
+  const policyAmountValues = [values.cardMinimumPayment, values.cardFixedPayment];
+  if ([...coreValues, ...timingValues, ...policyAmountValues].every((value) => value === ''))
+    return;
   if (coreValues.some((value) => value === '')) {
     context.addIssue({
       code: 'custom',
@@ -494,11 +554,31 @@ const addOptionalCardIssue = (
     }
     return;
   }
+  if (
+    values.cardPaymentPolicy === 'minimum' &&
+    (values.cardMinimumPayment === '' || dollarsToCents(values.cardMinimumPayment) <= 0)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['cardMinimumPayment'],
+      message: 'Enter a minimum payment amount greater than zero',
+    });
+  }
+  if (
+    values.cardPaymentPolicy === 'fixed' &&
+    (values.cardFixedPayment === '' || dollarsToCents(values.cardFixedPayment) <= 0)
+  ) {
+    context.addIssue({
+      code: 'custom',
+      path: ['cardFixedPayment'],
+      message: 'Enter a fixed payment amount greater than zero',
+    });
+  }
   if (timingValues.some((value) => value === '')) {
     context.addIssue({
       code: 'custom',
       path: ['cardStatementCloseDay'],
-      message: 'Full-statement guidance needs both the statement-close and payment days',
+      message: 'Automatic payment guidance needs both the statement-close and payment days',
     });
   }
 };
@@ -582,6 +662,8 @@ const setupStepSchemas: z.ZodTypeAny[] = [
       cardStatementCloseDay: true,
       cardEstimatePolicy: true,
       cardPaymentPolicy: true,
+      cardMinimumPayment: true,
+      cardFixedPayment: true,
     })
     .superRefine(addOptionalCardIssue),
   setupBaseSchema.pick({ hardFloor: true, preferredFloor: true }).superRefine(addFloorIssue),
@@ -837,33 +919,34 @@ const AppShell = ({
   const previousLocationRef = useRef(`${location.pathname}${location.search}`);
   const [themeBusy, setThemeBusy] = useState(false);
   const navGroups = [
-    { label: 'Today', items: [['Overview', '/']] },
+    { label: 'Today', items: [['Overview', '/', '⌂']] },
     {
       label: 'Plan',
       items: [
-        ['Cash forecast', '/forecast'],
-        ['Income and raises', '/income'],
-        ['Baseline plan', '/baseline'],
-        ['Scenarios', '/scenario'],
-        ['Refinance planner', '/refinance'],
+        ['Cash forecast', '/forecast', '⌁'],
+        ['Income and raises', '/income', '↗'],
+        ['Baseline plan', '/baseline', '◫'],
+        ['Scenarios', '/scenario', '◇'],
+        ['Refinance planner', '/refinance', '⇄'],
       ],
     },
     {
       label: 'Track',
       items: [
-        ['Credit cards', '/cards'],
-        ['Loans', '/loans'],
-        ['Money owed to you', '/receivables'],
-        ['Assets and net worth', '/net-worth'],
+        ['Credit cards', '/cards', '▰'],
+        ['Loans', '/loans', '◉'],
+        ['Money owed to you', '/receivables', '↙'],
+        ['Assets and net worth', '/net-worth', '◆'],
+        ['Charts', '/charts', '⌇'],
       ],
     },
     {
       label: 'Maintain',
       items: [
-        ['Reconciliation', '/reconcile'],
-        ['Setup checklist', '/setup'],
-        ['All financial records', '/records'],
-        ['Settings', '/data'],
+        ['Reconciliation', '/reconcile', '✓'],
+        ['Setup checklist', '/setup', '☑'],
+        ['All financial records', '/records', '≡'],
+        ['Settings', '/data', '⚙'],
       ],
     },
   ] as const;
@@ -942,7 +1025,7 @@ const AppShell = ({
           {navGroups.map((group) => (
             <div className={styles.navGroup} key={group.label}>
               <Text className={styles.navLabel}>{group.label}</Text>
-              {group.items.map(([label, path]) => {
+              {group.items.map(([label, path, icon]) => {
                 const active = location.pathname === path;
                 return (
                   <Button
@@ -952,6 +1035,9 @@ const AppShell = ({
                     aria-current={active ? 'page' : undefined}
                     onClick={() => navigate(path)}
                   >
+                    <span className={styles.navIcon} aria-hidden="true">
+                      {icon}
+                    </span>
                     {label}
                   </Button>
                 );
@@ -976,6 +1062,7 @@ const AppShell = ({
           <Route path="/scenario" element={<ScenarioPage />} />
           <Route path="/records" element={<RecordsPage />} />
           <Route path="/net-worth" element={<NetWorthPage />} />
+          <Route path="/charts" element={<ChartsPage />} />
           <Route path="/refinance" element={<RefinancePage />} />
           <Route path="/reconcile" element={<ReconciliationPage />} />
           <Route path="/data" element={<DataPage />} />
@@ -1009,6 +1096,8 @@ const SetupPage = (): React.JSX.Element => {
       cardStatementCloseDay: '',
       cardEstimatePolicy: '',
       cardPaymentPolicy: '',
+      cardMinimumPayment: '',
+      cardFixedPayment: '',
       hardFloor: '',
       preferredFloor: '',
     },
@@ -1168,6 +1257,14 @@ const SetupPage = (): React.JSX.Element => {
                 values.cardEstimatePolicy === '' ? undefined : values.cardEstimatePolicy,
               cardPaymentPolicy:
                 values.cardPaymentPolicy === '' ? undefined : values.cardPaymentPolicy,
+              cardMinimumPaymentCents:
+                values.cardPaymentPolicy === 'minimum'
+                  ? dollarsToCents(values.cardMinimumPayment)
+                  : undefined,
+              cardFixedPaymentCents:
+                values.cardPaymentPolicy === 'fixed'
+                  ? dollarsToCents(values.cardFixedPayment)
+                  : undefined,
             }
           : {}),
         hardFloorCents: dollarsToCents(values.hardFloor),
@@ -1209,6 +1306,8 @@ const SetupPage = (): React.JSX.Element => {
       'cardStatementCloseDay',
       'cardEstimatePolicy',
       'cardPaymentPolicy',
+      'cardMinimumPayment',
+      'cardFixedPayment',
     ],
     ['hardFloor', 'preferredFloor'],
     [],
@@ -1571,11 +1670,21 @@ const SetupPage = (): React.JSX.Element => {
       const primaryAttention = status === 'Needs setup' || status === 'Review needed';
       return (
         <Card className={styles.setupTopic} key={topic.id}>
-          <Text className={unresolved ? styles.warning : styles.positive}>
-            <strong>{status}</strong>
-          </Text>
-          <Title2 as="h3">{topic.title}</Title2>
-          <Text>{topic.detail}</Text>
+          <span
+            className={`${styles.setupTopicStatus} ${
+              unresolved ? styles.setupTopicStatusOpen : ''
+            }`}
+            aria-hidden="true"
+          >
+            {unresolved ? '○' : '✓'}
+          </span>
+          <div className={styles.setupTopicBody}>
+            <Title2 as="h3">{topic.title}</Title2>
+            <Text className={unresolved ? styles.warning : styles.positive}>
+              <strong>{status}</strong>
+            </Text>
+            <Text size={200}>{topic.detail}</Text>
+          </div>
           <div className={styles.actions}>
             <Button
               appearance={primaryAttention ? 'primary' : 'secondary'}
@@ -1875,8 +1984,9 @@ const SetupPage = (): React.JSX.Element => {
                 the whole step blank if you do not use a card.
               </Text>
               <Text>
-                Full-statement guidance needs both timing days. For manually entered payments, both
-                dates are optional and may be left blank when unknown.
+                Automatic policies need both timing days. Choose whether the forecast pays the full
+                statement, a minimum, or a fixed amount. Manual leaves future payments for you to
+                enter explicitly.
               </Text>
               <div className={styles.formGrid}>
                 {field('cardName', 'Card name')}
@@ -1908,9 +2018,35 @@ const SetupPage = (): React.JSX.Element => {
                   <Select disabled={isExitingSetup} {...form.register('cardPaymentPolicy')}>
                     <option value="">Choose a policy</option>
                     <option value="full-statement">Pay full statement</option>
+                    <option value="minimum">Pay a minimum amount</option>
+                    <option value="fixed">Pay a fixed amount</option>
                     <option value="manual">Enter each payment manually</option>
                   </Select>
                 </Field>
+                {watchedSetupValues.cardPaymentPolicy === 'minimum' && (
+                  <Field
+                    label="Minimum payment amount"
+                    validationMessage={form.formState.errors.cardMinimumPayment?.message}
+                  >
+                    <Input
+                      inputMode="decimal"
+                      disabled={isExitingSetup}
+                      {...form.register('cardMinimumPayment')}
+                    />
+                  </Field>
+                )}
+                {watchedSetupValues.cardPaymentPolicy === 'fixed' && (
+                  <Field
+                    label="Fixed payment amount"
+                    validationMessage={form.formState.errors.cardFixedPayment?.message}
+                  >
+                    <Input
+                      inputMode="decimal"
+                      disabled={isExitingSetup}
+                      {...form.register('cardFixedPayment')}
+                    />
+                  </Field>
+                )}
               </div>
             </>
           )}
@@ -1941,7 +2077,7 @@ const SetupPage = (): React.JSX.Element => {
                   : ' No bill is being added in this first pass.'}
                 {watchedSetupValues.cardName
                   ? watchedSetupValues.cardStatementCloseDay && watchedSetupValues.cardPaymentDay
-                    ? ` ${watchedSetupValues.cardName} uses a typical statement of ${watchedSetupValues.cardEstimate}, closes on day ${watchedSetupValues.cardStatementCloseDay}, and pays on day ${watchedSetupValues.cardPaymentDay}. Its actual statement and current cycle will be added next.`
+                    ? ` ${watchedSetupValues.cardName} uses a typical statement of ${watchedSetupValues.cardEstimate}, closes on day ${watchedSetupValues.cardStatementCloseDay}, and pays on day ${watchedSetupValues.cardPaymentDay}. Forecast payment policy: ${watchedSetupValues.cardPaymentPolicy === 'full-statement' ? 'full statement' : watchedSetupValues.cardPaymentPolicy === 'minimum' ? `minimum of ${watchedSetupValues.cardMinimumPayment}` : watchedSetupValues.cardPaymentPolicy === 'fixed' ? `fixed amount of ${watchedSetupValues.cardFixedPayment}` : 'manual'}. Its actual statement and current cycle will be added next.`
                     : ` ${watchedSetupValues.cardName} uses a typical statement of ${watchedSetupValues.cardEstimate} with payments entered manually. No statement-close or payment dates were inferred. Its actual statement and current cycle can be added next.`
                   : ' No card is being added in this first pass.'}
               </p>
@@ -2081,6 +2217,7 @@ const ScenarioPage = (): React.JSX.Element => {
         amountCents: dollarsToCents(values.amount),
         settlementDate: values.settlementDate,
         fundingType: requestedFunding.fundingType,
+        forecastMode: 'conservative',
         accountId: requestedFunding.fundingType === 'cash' ? requestedFunding.accountId : undefined,
         cardId: requestedFunding.fundingType === 'card' ? requestedFunding.cardId : undefined,
       });

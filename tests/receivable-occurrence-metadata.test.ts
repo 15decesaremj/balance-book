@@ -41,6 +41,42 @@ const openStore = (): BalanceBookStore => {
   return store;
 };
 
+const insertLegacySettlement = (store: BalanceBookStore, input: Record<string, unknown>): void => {
+  const event = forecastEventSchema.parse({ ...input, userId: input.userId ?? 'profile-a' });
+  store.raw
+    .prepare(
+      `INSERT INTO forecast_events (
+         id, user_id, account_id, date, kind, direction, amount_cents, certainty, status, label,
+         source_record_id, hypothetical, accepted, payment_method, receivable_occurrence_date,
+         receivable_occurrence_target_cents, notes, created_at, updated_at
+       ) VALUES (
+         @id, @userId, @accountId, @date, @kind, @direction, @amountCents, @certainty, @status,
+         @label, @sourceRecordId, @hypothetical, @accepted, @paymentMethod,
+         @receivableOccurrenceDate, @receivableOccurrenceTargetCents, @notes, @timestamp, @timestamp
+       )`,
+    )
+    .run({
+      id: event.id,
+      userId: event.userId,
+      accountId: event.accountId,
+      date: event.date,
+      kind: event.kind,
+      direction: event.direction,
+      amountCents: event.amountCents,
+      certainty: event.certainty,
+      status: event.status,
+      label: event.label,
+      sourceRecordId: event.sourceRecordId ?? null,
+      hypothetical: event.hypothetical ? 1 : 0,
+      accepted: event.accepted ? 1 : 0,
+      paymentMethod: event.paymentMethod ?? 'cash-account',
+      receivableOccurrenceDate: event.receivableOccurrenceDate ?? null,
+      receivableOccurrenceTargetCents: event.receivableOccurrenceTargetCents ?? null,
+      notes: event.notes ?? null,
+      timestamp: '2026-01-01T00:00:00.000Z',
+    });
+};
+
 afterEach(() => {
   for (const store of stores.splice(0)) {
     if (store.raw.open) store.close();
@@ -496,13 +532,13 @@ describe('durable receivable occurrence metadata', () => {
       sourceRecordId: 'profile-a-legacy-timing',
       paymentMethod: 'cash-account' as const,
     };
-    store.upsertManagedEntity('profile-a', 'forecast-event', {
+    insertLegacySettlement(store, {
       ...receiptBase,
       id: 'profile-a-split-one',
       date: '2026-03-28',
       amountCents: 4_000,
     });
-    store.upsertManagedEntity('profile-a', 'forecast-event', {
+    insertLegacySettlement(store, {
       ...receiptBase,
       id: 'profile-a-split-two',
       date: '2026-03-29',
@@ -568,7 +604,7 @@ describe('durable receivable occurrence metadata', () => {
       certainty: 'expected',
       includeInCashForecast: true,
     });
-    store.upsertManagedEntity('profile-a', 'forecast-event', {
+    insertLegacySettlement(store, {
       id: 'profile-a-fallback-receipt',
       accountId: 'profile-a-primary-cash',
       date: '2026-03-29',
@@ -630,7 +666,7 @@ describe('durable receivable occurrence metadata', () => {
       paymentMethod: 'cash-account' as const,
       receivableOccurrenceDate: '2026-03-30',
     };
-    store.upsertManagedEntity('profile-a', 'forecast-event', legacyReceipt);
+    insertLegacySettlement(store, legacyReceipt);
 
     expect(() =>
       store.upsertManagedEntity('profile-a', 'forecast-event', {
@@ -645,7 +681,7 @@ describe('durable receivable occurrence metadata', () => {
         amountCents: 1_000,
         receivableOccurrenceTargetCents: 100_000,
       }),
-    ).toThrow(/target is managed internally/i);
+    ).toThrow(/cannot be created as generic forecast events/i);
   });
 
   it('retains a frozen occurrence target through cancellation and replacement', () => {

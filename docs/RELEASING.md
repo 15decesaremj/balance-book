@@ -12,7 +12,7 @@ Only the third is a public software release. Building an installer does not esta
 
 - Use a clean, reviewed source tree and the exact committed lock file.
 - Confirm the root and desktop package versions match the intended SemVer version.
-- Refuse to reuse a version or tag for different bytes. The debt and amortization feature release is 1.1.0 and must not overwrite or rebuild the existing `v1.0.0` identity.
+- Refuse to reuse a version or tag for different bytes. The debt and amortization feature release is 1.1.1 and must not overwrite or rebuild the existing `v1.0.0` identity.
 - Use the documented Node.js 24 and pnpm 11 toolchain.
 - Update project state, supported versions, third-party notices, changelog/release notes, and any changed backup or migration documentation.
 - Review dependency advisories and generate a production dependency-license inventory. Retain the exact result in [DEPENDENCY_REVIEW.md](DEPENDENCY_REVIEW.md).
@@ -105,7 +105,7 @@ Automated packaged smoke is necessary but not sufficient. Before publication, va
 12. Reinstall and confirm the same profile and sign-in password still work.
 13. Separately perform a clean-data restore using the encrypted portable backup and a different destination sign-in password.
 14. Verify wrong-password, damaged-backup, newer-schema, and ownership-conflict failures do not partially replace data.
-15. Check database integrity, exact 1.1.0 version identity, and packaged legal notices after every transition.
+15. Check database integrity, exact 1.1.1 version identity, and packaged legal notices after every transition.
 
 The installer-smoke mutation mode intentionally refuses a Windows profile that already has an installation or app-data directory. Use a disposable account rather than risking real data.
 
@@ -122,7 +122,7 @@ pnpm public:release -- `
   -PackagedExecutablePath "<signed packaged Balance Book.exe>" `
   -SquirrelArtifactDirectory "<folder containing Setup, full.nupkg, and RELEASES>" `
   -BuildMetadataPath "<candidate metadata JSON emitted by release:windows>" `
-  -OutputDirectory "C:\AI-Projects\Balance Book 1.1.0 - public release" `
+  -OutputDirectory "C:\AI-Projects\Balance Book 1.1.1 - public release" `
   -ExpectedPublisher "<exact certificate subject>" `
   -ExpectedPublisherThumbprint "<certificate thumbprint>"
 ```

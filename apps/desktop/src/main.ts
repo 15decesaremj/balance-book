@@ -36,6 +36,8 @@ import {
 import {
   accrueSimpleInterest,
   activeLoansForDate,
+  assessReceivableFundingCoverageSequence,
+  assessPurchaseSafety,
   effectiveAssetsForDate,
   assertCashBackedCardPurchaseEligibility,
   buildForecastBundle,
@@ -60,6 +62,7 @@ import {
   deleteManagedEntityRequestSchema,
   displayStateForForecastEvent,
   emptyRequestSchema,
+  forecastRequestSchema,
   fileActionResultSchema,
   forecastSnapshotSchema,
   importReviewSchema,
@@ -234,8 +237,8 @@ const prepareForecast = (userId: string, requiredEndDate?: PlainDateString) => {
   };
 };
 
-const buildSnapshot = (userId: string): ForecastSnapshotDto => {
-  const context = prepareForecast(userId);
+const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): ForecastSnapshotDto => {
+  const context = prepareForecast(userId, requiredEndDate);
   if (!context) return { setupComplete: false };
   const { data, records, accounts, scheduledEvents, bundle, startDate, endDate, replayStartDate } =
     context;
@@ -292,7 +295,7 @@ const buildSnapshot = (userId: string): ForecastSnapshotDto => {
     return activeDays.reduce((lowest, day) => {
       const candidate = day.accounts.find((account) => account.accountId === accountId)!;
       const current = lowest.accounts.find((account) => account.accountId === accountId)!;
-      return candidate.minimumBalanceCents < current.minimumBalanceCents ? day : lowest;
+      return candidate.endingBalanceCents < current.endingBalanceCents ? day : lowest;
     });
   };
   const effectiveLoans = activeLoansForDate({
@@ -363,6 +366,36 @@ const buildSnapshot = (userId: string): ForecastSnapshotDto => {
       .map((account) => [account.id, account.hardFloorCents ?? 0]),
   );
   const rewardByCardId = new Map(records.rewardPrograms.map((reward) => [reward.cardId, reward]));
+  const transferNeedWithReceivableCoverage = (
+    need: (typeof bundle.conservative.transferNeeds)[number],
+    receivableCoverage: ReturnType<typeof assessReceivableFundingCoverageSequence>[number],
+  ) => {
+    return {
+      accountId: need.accountId,
+      accountName: accountNameById.get(need.accountId) ?? 'Unknown account',
+      sourceAccountId: need.suggestedSourceAccountId,
+      sourceAccountName: need.suggestedSourceAccountId
+        ? accountNameById.get(need.suggestedSourceAccountId)
+        : undefined,
+      date: need.date,
+      shortfallCents: need.shortfallCents,
+      horizonDeepestShortfallCents: need.horizonDeepestShortfallCents,
+      horizonDeepestShortfallDate: need.horizonDeepestShortfallDate,
+      horizonAdditionalShortfallCents: need.horizonAdditionalShortfallCents,
+      ...receivableCoverage,
+      initiationDate: need.initiationDate,
+      arrivalDate: need.arrivalDate,
+      sourceSurplusAfterFloorsCents: need.sourceSurplusAfterFloorsCents,
+    };
+  };
+  const conservativeReceivableCoverage = assessReceivableFundingCoverageSequence({
+    needs: bundle.conservative.transferNeeds,
+    receivableDays: conservativeReceivables,
+  });
+  const expectedReceivableCoverage = assessReceivableFundingCoverageSequence({
+    needs: bundle.expected.transferNeeds,
+    receivableDays: expectedReceivables,
+  });
   const expectedCardSpendingPower = calculateCardSpendingPower({
     cards: records.cards,
     cardCycles: records.cardCycles,
@@ -370,6 +403,9 @@ const buildSnapshot = (userId: string): ForecastSnapshotDto => {
     asOfDate: startDate,
     hardFloorCents: bundle.expected.effectiveHardFloorCents,
     accountHardFloorCentsById,
+    includedAccountIds: accounts
+      .filter((account) => account.includedInLiquidity)
+      .map((account) => account.id),
     days: expectedPositionDays.map(({ day, positionCents, receivableCents }) => ({
       date: day.date,
       consolidatedCashCents: day.consolidatedCashCents,
@@ -390,6 +426,9 @@ const buildSnapshot = (userId: string): ForecastSnapshotDto => {
     asOfDate: startDate,
     hardFloorCents: bundle.conservative.effectiveHardFloorCents,
     accountHardFloorCentsById,
+    includedAccountIds: accounts
+      .filter((account) => account.includedInLiquidity)
+      .map((account) => account.id),
     days: conservativePositionDays.map(({ day, positionCents, receivableCents }) => ({
       date: day.date,
       consolidatedCashCents: day.consolidatedCashCents,
@@ -490,49 +529,23 @@ const buildSnapshot = (userId: string): ForecastSnapshotDto => {
         accountId: account.id,
         accountName: account.name,
         balanceCents: conservative.accounts.find((item) => item.accountId === account.id)!
-          .minimumBalanceCents,
+          .endingBalanceCents,
         date: conservative.date,
         expectedBalanceCents: expected.accounts.find((item) => item.accountId === account.id)!
-          .minimumBalanceCents,
+          .endingBalanceCents,
         expectedDate: expected.date,
       };
     }),
-    transferNeeds: bundle.conservative.transferNeeds.map((need) => ({
-      accountId: need.accountId,
-      accountName: accountNameById.get(need.accountId) ?? 'Unknown account',
-      sourceAccountId: need.suggestedSourceAccountId,
-      sourceAccountName: need.suggestedSourceAccountId
-        ? accountNameById.get(need.suggestedSourceAccountId)
-        : undefined,
-      date: need.date,
-      shortfallCents: need.shortfallCents,
-      horizonDeepestShortfallCents: need.horizonDeepestShortfallCents,
-      horizonDeepestShortfallDate: need.horizonDeepestShortfallDate,
-      horizonAdditionalShortfallCents: need.horizonAdditionalShortfallCents,
-      initiationDate: need.initiationDate,
-      arrivalDate: need.arrivalDate,
-      sourceSurplusAfterFloorsCents: need.sourceSurplusAfterFloorsCents,
-    })),
-    expectedTransferNeeds: bundle.expected.transferNeeds.map((need) => ({
-      accountId: need.accountId,
-      accountName: accountNameById.get(need.accountId) ?? 'Unknown account',
-      sourceAccountId: need.suggestedSourceAccountId,
-      sourceAccountName: need.suggestedSourceAccountId
-        ? accountNameById.get(need.suggestedSourceAccountId)
-        : undefined,
-      date: need.date,
-      shortfallCents: need.shortfallCents,
-      horizonDeepestShortfallCents: need.horizonDeepestShortfallCents,
-      horizonDeepestShortfallDate: need.horizonDeepestShortfallDate,
-      horizonAdditionalShortfallCents: need.horizonAdditionalShortfallCents,
-      initiationDate: need.initiationDate,
-      arrivalDate: need.arrivalDate,
-      sourceSurplusAfterFloorsCents: need.sourceSurplusAfterFloorsCents,
-    })),
+    transferNeeds: bundle.conservative.transferNeeds.map((need, index) =>
+      transferNeedWithReceivableCoverage(need, conservativeReceivableCoverage[index]!),
+    ),
+    expectedTransferNeeds: bundle.expected.transferNeeds.map((need, index) =>
+      transferNeedWithReceivableCoverage(need, expectedReceivableCoverage[index]!),
+    ),
     upcomingEvents: scheduledEvents
       .filter((event) => event.date >= startDate && event.status !== 'cancelled')
       .sort((left, right) => left.date.localeCompare(right.date))
-      .slice(0, 12)
+      .slice(0, 30)
       .map((event) => ({
         id: event.id,
         label: event.label,
@@ -566,6 +579,10 @@ const buildSnapshot = (userId: string): ForecastSnapshotDto => {
         ...account,
         accountName: accountNameById.get(account.accountId) ?? 'Unknown account',
       })),
+      futureAccountLows: card.futureAccountLows.map((account) => ({
+        ...account,
+        accountName: accountNameById.get(account.accountId) ?? 'Unknown account',
+      })),
       paymentDateAccountBalances: card.paymentDateAccountBalances?.map((account) => ({
         ...account,
         accountName: accountNameById.get(account.accountId) ?? 'Unknown account',
@@ -577,6 +594,10 @@ const buildSnapshot = (userId: string): ForecastSnapshotDto => {
       ...card,
       fundingAccountName: accountNameById.get(card.fundingAccountId) ?? 'Unknown account',
       futurePositionLowAccountBalances: card.futurePositionLowAccountBalances.map((account) => ({
+        ...account,
+        accountName: accountNameById.get(account.accountId) ?? 'Unknown account',
+      })),
+      futureAccountLows: card.futureAccountLows.map((account) => ({
         ...account,
         accountName: accountNameById.get(account.accountId) ?? 'Unknown account',
       })),
@@ -687,8 +708,8 @@ const registerIpc = (): void => {
     const profile = store.getCredentialsById(activeUserId);
     return profile ? sessionFor(profile) : null;
   });
-  handle('forecast:get', emptyRequestSchema, forecastSnapshotSchema, () =>
-    buildSnapshot(requireUser()),
+  handle('forecast:get', forecastRequestSchema, forecastSnapshotSchema, (request) =>
+    buildSnapshot(requireUser(), request.requiredEndDate),
   );
   handle(
     'setup:save-vertical-slice',
@@ -733,7 +754,7 @@ const registerIpc = (): void => {
       : undefined;
     const cashSettlementDate = cardImpact?.paymentDate ?? request.settlementDate;
     const context = prepareForecast(userId, cashSettlementDate)!;
-    const { data, accounts, scheduledEvents, startDate, endDate } = context;
+    const { data, accounts, scheduledEvents, startDate, endDate, replayStartDate } = context;
     const accountId =
       request.fundingType === 'card'
         ? card!.fundingAccountId
@@ -762,17 +783,40 @@ const registerIpc = (): void => {
       startDate,
       endDate,
     });
+    const forecastMode = request.forecastMode;
+    const scenarioReceivables = projectRollingReceivableBalances({
+      receivables: records.receivables,
+      settlementEvents: data.events,
+      replayStartDate,
+      startDate,
+      endDate,
+      mode: forecastMode,
+      includeConfirmedReceivablesConservatively:
+        data.policy.includeConfirmedReceivablesConservatively,
+    });
+    const beforeForecast = result.before[forecastMode];
+    const afterForecast = result.after[forecastMode];
+    const purchaseSafety = assessPurchaseSafety({
+      forecast: afterForecast,
+      cashLeavesOn: cashSettlementDate,
+      fundingAccountId: account.id,
+      fundingAccountFloorCents: account.hardFloorCents ?? 0,
+      protectedTotalFloorCents: afterForecast.effectiveHardFloorCents,
+      receivableDays: scenarioReceivables,
+      fundingNeeds: afterForecast.transferNeeds,
+      enforceFundingAccountFloor: request.fundingType === 'cash',
+    });
     return {
       verdict: result.verdict,
       settlementDate: cashSettlementDate,
-      beforeTroughCents: result.before.conservative.consolidatedTroughCents,
-      afterTroughCents: result.after.conservative.consolidatedTroughCents,
-      afterHardFloorMarginCents: result.after.conservative.hardFloorMarginCents,
+      beforeTroughCents: beforeForecast.consolidatedTroughCents,
+      afterTroughCents: afterForecast.consolidatedTroughCents,
+      afterHardFloorMarginCents: afterForecast.hardFloorMarginCents,
       afterAvailableToDeployCents: result.after.availableToDeployCents,
       accountShortfallCount: new Set(
-        result.after.conservative.accountShortfalls.map((shortfall) => shortfall.accountId),
+        afterForecast.accountShortfalls.map((shortfall) => shortfall.accountId),
       ).size,
-      transferNeeds: result.after.conservative.transferNeeds.map((need) => ({
+      transferNeeds: afterForecast.transferNeeds.map((need) => ({
         accountId: need.accountId,
         accountName:
           accounts.find((candidate) => candidate.id === need.accountId)?.name ?? 'Unknown account',
@@ -791,6 +835,7 @@ const registerIpc = (): void => {
       })),
       fundingAccountName: account.name,
       cardName: card?.name,
+      purchaseSafety,
       baselineCardPaymentCents: cardImpact?.baselineScheduledPaymentCents,
       afterPurchaseCardPaymentCents: cardImpact?.afterPurchaseScheduledPaymentCents,
       incrementalCashPaymentCents: cardImpact?.incrementalCashPaymentCents,

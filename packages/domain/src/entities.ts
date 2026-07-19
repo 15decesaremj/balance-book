@@ -667,18 +667,6 @@ export const creditCardCycleSchema = z
         message: 'An actual card payment requires its payment date',
       });
     }
-    if (
-      cycle.actualPaymentCents !== undefined &&
-      cycle.lockedStatementCents !== undefined &&
-      cycle.actualPaymentCents > cycle.lockedStatementCents
-    ) {
-      context.addIssue({
-        code: 'custom',
-        path: ['actualPaymentCents'],
-        message:
-          'The statement payment cannot exceed the locked statement; record any total-balance overpayment as a linked card-payment cash event',
-      });
-    }
   });
 export type CreditCardCycle = z.infer<typeof creditCardCycleSchema>;
 

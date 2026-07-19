@@ -362,6 +362,61 @@ describe('recurring receivable settlement actualization', () => {
     expect(on('2026-08-28')).toMatchObject({ settledCents: 0, endingOutstandingCents: 0 });
   });
 
+  it('replays a late actual receipt whose logical occurrence predates the replay window', () => {
+    const receivable = receivableSchema.parse({
+      id: 'late-receipt-before-replay-anchor',
+      userId: 'profile-a',
+      source: 'Synthetic counterparty',
+      description: 'Synthetic recurring reimbursement',
+      originalAmountCents: 0,
+      remainingAmountCents: 0,
+      recurringAmountCents: 12_345,
+      expectedDate: '2031-01-15',
+      destinationAccountId: 'cash-a',
+      certainty: 'expected',
+      recurrenceRule: { frequency: 'monthly', dayOfMonth: 15, interval: 1 },
+      accrualAmountCents: 12_345,
+      accrualDate: '2031-02-01',
+      accrualRecurrenceRule: { frequency: 'monthly', dayOfMonth: 1, interval: 1 },
+      includeInCashForecast: true,
+    });
+    const lateActual = forecastEventSchema.parse({
+      id: 'late-recorded-receipt',
+      userId: 'profile-a',
+      accountId: 'cash-a',
+      date: '2031-02-02',
+      kind: 'receivable-settlement',
+      direction: 'inflow',
+      amountCents: 12_345,
+      certainty: 'confirmed',
+      status: 'confirmed',
+      label: 'Synthetic late receipt',
+      sourceRecordId: receivable.id,
+      receivableOccurrenceDate: '2031-01-15',
+    });
+    const days = projectRollingReceivableBalances({
+      receivables: [receivable],
+      settlementEvents: [lateActual],
+      replayStartDate: '2031-01-20',
+      startDate: '2031-01-20',
+      endDate: '2031-02-03',
+      mode: 'expected',
+      includeConfirmedReceivablesConservatively: true,
+    });
+    const on = (date: string) => days.find((day) => day.date === date)!;
+
+    expect(on('2031-02-01')).toMatchObject({
+      accruedCents: 12_345,
+      settledCents: 0,
+      endingOutstandingCents: 12_345,
+    });
+    expect(on('2031-02-02')).toMatchObject({
+      accruedCents: 0,
+      settledCents: 12_345,
+      endingOutstandingCents: 0,
+    });
+  });
+
   it('keeps a later-installment prepayment from settling an earlier accrual', () => {
     const receivable = receivableSchema.parse({
       id: 'future-installment-prepayment',

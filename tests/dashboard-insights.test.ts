@@ -37,6 +37,14 @@ const card = (cardName: string): DashboardCardPower => ({
   futurePositionLowAccountBalances: [
     { accountId: 'checking', accountName: 'Checking', endingBalanceCents: 90_000 },
   ],
+  futureAccountLows: [
+    {
+      accountId: 'checking',
+      accountName: 'Checking',
+      endingBalanceCents: 70_000,
+      date: '2026-09-20',
+    },
+  ],
   futureCashLowCents: 90_000,
   futureCashLowDate: '2026-09-20',
   fundingAccountLowCents: 70_000,
@@ -127,12 +135,37 @@ describe('dashboard card-advisor status semantics', () => {
 
   it('provides exact status and verdict labels without calling an income-dependent result safe', () => {
     expect(advisorStatusLabel).toEqual({
-      safe: 'Passes protected forecast',
-      'transfer-required': 'Passes after transfer',
+      safe: 'Can use',
+      'transfer-required': 'Can use after transfer',
       'income-dependent': 'Conditional on expected income',
       unsafe: 'Needs a plan change',
     });
     expect(advisorVerdictLabel['dependent-on-expected-income']).toBe('Depends on expected income');
+  });
+
+  it('uses payment-date purchase safety instead of an unrelated earlier global shortfall', () => {
+    const scopedSafe = result('Scoped safe', {
+      verdict: 'underfunded-account',
+      accountShortfallCount: 1,
+      afterHardFloorMarginCents: -5_000,
+      purchaseSafety: {
+        safe: true,
+        totalPositionLowCents: 125_000,
+        totalPositionLowDate: '2026-09-20',
+        totalPositionMarginCents: 25_000,
+        fundingAccountLowCents: -5_000,
+        fundingAccountLowDate: '2026-09-15',
+        fundingAccountFloorCents: 0,
+        fundingAccountShortfallCents: 5_000,
+        receivableOutstandingCents: 3_000,
+        receivableReleaseNeededCents: 3_000,
+        uncoveredFundingShortfallCents: 2_000,
+      },
+    });
+    expect(advisorResultStatus(scopedSafe)).toBe('safe');
+    expect(advisorReason(scopedSafe)).toContain('You can use it');
+    expect(advisorReason(scopedSafe)).toContain(formatMoney(5_000));
+    expect(advisorReason(scopedSafe)).toContain(formatMoney(2_000));
   });
 });
 

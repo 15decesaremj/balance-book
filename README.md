@@ -43,7 +43,7 @@ The local sign-in password is an application privacy boundary. The live database
 
 ## Install
 
-The 1.1.0 V1 feature line targets Windows 11 x64. The installer is self-contained; end users do not need development tools or a separate database server.
+The 1.1.1 V1 feature line targets Windows 11 x64. The installer is self-contained; end users do not need development tools or a separate database server.
 
 No signed public binary is claimed yet. A local unsigned 1.1.0 Squirrel candidate has been built and its packaged application passed an isolated smoke check, but it is an owner-testing artifact rather than a public release. An unsigned installer may trigger Windows SmartScreen or **Unknown publisher**. Public distribution remains gated on valid Authenticode signing, a sanitized clean-history source mirror, unrestricted end-to-end testing, fresh-disposable-profile lifecycle testing, and the checklist in [PUBLIC_RELEASE_READINESS.md](docs/PUBLIC_RELEASE_READINESS.md).
 

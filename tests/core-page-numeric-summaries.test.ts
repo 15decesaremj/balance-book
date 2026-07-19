@@ -14,17 +14,23 @@ import {
   solveInstallmentLoanSetup,
 } from '@balance-book/financial-engine';
 import {
+  aggregateKnownLimitCardUtilization,
   billRelativeReceiptTimingLabel,
+  cardUtilizationPresentation,
   defaultReceivableReceiptDate,
   effectiveLoanPageMetrics,
   isRecurringRunRateActive,
   loanAmortizationLedger,
   loanPageMetrics,
+  latestClosedStatementForReconciliation,
   monthlyEquivalentRunRateCents,
   netWorthCashBalance,
   receivableAccrualRecurrenceRuleForEdit,
+  receivableExpectedTimingText,
   receivableRecurrenceRuleForEdit,
   resolveLoanEditField,
+  scheduledReceivableEffectText,
+  scheduledCardPaymentRequest,
   selectCardStatementSummaryCycles,
 } from '../apps/desktop/src/renderer/CorePages';
 
@@ -76,10 +82,36 @@ describe('core page numeric summaries', () => {
     ).toEqual({ frequency: 'once' });
   });
 
-  it('describes bill-relative timing in plain language', () => {
+  it('describes receipt timing and scheduled effects in plain language', () => {
     expect(billRelativeReceiptTimingLabel(-2, 'Rent')).toBe('2 days before Rent');
     expect(billRelativeReceiptTimingLabel(1, 'Auto payment')).toBe('1 day after Auto payment');
     expect(billRelativeReceiptTimingLabel(0, 'Rent')).toBe('when Rent is due');
+    expect(
+      receivableExpectedTimingText({
+        expectedDate: '2026-08-01',
+        settlementDateConfirmed: false,
+      }),
+    ).toBe('2026-08-01 (unconfirmed)');
+    expect(
+      scheduledReceivableEffectText({
+        date: '2026-07-30',
+        accountName: 'Reserve savings',
+        cashAmountCents: 102_500,
+        owedReductionCents: 27_500,
+      }),
+    ).toBe(
+      'Scheduled effect on 2026-07-30: +$1,025.00 to Reserve savings and -$275.00 from projected Money Owed. The other $750.00 is scheduled cash that was not already owed.',
+    );
+    expect(
+      scheduledReceivableEffectText({
+        date: '2026-08-11',
+        accountName: 'Reserve savings',
+        cashAmountCents: 27_413,
+        owedReductionCents: 27_413,
+      }),
+    ).toBe(
+      'Scheduled effect on 2026-08-11: +$274.13 to Reserve savings and -$274.13 from projected Money Owed.',
+    );
   });
 
   it('normalizes every supported recurring cadence to one average month', () => {
@@ -374,6 +406,110 @@ describe('core page numeric summaries', () => {
       comingDue: olderDue,
       latestStatement: newestLocked,
     });
+  });
+
+  it('calculates aggregate utilization only from cards with known limits', () => {
+    expect(
+      aggregateKnownLimitCardUtilization([
+        { currentBalanceCents: 50_000, creditLimitCents: 200_000 },
+        { currentBalanceCents: 900_000 },
+      ]),
+    ).toEqual({
+      currentBalanceCents: 50_000,
+      creditLimitCents: 200_000,
+      knownLimitCardCount: 1,
+      totalCardCount: 2,
+      utilizationPercent: 25,
+    });
+  });
+
+  it('shows true over-limit utilization while clamping only the progress bar', () => {
+    expect(cardUtilizationPresentation(240_000, 200_000)).toEqual({
+      utilizationPercent: 120,
+      barPercent: 100,
+    });
+    expect(cardUtilizationPresentation(-5_000, 200_000)).toEqual({
+      utilizationPercent: 0,
+      barPercent: 0,
+    });
+  });
+
+  it('edits a scheduled card payment in place while preserving its identity and notes', () => {
+    const existing = forecastEventSchema.parse({
+      id: 'scheduled-card-payment',
+      userId: 'profile-a',
+      accountId: 'cash-a',
+      date: '2026-08-15',
+      kind: 'card-payment',
+      direction: 'outflow',
+      amountCents: 14_470,
+      certainty: 'confirmed',
+      status: 'scheduled',
+      label: 'Original payment',
+      sourceRecordId: 'cycle-a',
+      hypothetical: false,
+      accepted: false,
+      paymentMethod: 'cash-account',
+      cardId: 'card-a',
+      notes: 'Preserve this audit note.',
+    });
+
+    const request = scheduledCardPaymentRequest({
+      existing,
+      newId: 'must-not-replace-existing-id',
+      accountId: 'cash-b',
+      date: '2026-08-20',
+      amountCents: 16_000,
+      label: 'Revised payment',
+      cardId: 'card-a',
+    });
+    const payload = request.payload as Record<string, unknown>;
+
+    expect(request.entityType).toBe('forecast-event');
+    expect(payload).toEqual(
+      expect.objectContaining({
+        id: existing.id,
+        accountId: 'cash-b',
+        date: '2026-08-20',
+        amountCents: 16_000,
+        label: 'Revised payment',
+        notes: 'Preserve this audit note.',
+        status: 'scheduled',
+      }),
+    );
+    expect(payload.sourceRecordId).toBeUndefined();
+    expect(payload.userId).toBeUndefined();
+  });
+
+  it('uses the modeled latest closed statement and falls back to stored history', () => {
+    const stored = creditCardCycleSchema.parse({
+      id: 'stored-statement',
+      cardId: 'card-a',
+      opensOn: '2026-05-01',
+      closesOn: '2026-05-31',
+      dueOn: '2026-06-20',
+      state: 'paid',
+      defaultEstimateCents: 0,
+      actualActivityCents: 20_000,
+      plannedActivityCents: 0,
+      lockedStatementCents: 20_000,
+    });
+
+    expect(
+      latestClosedStatementForReconciliation({
+        cardId: 'card-a',
+        asOfDate: '2026-07-15',
+        cycles: [stored],
+        modeled: { latestStatementCents: 25_000, latestStatementDate: '2026-06-30' },
+      }),
+    ).toEqual({ amountCents: 25_000, date: '2026-06-30' });
+    expect(
+      latestClosedStatementForReconciliation({
+        cardId: 'card-a',
+        asOfDate: '2026-07-15',
+        cycles: [stored],
+      }),
+    ).toEqual({ amountCents: 20_000, date: '2026-05-31' });
   });
 
   it('shows zero before replacement closing and after source payoff, with both loans active during overlap', () => {

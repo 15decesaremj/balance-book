@@ -85,6 +85,99 @@ const runwayDays = [
 ];
 
 describe('Spending Power parity', () => {
+  it('anchors current-cycle account lows to the due-to-limiting-date risk window', () => {
+    const card = makeCard('due-date-runway', 'bank-one');
+    const cycle = creditCardCycleSchema.parse({
+      id: 'cycle-due-date-runway',
+      cardId: card.id,
+      opensOn: '2026-07-01',
+      closesOn: '2026-07-31',
+      dueOn: '2026-08-10',
+      paymentOn: '2026-08-12',
+      state: 'open',
+      defaultEstimateCents: 0,
+      actualActivityCents: 0,
+      plannedActivityCents: 0,
+    });
+
+    const [result] = calculateCardSpendingPower({
+      cards: [card],
+      cardCycles: [cycle],
+      asOfDate: '2026-07-15',
+      accountHardFloorCentsById: { 'bank-one': 0, 'bank-two': 0 },
+      includedAccountIds: ['bank-one', 'bank-two'],
+      days: [
+        {
+          date: '2026-08-09',
+          consolidatedCashCents: 0,
+          receivableCents: 10_000,
+          totalPositionCents: 10_000,
+          accountBalances: [
+            { accountId: 'bank-one', endingBalanceCents: -50_000 },
+            { accountId: 'bank-two', endingBalanceCents: 50_000 },
+          ],
+        },
+        {
+          date: '2026-08-10',
+          consolidatedCashCents: 80_000,
+          receivableCents: 0,
+          totalPositionCents: 80_000,
+          accountBalances: [
+            { accountId: 'bank-one', endingBalanceCents: 50_000 },
+            { accountId: 'bank-two', endingBalanceCents: 30_000 },
+          ],
+        },
+        {
+          date: '2026-08-11',
+          consolidatedCashCents: 70_000,
+          receivableCents: 0,
+          totalPositionCents: 70_000,
+          accountBalances: [
+            { accountId: 'bank-one', endingBalanceCents: 60_000 },
+            { accountId: 'bank-two', endingBalanceCents: 10_000 },
+          ],
+        },
+        {
+          date: '2026-08-12',
+          consolidatedCashCents: 90_000,
+          minimumConsolidatedCashCents: 75_000,
+          receivableCents: 0,
+          totalPositionCents: 90_000,
+          accountBalances: [
+            {
+              accountId: 'bank-one',
+              endingBalanceCents: -10_000,
+              minimumBalanceCents: -30_000,
+            },
+            { accountId: 'bank-two', endingBalanceCents: 100_000 },
+          ],
+        },
+        {
+          date: '2026-08-13',
+          consolidatedCashCents: 85_000,
+          receivableCents: 0,
+          totalPositionCents: 85_000,
+          accountBalances: [
+            { accountId: 'bank-one', endingBalanceCents: -40_000 },
+            { accountId: 'bank-two', endingBalanceCents: 125_000 },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      currentCyclePaymentOn: '2026-08-12',
+      futurePositionLowCents: 70_000,
+      futurePositionLowDate: '2026-08-11',
+      futureAccountLows: [
+        { accountId: 'bank-one', endingBalanceCents: -10_000, date: '2026-08-12' },
+        { accountId: 'bank-two', endingBalanceCents: 10_000, date: '2026-08-11' },
+      ],
+      fundingAccountLowCents: -10_000,
+      fundingAccountLowDate: '2026-08-12',
+    });
+  });
+
   it('uses the same total-position runway for every card whose payment precedes the shared trough', () => {
     const result = calculateCardSpendingPower({
       cards,
@@ -223,7 +316,7 @@ describe('Spending Power parity', () => {
       baselineEstimateSlackCents: 15_000,
       futurePositionLowCents: 23_000,
       spendingPowerCents: 13_000,
-      cashBackedCapacityCents: 18_000,
+      cashBackedCapacityCents: 28_000,
     });
   });
 });

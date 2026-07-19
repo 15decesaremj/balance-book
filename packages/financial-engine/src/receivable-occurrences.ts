@@ -206,6 +206,38 @@ export const receivableSettlementDates = (input: {
   ].sort(compareDates);
 };
 
+/**
+ * Returns the receipt occurrences that may be projected as future cash. A recurring schedule can
+ * start just before its first accrual date (for example, a month-end receipt paired with a
+ * first-of-month shared expense). When there is no opening receivable balance, that leading date
+ * is only a timing anchor: projecting cash there would create a receipt before the obligation
+ * exists. Once the accrual series has started, later receipts may still precede their paired
+ * accrual, and recorded early receipts remain valid prepayments in the receivable roll-forward.
+ *
+ * A static opening balance keeps its first occurrence because that amount already exists and is
+ * legitimately available to settle before the future accrual series begins.
+ */
+export const plannedReceivableSettlementDates = (input: {
+  receivable: Receivable;
+  events?: readonly ForecastEvent[];
+  endDate: PlainDateString;
+}): PlainDateString[] => {
+  const receivable = receivableSchema.parse(input.receivable);
+  const dates = receivableSettlementDates({
+    receivable,
+    ...(input.events === undefined ? {} : { events: input.events }),
+    endDate: input.endDate,
+  });
+  const accrualDate = receivable.accrualDate;
+  if (!accrualDate || !receivable.accrualAmountCents) return dates;
+
+  return dates.filter(
+    (date) =>
+      compareDates(date, accrualDate) >= 0 ||
+      (receivable.originalAmountCents > 0 && date === receivable.expectedDate),
+  );
+};
+
 export const hasRecurringReceivableSchedule = (receivable: Receivable): boolean =>
   receivable.settlementAnchorEventId !== undefined ||
   (receivable.recurrenceRule !== undefined && receivable.recurrenceRule.frequency !== 'once');

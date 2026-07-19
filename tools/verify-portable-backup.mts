@@ -114,7 +114,7 @@ try {
     throw new Error('Restored forecast policy does not match the portable profile');
   }
 
-  const restoredPortable = store.exportPortableProfile(destinationProfile.id, '1.1.0');
+  const restoredPortable = store.exportPortableProfile(destinationProfile.id, '1.1.1');
   if (restoredPortable.auditEvents.length !== portable.auditEvents.length + 1) {
     throw new Error('Audit history was not restored with exactly one restore audit event');
   }

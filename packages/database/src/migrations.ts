@@ -424,6 +424,737 @@ export const backfillLegacyIncomeStreams = (database: Database.Database): void =
   }
 };
 
+interface RoutedPaycheckRow {
+  id: string;
+  userId: string;
+  accountId: string;
+  date: string;
+  amountCents: number;
+  certainty: string;
+  status: string;
+  label: string;
+  sourceRecordId: string | null;
+  hypothetical: number;
+  accepted: number;
+  includeInConservative: number | null;
+  recurrenceJson: string | null;
+  recurrenceEndDate: string | null;
+  paymentMethod: string;
+  incomeType: string | null;
+  parentIncomeEventId: string | null;
+  incomePlanId: string;
+  incomeStreamId: string;
+  incomePlanTotalCents: number;
+  incomeNominalDate: string;
+  incomeArrivalOffsetDays: number;
+  incomeAllocationRule: string;
+  incomeAllocationOrder: number;
+  parentIncomePlanId: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RoutedPaycheckTransferRow {
+  id: string;
+  userId: string;
+  accountId: string;
+  date: string;
+  kind: string;
+  direction: string;
+  amountCents: number;
+  certainty: string;
+  status: string;
+  transferId: string;
+  sourceRecordId: string | null;
+  hypothetical: number;
+  accepted: number;
+  includeInConservative: number | null;
+  recurrenceJson: string | null;
+  recurrenceEndDate: string | null;
+  paymentMethod: string;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface LegacyImportLineageSummary {
+  entityId: string;
+  fieldCount: number;
+  editedFieldCount: number;
+}
+
+const requiredPaycheckTransferRepairColumns = [
+  'id',
+  'user_id',
+  'account_id',
+  'date',
+  'kind',
+  'direction',
+  'amount_cents',
+  'certainty',
+  'status',
+  'label',
+  'manual_order',
+  'source_record_id',
+  'transfer_id',
+  'hypothetical',
+  'accepted',
+  'include_in_conservative',
+  'recurrence_json',
+  'recurrence_end_date',
+  'payment_method',
+  'card_id',
+  'card_activity_treatment',
+  'loan_payment_treatment',
+  'income_type',
+  'parent_income_event_id',
+  'income_plan_id',
+  'income_stream_id',
+  'income_plan_total_cents',
+  'income_nominal_date',
+  'income_arrival_offset_days',
+  'income_allocation_rule',
+  'income_allocation_order',
+  'parent_income_plan_id',
+  'receivable_occurrence_date',
+  'receivable_occurrence_target_cents',
+  'notes',
+  'created_at',
+  'updated_at',
+] as const;
+
+const routedPaycheckPhaseKey = (row: RoutedPaycheckRow): string =>
+  JSON.stringify([row.userId, row.incomeStreamId, row.incomePlanId]);
+
+const sameRoutedPaycheckMetadata = (left: RoutedPaycheckRow, right: RoutedPaycheckRow): boolean =>
+  left.userId === right.userId &&
+  left.incomeStreamId === right.incomeStreamId &&
+  left.incomePlanTotalCents === right.incomePlanTotalCents &&
+  left.certainty === right.certainty &&
+  left.status === right.status &&
+  left.hypothetical === right.hypothetical &&
+  left.accepted === right.accepted &&
+  left.includeInConservative === right.includeInConservative &&
+  left.paymentMethod === right.paymentMethod &&
+  left.recurrenceJson === right.recurrenceJson;
+
+/**
+ * Repairs one narrowly identifiable legacy import shape. Older seed logic represented a future
+ * early-arriving paycheck allocation as a same-day internal transfer from the payday account.
+ * That moved account cash early but delayed consolidated income until payday. When the preceding
+ * phase proves the amount is an employer-routed allocation, replace the successor transfer with a
+ * real allocation in the same paycheck plan and retain the cancelled transfer pair for audit.
+ */
+export const repairLegacyEarlyPaycheckTransfer = (database: Database.Database): void => {
+  const columns = new Set(
+    (
+      database.prepare("SELECT name FROM pragma_table_info('forecast_events')").all() as Array<{
+        name: string;
+      }>
+    ).map((column) => column.name),
+  );
+  if (requiredPaycheckTransferRepairColumns.some((column) => !columns.has(column))) return;
+  const tableNames = new Set(
+    (
+      database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+        name: string;
+      }>
+    ).map((row) => row.name),
+  );
+  if (!tableNames.has('import_lineage')) return;
+  const lineageColumns = new Set(
+    (
+      database.prepare("SELECT name FROM pragma_table_info('import_lineage')").all() as Array<{
+        name: string;
+      }>
+    ).map((column) => column.name),
+  );
+  if (
+    !['entity_type', 'entity_id', 'destination_edited_at'].every((column) =>
+      lineageColumns.has(column),
+    )
+  ) {
+    return;
+  }
+  const lineageByEntityId = new Map(
+    (
+      database
+        .prepare(
+          `SELECT entity_id AS entityId,
+                  COUNT(*) AS fieldCount,
+                  SUM(CASE WHEN destination_edited_at IS NOT NULL THEN 1 ELSE 0 END) AS editedFieldCount
+             FROM import_lineage
+            WHERE entity_type = 'forecast-event'
+            GROUP BY entity_id`,
+        )
+        .all() as LegacyImportLineageSummary[]
+    ).map((summary) => [summary.entityId, summary]),
+  );
+
+  const incomeRows = database
+    .prepare(
+      `SELECT id,
+              user_id AS userId,
+              account_id AS accountId,
+              date,
+              amount_cents AS amountCents,
+              certainty,
+              status,
+              label,
+              source_record_id AS sourceRecordId,
+              hypothetical,
+              accepted,
+              include_in_conservative AS includeInConservative,
+              recurrence_json AS recurrenceJson,
+              recurrence_end_date AS recurrenceEndDate,
+              payment_method AS paymentMethod,
+              income_type AS incomeType,
+              parent_income_event_id AS parentIncomeEventId,
+              income_plan_id AS incomePlanId,
+              income_stream_id AS incomeStreamId,
+              income_plan_total_cents AS incomePlanTotalCents,
+              income_nominal_date AS incomeNominalDate,
+              income_arrival_offset_days AS incomeArrivalOffsetDays,
+              income_allocation_rule AS incomeAllocationRule,
+              income_allocation_order AS incomeAllocationOrder,
+              parent_income_plan_id AS parentIncomePlanId,
+              notes,
+              created_at AS createdAt,
+              updated_at AS updatedAt
+       FROM forecast_events
+       WHERE kind = 'income'
+         AND direction = 'inflow'
+         AND income_type = 'paycheck'
+         AND payment_method = 'cash-account'
+         AND income_plan_id IS NOT NULL
+         AND income_stream_id IS NOT NULL
+         AND income_plan_total_cents IS NOT NULL
+         AND income_nominal_date IS NOT NULL
+         AND income_arrival_offset_days IS NOT NULL
+         AND income_allocation_rule IS NOT NULL
+         AND income_allocation_order IS NOT NULL
+         AND status NOT IN ('cancelled', 'skipped')`,
+    )
+    .all() as RoutedPaycheckRow[];
+  const phases = new Map<string, RoutedPaycheckRow[]>();
+  for (const row of incomeRows) {
+    const key = routedPaycheckPhaseKey(row);
+    phases.set(key, [...(phases.get(key) ?? []), row]);
+  }
+
+  const transferRows = database
+    .prepare(
+      `SELECT id,
+              user_id AS userId,
+              account_id AS accountId,
+              date,
+              kind,
+              direction,
+              amount_cents AS amountCents,
+              certainty,
+              status,
+              transfer_id AS transferId,
+              source_record_id AS sourceRecordId,
+              hypothetical,
+              accepted,
+              include_in_conservative AS includeInConservative,
+              recurrence_json AS recurrenceJson,
+              recurrence_end_date AS recurrenceEndDate,
+              payment_method AS paymentMethod,
+              notes,
+              created_at AS createdAt,
+              updated_at AS updatedAt
+       FROM forecast_events
+       WHERE transfer_id IS NOT NULL
+         AND kind IN ('transfer-debit', 'transfer-credit')
+         AND status NOT IN ('cancelled', 'skipped')`,
+    )
+    .all() as RoutedPaycheckTransferRow[];
+  const transfers = new Map<string, RoutedPaycheckTransferRow[]>();
+  for (const row of transferRows) {
+    const key = JSON.stringify([row.userId, row.transferId]);
+    transfers.set(key, [...(transfers.get(key) ?? []), row]);
+  }
+
+  const matches: Array<{
+    early: RoutedPaycheckRow;
+    payday: RoutedPaycheckRow;
+    successor: RoutedPaycheckRow;
+    debit: RoutedPaycheckTransferRow;
+    credit: RoutedPaycheckTransferRow;
+  }> = [];
+  for (const current of phases.values()) {
+    if (current.length !== 2) continue;
+    const [first, second] = current;
+    if (
+      !first ||
+      !second ||
+      !sameRoutedPaycheckMetadata(first, second) ||
+      first.notes !== second.notes
+    ) {
+      continue;
+    }
+    if (
+      !first.recurrenceEndDate ||
+      first.recurrenceEndDate !== second.recurrenceEndDate ||
+      !isBiweekly(first.recurrenceJson) ||
+      first.incomePlanTotalCents <= 0 ||
+      first.amountCents + second.amountCents !== first.incomePlanTotalCents
+    ) {
+      continue;
+    }
+    const early = current.find(
+      (row) =>
+        row.incomeAllocationRule === 'fixed' &&
+        row.incomeAllocationOrder === 0 &&
+        row.incomeArrivalOffsetDays < 0 &&
+        row.incomeArrivalOffsetDays >= -7 &&
+        row.date === addDateDays(row.incomeNominalDate, row.incomeArrivalOffsetDays),
+    );
+    const payday = current.find(
+      (row) =>
+        row.incomeAllocationRule === 'remainder' &&
+        row.incomeAllocationOrder === 1 &&
+        row.incomeArrivalOffsetDays === 0 &&
+        row.date === row.incomeNominalDate,
+    );
+    if (!early || !payday || early.accountId === payday.accountId) continue;
+    const lastOccurrence = latestBiweeklyOccurrence(
+      payday.incomeNominalDate,
+      payday.recurrenceEndDate!,
+    );
+    if (!lastOccurrence) continue;
+    const nextNominalDate = addDateDays(lastOccurrence, 14);
+    const successorCandidates = [...phases.values()].filter((phase) => {
+      if (phase.length !== 1) return false;
+      const successor = phase[0]!;
+      return (
+        successor.incomePlanId !== payday.incomePlanId &&
+        successor.userId === payday.userId &&
+        successor.incomeStreamId === payday.incomeStreamId &&
+        successor.accountId === payday.accountId &&
+        successor.incomeNominalDate === nextNominalDate &&
+        successor.date === nextNominalDate &&
+        successor.amountCents === payday.incomePlanTotalCents &&
+        successor.incomePlanTotalCents === payday.incomePlanTotalCents &&
+        successor.incomeArrivalOffsetDays === 0 &&
+        successor.incomeAllocationRule === 'remainder' &&
+        successor.incomeAllocationOrder === 0 &&
+        successor.recurrenceEndDate === null &&
+        sameRoutedPaycheckMetadata(payday, successor)
+      );
+    });
+    if (successorCandidates.length !== 1) continue;
+    const successor = successorCandidates[0]![0]!;
+    const earlyDate = addDateDays(nextNominalDate, early.incomeArrivalOffsetDays);
+    const transferCandidates = [...transfers.values()].filter((pair) => {
+      if (pair.length !== 2) return false;
+      const debit = pair.find(
+        (row) => row.kind === 'transfer-debit' && row.direction === 'outflow',
+      );
+      const credit = pair.find(
+        (row) => row.kind === 'transfer-credit' && row.direction === 'inflow',
+      );
+      return Boolean(
+        debit &&
+        credit &&
+        debit.userId === successor.userId &&
+        debit.accountId === successor.accountId &&
+        credit.accountId === early.accountId &&
+        debit.amountCents === early.amountCents &&
+        credit.amountCents === early.amountCents &&
+        debit.date === earlyDate &&
+        credit.date === earlyDate &&
+        debit.certainty === successor.certainty &&
+        credit.certainty === successor.certainty &&
+        debit.status === successor.status &&
+        credit.status === successor.status &&
+        debit.recurrenceJson === successor.recurrenceJson &&
+        debit.recurrenceEndDate === null &&
+        credit.recurrenceJson === null &&
+        credit.recurrenceEndDate === null &&
+        debit.sourceRecordId === null &&
+        credit.sourceRecordId === null &&
+        debit.hypothetical === 0 &&
+        credit.hypothetical === 0 &&
+        debit.accepted === 0 &&
+        credit.accepted === 0 &&
+        debit.includeInConservative === null &&
+        credit.includeInConservative === null &&
+        debit.paymentMethod === 'cash-account' &&
+        credit.paymentMethod === 'cash-account' &&
+        debit.notes === null &&
+        credit.notes === null,
+      );
+    });
+    if (transferCandidates.length !== 1) continue;
+    const transfer = transferCandidates[0]!;
+    const debit = transfer.find((row) => row.kind === 'transfer-debit')!;
+    const credit = transfer.find((row) => row.kind === 'transfer-credit')!;
+    const provenanceRows = [early, payday, successor, debit, credit];
+    const hasUntouchedLegacyProvenance = provenanceRows.every((row) => {
+      const lineage = lineageByEntityId.get(row.id);
+      return (
+        row.createdAt === row.updatedAt &&
+        lineage !== undefined &&
+        lineage.fieldCount > 0 &&
+        lineage.editedFieldCount === 0
+      );
+    });
+    if (!hasUntouchedLegacyProvenance) continue;
+    matches.push({
+      early,
+      payday,
+      successor,
+      debit,
+      credit,
+    });
+  }
+
+  const matchUseCount = new Map<string, number>();
+  for (const match of matches) {
+    for (const id of [
+      match.early.id,
+      match.payday.id,
+      match.successor.id,
+      match.debit.id,
+      match.credit.id,
+    ]) {
+      matchUseCount.set(id, (matchUseCount.get(id) ?? 0) + 1);
+    }
+  }
+  const timestamp = new Date().toISOString();
+  const insertAllocation = database.prepare(
+    `INSERT INTO forecast_events (
+       id, user_id, account_id, date, kind, direction, amount_cents, certainty, status,
+       label, manual_order, source_record_id, transfer_id, hypothetical, accepted,
+       include_in_conservative, recurrence_json, recurrence_end_date, payment_method, card_id,
+       card_activity_treatment, loan_payment_treatment, income_type, parent_income_event_id,
+       income_plan_id, income_stream_id, income_plan_total_cents, income_nominal_date,
+       income_arrival_offset_days, income_allocation_rule, income_allocation_order,
+       parent_income_plan_id, receivable_occurrence_date, receivable_occurrence_target_cents,
+       notes, created_at, updated_at
+     )
+     SELECT @id, user_id, @accountId, @date, kind, direction, @amountCents, certainty, status,
+            label, manual_order, @sourceRecordId, NULL, hypothetical, accepted,
+            include_in_conservative, recurrence_json, recurrence_end_date, payment_method, card_id,
+            card_activity_treatment, loan_payment_treatment, income_type, parent_income_event_id,
+            income_plan_id, income_stream_id, income_plan_total_cents, income_nominal_date,
+            @offsetDays, 'fixed', 0, parent_income_plan_id, NULL, NULL,
+            notes, @timestamp, @timestamp
+       FROM forecast_events
+      WHERE user_id = @userId AND id = @successorId`,
+  );
+  const updateSuccessor = database.prepare(
+    `UPDATE forecast_events
+        SET amount_cents = @amountCents,
+            income_allocation_order = 1,
+            updated_at = @timestamp
+      WHERE user_id = @userId AND id = @successorId AND amount_cents = @priorAmountCents`,
+  );
+  const cancelTransfer = database.prepare(
+    `UPDATE forecast_events
+        SET status = 'cancelled',
+            notes = CASE
+              WHEN notes IS NULL OR trim(notes) = '' THEN @repairNote
+              ELSE notes || ' ' || @repairNote
+            END,
+            updated_at = @timestamp
+      WHERE user_id = @userId AND transfer_id = @transferId
+        AND status NOT IN ('cancelled', 'skipped')`,
+  );
+  const insertAudit = tableNames.has('audit_events')
+    ? database.prepare(
+        `INSERT OR IGNORE INTO audit_events
+         (id, user_id, action, entity_type, entity_id, payload_json, created_at)
+         VALUES (@id, @userId, 'repair', 'income-plan', @entityId, @payloadJson, @timestamp)`,
+      )
+    : undefined;
+  const markLineageEdited = tableNames.has('import_lineage')
+    ? database.prepare(
+        `UPDATE import_lineage
+            SET destination_edited_at = COALESCE(destination_edited_at, @timestamp)
+          WHERE user_id = @userId
+            AND entity_type = 'forecast-event'
+            AND entity_id IN (@successorId, @debitId, @creditId)`,
+      )
+    : undefined;
+
+  const repairedIds = new Set<string>();
+  for (const match of matches) {
+    const sourceIds = [
+      match.early.id,
+      match.payday.id,
+      match.successor.id,
+      match.debit.id,
+      match.credit.id,
+    ];
+    if (sourceIds.some((id) => matchUseCount.get(id) !== 1 || repairedIds.has(id))) continue;
+    const remainderCents = match.successor.incomePlanTotalCents - match.early.amountCents;
+    if (remainderCents <= 0) continue;
+    const allocationId = stableIncomeId('paycheck-early-allocation', [
+      match.successor.userId,
+      match.successor.id,
+      match.early.accountId,
+      match.debit.transferId,
+    ]);
+    const allocationInsert = insertAllocation.run({
+      id: allocationId,
+      userId: match.successor.userId,
+      successorId: match.successor.id,
+      accountId: match.early.accountId,
+      date: addDateDays(match.successor.incomeNominalDate, match.early.incomeArrivalOffsetDays),
+      amountCents: match.early.amountCents,
+      sourceRecordId: match.early.sourceRecordId ?? match.early.id,
+      offsetDays: match.early.incomeArrivalOffsetDays,
+      timestamp,
+    });
+    if (allocationInsert.changes !== 1) continue;
+    const successorUpdate = updateSuccessor.run({
+      userId: match.successor.userId,
+      successorId: match.successor.id,
+      amountCents: remainderCents,
+      priorAmountCents: match.successor.amountCents,
+      timestamp,
+    });
+    if (successorUpdate.changes !== 1) {
+      throw new Error('Legacy paycheck repair could not update its matched successor phase');
+    }
+    const repairNote =
+      'Replaced by the equivalent early-arriving paycheck allocation during schema migration v28; retained for audit history.';
+    const cancelled = cancelTransfer.run({
+      userId: match.successor.userId,
+      transferId: match.debit.transferId,
+      repairNote,
+      timestamp,
+    });
+    if (cancelled.changes !== 2) {
+      throw new Error('Legacy paycheck repair could not cancel its matched transfer pair');
+    }
+    markLineageEdited?.run({
+      userId: match.successor.userId,
+      successorId: match.successor.id,
+      debitId: match.debit.id,
+      creditId: match.credit.id,
+      timestamp,
+    });
+    insertAudit?.run({
+      id: stableIncomeId('audit-paycheck-early-allocation', sourceIds),
+      userId: match.successor.userId,
+      entityId: match.successor.incomePlanId,
+      payloadJson: JSON.stringify({
+        source: 'schema-migration-v28',
+        replacementIncomeEventId: allocationId,
+        cancelledTransferId: match.debit.transferId,
+      }),
+      timestamp,
+    });
+    sourceIds.forEach((id) => repairedIds.add(id));
+  }
+};
+
+interface ImportedStaticReceivableRepairRow {
+  id: string;
+  userId: string;
+  expectedDate: string;
+  balanceAsOf: string;
+}
+
+const firstDayOfFollowingMonth = (value: string): string | undefined => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isInteger(year) || month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.toISOString().slice(0, 10) !== value) return undefined;
+  const nextYear = month === 12 ? year + 1 : year;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  if (nextYear > 9999) return undefined;
+  return `${String(nextYear).padStart(4, '0')}-${String(nextMonth).padStart(2, '0')}-01`;
+};
+
+/**
+ * Repairs untouched imported static receivables whose source supplied a balance but no receipt
+ * date. Their required placeholder date matched the destination account snapshot and cash
+ * forecasting was disabled. Move only that proven shape to the first day of the following month,
+ * preserving the unconfirmed-date label and every noneligible row.
+ */
+export const repairImportedStaticReceivableDates = (database: Database.Database): void => {
+  const requiredColumnsByTable = new Map<string, readonly string[]>([
+    [
+      'receivables',
+      [
+        'id',
+        'user_id',
+        'original_amount_cents',
+        'remaining_amount_cents',
+        'expected_date',
+        'settlement_date_confirmed',
+        'settlement_anchor_event_id',
+        'settlement_offset_days',
+        'certainty',
+        'recurring_amount_cents',
+        'recurrence_json',
+        'recurrence_end_date',
+        'accrual_amount_cents',
+        'accrual_date',
+        'accrual_recurrence_json',
+        'include_in_cash_forecast',
+        'destination_account_id',
+        'created_at',
+        'updated_at',
+      ],
+    ],
+    ['cash_accounts', ['id', 'user_id', 'balance_as_of']],
+    ['forecast_events', ['user_id', 'kind', 'source_record_id']],
+    ['import_lineage', ['user_id', 'entity_type', 'entity_id', 'field', 'destination_edited_at']],
+    [
+      'audit_events',
+      ['id', 'user_id', 'action', 'entity_type', 'entity_id', 'payload_json', 'created_at'],
+    ],
+  ]);
+  for (const [table, requiredColumns] of requiredColumnsByTable) {
+    const columns = new Set(
+      (
+        database.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as Array<{
+          name: string;
+        }>
+      ).map((column) => column.name),
+    );
+    if (requiredColumns.some((column) => !columns.has(column))) return;
+  }
+
+  const candidates = database
+    .prepare(
+      `SELECT receivable.id,
+              receivable.user_id AS userId,
+              receivable.expected_date AS expectedDate,
+              account.balance_as_of AS balanceAsOf
+         FROM receivables AS receivable
+         JOIN cash_accounts AS account
+           ON account.id = receivable.destination_account_id
+          AND account.user_id = receivable.user_id
+        WHERE receivable.remaining_amount_cents > 0
+          AND receivable.original_amount_cents >= receivable.remaining_amount_cents
+          AND receivable.settlement_date_confirmed = 0
+          AND receivable.include_in_cash_forecast = 0
+          AND receivable.expected_date = account.balance_as_of
+          AND receivable.created_at = receivable.updated_at
+          AND receivable.certainty IN ('confirmed', 'expected')
+          AND receivable.recurring_amount_cents IS NULL
+          AND receivable.recurrence_json IS NULL
+          AND receivable.recurrence_end_date IS NULL
+          AND receivable.settlement_anchor_event_id IS NULL
+          AND receivable.settlement_offset_days IS NULL
+          AND receivable.accrual_amount_cents IS NULL
+          AND receivable.accrual_date IS NULL
+          AND receivable.accrual_recurrence_json IS NULL
+          AND EXISTS (
+                SELECT 1
+                  FROM import_lineage AS expected_lineage
+                 WHERE expected_lineage.user_id = receivable.user_id
+                   AND expected_lineage.entity_type = 'receivable'
+                   AND expected_lineage.entity_id = receivable.id
+                   AND expected_lineage.field = 'expectedDate'
+              )
+          AND EXISTS (
+                SELECT 1
+                  FROM import_lineage AS forecast_lineage
+                 WHERE forecast_lineage.user_id = receivable.user_id
+                   AND forecast_lineage.entity_type = 'receivable'
+                   AND forecast_lineage.entity_id = receivable.id
+                   AND forecast_lineage.field = 'includeInCashForecast'
+              )
+          AND NOT EXISTS (
+                SELECT 1
+                  FROM import_lineage AS edited_lineage
+                 WHERE edited_lineage.user_id = receivable.user_id
+                   AND edited_lineage.entity_type = 'receivable'
+                   AND edited_lineage.entity_id = receivable.id
+                   AND edited_lineage.destination_edited_at IS NOT NULL
+              )
+          AND NOT EXISTS (
+                SELECT 1
+                  FROM forecast_events AS settlement
+                 WHERE settlement.user_id = receivable.user_id
+                   AND settlement.kind = 'receivable-settlement'
+                   AND (
+                     settlement.source_record_id = receivable.id
+                     OR substr(settlement.source_record_id, 1, length(receivable.id) + 1) =
+                        receivable.id || '@'
+                   )
+              )
+        ORDER BY receivable.user_id, receivable.id`,
+    )
+    .all() as ImportedStaticReceivableRepairRow[];
+
+  const updateReceivable = database.prepare(
+    `UPDATE receivables
+        SET expected_date = @nextExpectedDate,
+            include_in_cash_forecast = 1,
+            updated_at = @timestamp
+      WHERE id = @id
+        AND user_id = @userId
+        AND expected_date = @priorExpectedDate
+        AND settlement_date_confirmed = 0
+        AND include_in_cash_forecast = 0
+        AND created_at = updated_at`,
+  );
+  const markAffectedLineage = database.prepare(
+    `UPDATE import_lineage
+        SET destination_edited_at = COALESCE(destination_edited_at, @timestamp)
+      WHERE user_id = @userId
+        AND entity_type = 'receivable'
+        AND entity_id = @id
+        AND field IN ('expectedDate', 'includeInCashForecast')`,
+  );
+  const insertAudit = database.prepare(
+    `INSERT OR IGNORE INTO audit_events
+     (id, user_id, action, entity_type, entity_id, payload_json, created_at)
+     VALUES (@auditId, @userId, 'repair', 'receivable', @id, @payloadJson, @timestamp)`,
+  );
+  const timestamp = new Date().toISOString();
+  for (const candidate of candidates) {
+    if (candidate.expectedDate !== candidate.balanceAsOf) continue;
+    const nextExpectedDate = firstDayOfFollowingMonth(candidate.balanceAsOf);
+    if (!nextExpectedDate) continue;
+    const updated = updateReceivable.run({
+      id: candidate.id,
+      userId: candidate.userId,
+      priorExpectedDate: candidate.expectedDate,
+      nextExpectedDate,
+      timestamp,
+    });
+    if (updated.changes !== 1) continue;
+    markAffectedLineage.run({
+      id: candidate.id,
+      userId: candidate.userId,
+      timestamp,
+    });
+    insertAudit.run({
+      auditId: stableIncomeId('audit-static-receivable-date-repair', [
+        candidate.userId,
+        candidate.id,
+        candidate.expectedDate,
+        nextExpectedDate,
+      ]),
+      userId: candidate.userId,
+      id: candidate.id,
+      payloadJson: JSON.stringify({
+        source: 'schema-migration-v29',
+        priorExpectedDate: candidate.expectedDate,
+        expectedDate: nextExpectedDate,
+        includeInCashForecast: true,
+        settlementDateConfirmed: false,
+      }),
+      timestamp,
+    });
+  }
+};
+
 interface LegacyRefinancePlanRow {
   id: string;
   userId: string;
@@ -1176,6 +1907,18 @@ const migrations: Migration[] = [
     name: 'durable-receivable-occurrence-metadata',
     sql: 'SELECT 1;',
     run: addReceivableOccurrenceMetadata,
+  },
+  {
+    version: 28,
+    name: 'early-paycheck-allocation-repair',
+    sql: 'SELECT 1;',
+    run: repairLegacyEarlyPaycheckTransfer,
+  },
+  {
+    version: 29,
+    name: 'imported-static-receivable-date-repair',
+    sql: 'SELECT 1;',
+    run: repairImportedStaticReceivableDates,
   },
 ];
 

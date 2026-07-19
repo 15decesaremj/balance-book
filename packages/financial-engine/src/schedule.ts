@@ -28,12 +28,12 @@ import {
   generateCardCyclesThroughHorizon,
   projectCardDebtSchedule,
   resolveCardCyclesAsOf,
-  scheduledCardPayment,
+  type ScheduledCardPayment,
 } from './cards';
 import {
   hasRecurringReceivableSchedule,
+  plannedReceivableSettlementDates,
   receivableForSettlementSourceFromIndex,
-  receivableSettlementDates,
   resolveRecordedReceivableOccurrenceDate,
 } from './receivable-occurrences';
 import { projectLoanPayoffAtDate } from './loans';
@@ -300,6 +300,42 @@ export interface CardPurchaseCashImpact {
   incrementalCashPaymentCents: MoneyCents;
 }
 
+const scheduledCardPaymentsFromEvents = (input: {
+  events: readonly ForecastEvent[];
+  cardId: string;
+  cycleIds: ReadonlySet<string>;
+}): ScheduledCardPayment[] =>
+  input.events.flatMap((event) => {
+    if (
+      event.cardId !== input.cardId ||
+      event.kind !== 'card-payment' ||
+      event.paymentMethod !== 'cash-account' ||
+      event.direction !== 'outflow' ||
+      event.status === 'cancelled' ||
+      event.status === 'skipped' ||
+      (event.hypothetical && !event.accepted)
+    ) {
+      return [];
+    }
+    // A one-time payment may target an exact statement. Materialized recurring occurrences retain
+    // their recurrence rule for lineage, so they must continue to be assigned independently by date.
+    const linkedCycleId =
+      event.recurrenceRule === undefined &&
+      event.sourceRecordId !== undefined &&
+      input.cycleIds.has(event.sourceRecordId)
+        ? event.sourceRecordId
+        : undefined;
+    return [
+      {
+        id: event.id,
+        date: event.date,
+        amountCents: event.amountCents,
+        status: event.status,
+        ...(linkedCycleId === undefined ? {} : { cycleId: linkedCycleId }),
+      },
+    ];
+  });
+
 export const assertCashBackedCardPurchaseEligibility = (
   cardInput: CreditCard,
   purchaseDate?: PlainDateString,
@@ -374,18 +410,64 @@ export const calculateCardPurchaseCashImpact = (input: {
     cardId: card.id,
     cardActivityTreatment: 'additional',
   });
-  const afterPurchaseCycle = enrichCardCyclesWithActivities({
+  const afterPurchaseCycles = enrichCardCyclesWithActivities({
     cardCycles: baselineCycles,
     cardActivities: [purchase],
     cards: [card],
     endDate: enrichmentEndDate,
-  }).find((cycle) => cycle.id === owningCycle.id);
+  });
+  const afterPurchaseCycle = afterPurchaseCycles.find((cycle) => cycle.id === owningCycle.id);
   if (!afterPurchaseCycle) throw new Error(`Card cycle ${owningCycle.id} was not preserved`);
-  const baselineScheduledPaymentCents = scheduledCardPayment(card, owningCycle);
-  const afterPurchaseScheduledPaymentCents = scheduledCardPayment(card, afterPurchaseCycle);
+  const paymentDate = owningCycle.paymentOn ?? owningCycle.dueOn;
+  const firstModeledDate = baselineCycles.reduce(
+    (earliest, cycle) => (compareDates(cycle.opensOn, earliest) < 0 ? cycle.opensOn : earliest),
+    purchaseDate,
+  );
+  const paymentSourceEvents = (input.cardActivities ?? [])
+    .map((event) => forecastEventSchema.parse(event))
+    .filter(
+      (event) =>
+        event.cardId === card.id &&
+        event.kind === 'card-payment' &&
+        event.paymentMethod === 'cash-account' &&
+        event.direction === 'outflow',
+    );
+  const paymentOccurrences = materializeRecurringEvents({
+    events: paymentSourceEvents,
+    startDate: firstModeledDate,
+    endDate: paymentDate,
+  });
+  const scheduledPayments = scheduledCardPaymentsFromEvents({
+    events: paymentOccurrences,
+    cardId: card.id,
+    cycleIds: new Set(baselineCycles.map((cycle) => cycle.id)),
+  });
+  const baselineSchedule = projectCardDebtSchedule({
+    card,
+    cardCycles: baselineCycles,
+    asOfDate: purchaseDate,
+    scheduledPayments,
+  });
+  const afterPurchaseSchedule = projectCardDebtSchedule({
+    card,
+    cardCycles: afterPurchaseCycles,
+    asOfDate: purchaseDate,
+    scheduledPayments,
+  });
+  const baselineEntry = baselineSchedule.find((entry) => entry.cycle.id === owningCycle.id);
+  const afterPurchaseEntry = afterPurchaseSchedule.find(
+    (entry) => entry.cycle.id === owningCycle.id,
+  );
+  if (!baselineEntry || !afterPurchaseEntry) {
+    throw new Error(`Card cycle ${owningCycle.id} was not projected`);
+  }
+  const cashForEntry = (entry: (typeof baselineSchedule)[number]): MoneyCents =>
+    moneyCentsSchema.parse(entry.explicitPaymentCents + entry.generatedPaymentCents);
+  const baselineScheduledPaymentCents = cashForEntry(baselineEntry);
+  const afterPurchaseScheduledPaymentCents = cashForEntry(afterPurchaseEntry);
   return {
     owningCycle,
-    paymentDate: owningCycle.paymentOn ?? owningCycle.dueOn,
+    paymentDate,
     baselineScheduledPaymentCents,
     afterPurchaseScheduledPaymentCents,
     incrementalCashPaymentCents: moneyCentsSchema.parse(
@@ -399,6 +481,7 @@ const cardPaymentEvents = (input: {
   cards: CreditCard[];
   cardCycles: CreditCardCycle[];
   cardActivities: ForecastEvent[];
+  explicitCardPayments: ForecastEvent[];
   startDate: PlainDateString;
   endDate: PlainDateString;
 }): ForecastEvent[] => {
@@ -427,34 +510,19 @@ const cardPaymentEvents = (input: {
   const cardById = new Map(input.cards.map((card) => [card.id, creditCardSchema.parse(card)]));
   return [...cardById.values()].flatMap((card) =>
     (() => {
-      const explicitPaymentCentsByCycleId = Object.fromEntries(
-        enrichedCycles
-          .filter((cycle) => cycle.cardId === card.id)
-          .map((cycle) => {
-            const date = cycle.paymentOn ?? cycle.dueOn;
-            const amountCents = input.cardActivities
-              .filter(
-                (event) =>
-                  event.cardId === card.id &&
-                  event.kind === 'card-payment' &&
-                  event.paymentMethod === 'cash-account' &&
-                  event.direction === 'outflow' &&
-                  event.status !== 'cancelled' &&
-                  event.status !== 'skipped' &&
-                  (!event.hypothetical || event.accepted) &&
-                  (() => {
-                    const paymentAccount = accountById.get(event.accountId);
-                    return (
-                      paymentAccount !== undefined &&
-                      compareDates(date, paymentAccount.balanceAsOf) > 0
-                    );
-                  })() &&
-                  occurrenceDates(event, input.endDate).includes(date),
-              )
-              .reduce((total, event) => total + event.amountCents, 0);
-            return [cycle.id, moneyCentsSchema.nonnegative().parse(amountCents)] as const;
-          }),
-      );
+      const cardCycles = enrichedCycles.filter((cycle) => cycle.cardId === card.id);
+      const cycleIds = new Set(cardCycles.map((cycle) => cycle.id));
+      const eligibleExplicitPayments = input.explicitCardPayments.filter((event) => {
+        const paymentAccount = accountById.get(event.accountId);
+        return (
+          paymentAccount !== undefined && compareDates(event.date, paymentAccount.balanceAsOf) > 0
+        );
+      });
+      const scheduledPayments = scheduledCardPaymentsFromEvents({
+        events: eligibleExplicitPayments,
+        cardId: card.id,
+        cycleIds,
+      });
       const currentDebt = summarizeRevolvingDebt({
         card,
         cycles: enrichedCycles,
@@ -468,7 +536,7 @@ const cardPaymentEvents = (input: {
             : 0;
       return projectCardDebtSchedule({
         card,
-        cardCycles: enrichedCycles,
+        cardCycles,
         asOfDate: input.startDate,
         ...(openingCarryingCents <= 0
           ? {}
@@ -478,7 +546,7 @@ const cardPaymentEvents = (input: {
                 asOfDate: input.startDate,
               },
             }),
-        explicitPaymentCentsByCycleId,
+        scheduledPayments,
       }).flatMap((entry) => {
         const cycle = entry.cycle;
         const account = accountById.get(card.fundingAccountId);
@@ -490,10 +558,16 @@ const cardPaymentEvents = (input: {
           compareDates(date, account.balanceAsOf) <= 0
         )
           return [];
+        const recordedCyclePaymentCents = moneyCentsSchema.parse(
+          entry.paymentCents + entry.excessPaymentCents,
+        );
         const generatedPaymentCents = moneyCentsSchema.parse(
-          Math.max(0, entry.paymentCents - explicitPaymentCentsByCycleId[cycle.id]!),
+          cycle.state === 'paid'
+            ? Math.max(0, recordedCyclePaymentCents - entry.explicitPaymentCents)
+            : entry.generatedPaymentCents,
         );
         if (generatedPaymentCents <= 0) return [];
+        const isRecordedPayment = cycle.state === 'paid';
         return [
           forecastEventSchema.parse({
             id: `card-payment-${cycle.id}`,
@@ -504,13 +578,15 @@ const cardPaymentEvents = (input: {
             direction: 'outflow',
             amountCents: generatedPaymentCents,
             certainty:
+              isRecordedPayment ||
               cycle.lockedStatementCents !== undefined ||
               cycle.state === 'closed-statement' ||
               cycle.state === 'scheduled-payment'
                 ? 'confirmed'
                 : 'expected',
-            status:
-              cycle.state === 'closed-statement' || cycle.state === 'scheduled-payment'
+            status: isRecordedPayment
+              ? 'paid'
+              : cycle.state === 'closed-statement' || cycle.state === 'scheduled-payment'
                 ? 'scheduled'
                 : 'planned',
             label: `${card.name} statement payment`,
@@ -716,16 +792,22 @@ const receivableSettlementEvents = (input: {
         `Destination account for receivable ${receivable.id} belongs to another profile`,
       );
     }
-    const dates = receivableSettlementDates({
+    const dates = plannedReceivableSettlementDates({
       receivable,
       events: input.events,
       endDate: input.endDate,
     });
     const repeating = hasRecurringReceivableSchedule(receivable);
+    const oneTimeAccrualOnly =
+      !repeating &&
+      receivable.remainingAmountCents === 0 &&
+      receivable.accrualDate !== undefined &&
+      (receivable.accrualAmountCents ?? 0) > 0 &&
+      receivable.accrualRecurrenceRule === undefined;
     const occurrenceSet = new Set(dates);
     const recordedSettlements = new Map<PlainDateString, number>();
     const recordedTargets = new Map<PlainDateString, number>();
-    if (repeating) {
+    if (repeating || oneTimeAccrualOnly) {
       for (const event of input.events) {
         if (
           event.userId !== receivable.userId ||
@@ -777,8 +859,12 @@ const receivableSettlementEvents = (input: {
           ? date === receivable.expectedDate && receivable.originalAmountCents > 0
             ? receivable.remainingAmountCents
             : (receivable.recurringAmountCents ?? receivable.originalAmountCents)
-          : receivable.remainingAmountCents);
-      if (repeating && (date !== receivable.expectedDate || receivable.originalAmountCents === 0)) {
+          : receivable.remainingAmountCents > 0
+            ? receivable.remainingAmountCents
+            : (receivable.accrualAmountCents ?? 0));
+      const occurrenceUsesStaticBalance =
+        repeating && date === receivable.expectedDate && receivable.originalAmountCents > 0;
+      if (!occurrenceUsesStaticBalance) {
         amountCents = Math.max(0, amountCents - (recordedSettlements.get(date) ?? 0));
       }
       if (amountCents <= 0) return [];
@@ -791,7 +877,13 @@ const receivableSettlementEvents = (input: {
           kind: 'receivable-settlement',
           direction: 'inflow',
           amountCents,
-          certainty: receivable.certainty,
+          // A confirmed balance can still have only an estimated receipt date. Keep that cash in
+          // the expected path until its date is confirmed rather than letting the confirmed amount
+          // accidentally promote an estimated date into the conservative forecast.
+          certainty:
+            receivable.settlementDateConfirmed === false && receivable.certainty === 'confirmed'
+              ? 'expected'
+              : receivable.certainty,
           status: 'planned',
           label: `${receivable.source}: ${receivable.description}`,
           sourceRecordId: receivable.id,
@@ -823,11 +915,28 @@ export const materializeForecastEvents = (input: {
       event.kind !== 'loan-payment' &&
       (!event.paymentMethod || event.paymentMethod === 'cash-account'),
   );
+  const paidCardCycleIds = new Set(
+    input.cardCycles
+      .map((cycle) => creditCardCycleSchema.parse(cycle))
+      .filter((cycle) => cycle.state === 'paid')
+      .map((cycle) => cycle.id),
+  );
+  const effectiveRecurring = recurring.filter(
+    (event) =>
+      !(
+        event.kind === 'card-payment' &&
+        (event.status === 'planned' || event.status === 'scheduled') &&
+        event.recurrenceRule === undefined &&
+        event.sourceRecordId !== undefined &&
+        paidCardCycleIds.has(event.sourceRecordId)
+      ),
+  );
   const cards = cardPaymentEvents({
     accounts: input.accounts,
     cards: input.cards,
     cardCycles: input.cardCycles,
     cardActivities: parsedEvents,
+    explicitCardPayments: recurring,
     startDate: input.startDate,
     endDate: input.endDate,
   });
@@ -848,5 +957,5 @@ export const materializeForecastEvents = (input: {
       ? {}
       : { plannedSettlementStartDate: input.plannedReceivableStartDate }),
   });
-  return [...recurring, ...cards, ...loans, ...receivables];
+  return [...effectiveRecurring, ...cards, ...loans, ...receivables];
 };

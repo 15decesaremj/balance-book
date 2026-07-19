@@ -209,6 +209,288 @@ describe('cash owed receipt timing', () => {
     });
   });
 
+  it('moves an assigned static balance from Money Owed into only the chosen account on its date', () => {
+    const accounts = [account('primary-checking', 500_000), account('reserve-savings', 100_000)];
+    const receivable = receivableSchema.parse({
+      id: 'assigned-static-receipt',
+      userId,
+      source: 'Synthetic counterparty',
+      description: 'Assigned reimbursement',
+      originalAmountCents: 25_000,
+      remainingAmountCents: 25_000,
+      expectedDate: '2026-07-30',
+      settlementDateConfirmed: false,
+      destinationAccountId: 'reserve-savings',
+      certainty: 'confirmed',
+      includeInCashForecast: true,
+    });
+    const events = materializeForecastEvents({
+      accounts,
+      events: [],
+      cards: [],
+      cardCycles: [],
+      loans: [],
+      receivables: [receivable],
+      startDate: '2026-07-28',
+      endDate: '2026-07-31',
+    });
+    expect(events.filter((event) => event.kind === 'receivable-settlement')).toEqual([
+      expect.objectContaining({
+        accountId: 'reserve-savings',
+        amountCents: 25_000,
+        certainty: 'expected',
+        date: '2026-07-30',
+        sourceRecordId: receivable.id,
+      }),
+    ]);
+
+    const bundle = buildForecastBundle({
+      accounts,
+      events,
+      policy: cashFloorPolicySchema.parse({
+        hardConsolidatedFloorCents: 0,
+        preferredConsolidatedFloorCents: 0,
+        horizonDays: 30,
+        includeConfirmedReceivablesConservatively: true,
+      }),
+      startDate: '2026-07-28',
+      endDate: '2026-07-31',
+    });
+    const expectedOwed = projectReceivableBalances({
+      receivables: [receivable],
+      startDate: '2026-07-28',
+      endDate: '2026-07-31',
+      mode: 'expected',
+      includeConfirmedReceivablesConservatively: true,
+    });
+    const conservativeOwed = projectReceivableBalances({
+      receivables: [receivable],
+      startDate: '2026-07-28',
+      endDate: '2026-07-31',
+      mode: 'conservative',
+      includeConfirmedReceivablesConservatively: true,
+    });
+    const expectedBefore = bundle.expected.days.find((day) => day.date === '2026-07-29')!;
+    const expectedReceiptDay = bundle.expected.days.find((day) => day.date === '2026-07-30')!;
+    const conservativeReceiptDay = bundle.conservative.days.find(
+      (day) => day.date === '2026-07-30',
+    )!;
+    const expectedOwedBefore = expectedOwed.find((day) => day.date === '2026-07-29')!;
+    const expectedOwedReceiptDay = expectedOwed.find((day) => day.date === '2026-07-30')!;
+
+    expect(expectedReceiptDay.accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ accountId: 'primary-checking', endingBalanceCents: 500_000 }),
+        expect.objectContaining({ accountId: 'reserve-savings', endingBalanceCents: 125_000 }),
+      ]),
+    );
+    expect(expectedOwedBefore.endingOutstandingCents).toBe(25_000);
+    expect(expectedOwedReceiptDay).toMatchObject({
+      settledCents: 25_000,
+      endingOutstandingCents: 0,
+    });
+    expect(expectedBefore.consolidatedCashCents + expectedOwedBefore.endingOutstandingCents).toBe(
+      expectedReceiptDay.consolidatedCashCents + expectedOwedReceiptDay.endingOutstandingCents,
+    );
+    expect(conservativeReceiptDay.consolidatedCashCents).toBe(600_000);
+    expect(conservativeOwed.find((day) => day.date === '2026-07-30')).toMatchObject({
+      settledCents: 0,
+      endingOutstandingCents: 25_000,
+    });
+  });
+
+  it('keeps two bill-relative contributions together while reducing only accrued Money Owed', () => {
+    const accounts = [account('primary-checking', 500_000), account('reserve-savings', 100_000)];
+    const anchor = anchorBill();
+    const rentContribution = anchoredReceivable('housing-contribution', 75_000);
+    const automobileContribution = anchoredReceivable('automobile-contribution', 27_500, {
+      accrualAmountCents: 27_500,
+      accrualDate: '2026-07-01',
+      accrualRecurrenceRule: { frequency: 'monthly', dayOfMonth: 1, interval: 1 },
+    });
+    const receivables = [rentContribution, automobileContribution];
+    const events = materializeForecastEvents({
+      accounts,
+      events: [anchor],
+      cards: [],
+      cardCycles: [],
+      loans: [],
+      receivables,
+      startDate: '2026-07-01',
+      endDate: '2026-08-31',
+    });
+    const receipts = events.filter((event) => event.kind === 'receivable-settlement');
+    expect(
+      receipts.map((event) => [
+        event.sourceRecordId,
+        event.accountId,
+        event.date,
+        event.amountCents,
+      ]),
+    ).toEqual([
+      ['housing-contribution', 'reserve-savings', '2026-07-30', 75_000],
+      ['housing-contribution', 'reserve-savings', '2026-08-30', 75_000],
+      ['automobile-contribution', 'reserve-savings', '2026-07-30', 27_500],
+      ['automobile-contribution', 'reserve-savings', '2026-08-30', 27_500],
+    ]);
+
+    const cash = buildForecastBundle({
+      accounts,
+      events,
+      policy: cashFloorPolicySchema.parse({
+        hardConsolidatedFloorCents: 0,
+        preferredConsolidatedFloorCents: 0,
+        horizonDays: 90,
+        includeConfirmedReceivablesConservatively: true,
+      }),
+      startDate: '2026-07-01',
+      endDate: '2026-08-31',
+    }).expected.days;
+    const owed = projectReceivableBalances({
+      receivables,
+      settlementEvents: [anchor],
+      startDate: '2026-07-01',
+      endDate: '2026-08-31',
+      mode: 'expected',
+      includeConfirmedReceivablesConservatively: true,
+    });
+    for (const [beforeDate, receiptDate] of [
+      ['2026-07-29', '2026-07-30'],
+      ['2026-08-29', '2026-08-30'],
+    ] as const) {
+      const cashBefore = cash.find((day) => day.date === beforeDate)!;
+      const cashOnReceipt = cash.find((day) => day.date === receiptDate)!;
+      const owedBefore = owed.find((day) => day.date === beforeDate)!;
+      const owedOnReceipt = owed.find((day) => day.date === receiptDate)!;
+      expect(
+        cashOnReceipt.accounts.find((value) => value.accountId === 'reserve-savings')!
+          .endingBalanceCents -
+          cashBefore.accounts.find((value) => value.accountId === 'reserve-savings')!
+            .endingBalanceCents,
+      ).toBe(102_500);
+      expect(
+        cashOnReceipt.accounts.find((value) => value.accountId === 'primary-checking')!
+          .endingBalanceCents,
+      ).toBe(
+        cashBefore.accounts.find((value) => value.accountId === 'primary-checking')!
+          .endingBalanceCents,
+      );
+      expect(owedBefore.endingOutstandingCents - owedOnReceipt.endingOutstandingCents).toBe(27_500);
+      expect(
+        cashOnReceipt.consolidatedCashCents +
+          owedOnReceipt.endingOutstandingCents -
+          (cashBefore.consolidatedCashCents + owedBefore.endingOutstandingCents),
+      ).toBe(75_000);
+    }
+  });
+
+  it('does not project a recurring receipt before its accrual series begins', () => {
+    const anchor = anchorBill({ date: '2030-03-01' });
+    const receivable = anchoredReceivable('future-shared-contribution', 27_400, {
+      expectedDate: '2030-02-27',
+      accrualAmountCents: 27_400,
+      accrualDate: '2030-03-01',
+      accrualRecurrenceRule: { frequency: 'monthly', dayOfMonth: 1, interval: 1 },
+    });
+    const receipts = materializeForecastEvents({
+      accounts: [
+        account('primary-checking', 500_000, '2030-02-15'),
+        account('reserve-savings', 0, '2030-02-15'),
+      ],
+      events: [anchor],
+      cards: [],
+      cardCycles: [],
+      loans: [],
+      receivables: [receivable],
+      startDate: '2030-02-15',
+      endDate: '2030-04-02',
+    }).filter((event) => event.kind === 'receivable-settlement');
+
+    expect(receipts.map((event) => [event.date, event.amountCents])).toEqual([
+      ['2030-03-30', 27_400],
+    ]);
+
+    const owed = projectReceivableBalances({
+      receivables: [receivable],
+      settlementEvents: [anchor],
+      startDate: '2030-02-15',
+      endDate: '2030-04-02',
+      mode: 'expected',
+      includeConfirmedReceivablesConservatively: true,
+    });
+    expect(owed.find((day) => day.date === '2030-02-27')).toMatchObject({
+      settledCents: 0,
+      endingOutstandingCents: 0,
+    });
+    expect(owed.find((day) => day.date === '2030-03-01')).toMatchObject({
+      accruedCents: 27_400,
+      endingOutstandingCents: 27_400,
+    });
+    expect(owed.find((day) => day.date === '2030-03-30')).toMatchObject({
+      settledCents: 27_400,
+      endingOutstandingCents: 0,
+    });
+  });
+
+  it('replaces the old planned cash leg when its received date or account is edited', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
+    store.saveVerticalSlice('profile-a', {
+      balanceAsOf: '2026-07-01',
+      accountName: 'Primary checking',
+      openingBalanceCents: 100_000,
+      hardFloorCents: 0,
+    });
+    store.upsertManagedEntity('profile-a', 'cash-account', {
+      id: 'profile-a-reserve',
+      name: 'Reserve savings',
+      type: 'savings',
+      openingBalanceCents: 50_000,
+      balanceAsOf: '2026-07-01',
+      includedInLiquidity: true,
+      canFundOtherAccounts: true,
+      hardFloorCents: 0,
+      transferDelayDays: 0,
+    });
+    store.upsertManagedEntity('profile-a', 'receivable', {
+      id: 'editable-assigned-receipt',
+      source: 'Synthetic counterparty',
+      description: 'Editable expected receipt',
+      originalAmountCents: 12_000,
+      remainingAmountCents: 12_000,
+      expectedDate: '2026-07-10',
+      destinationAccountId: 'profile-a-primary-cash',
+      certainty: 'expected',
+      includeInCashForecast: true,
+    });
+    const beforeEdit = store.getManagedRecords('profile-a');
+    store.upsertManagedEntity('profile-a', 'receivable', {
+      ...beforeEdit.receivables[0]!,
+      userId: undefined,
+      expectedDate: '2026-07-12',
+      destinationAccountId: 'profile-a-reserve',
+    });
+    const afterEdit = store.getManagedRecords('profile-a');
+    const receipts = materializeForecastEvents({
+      accounts: afterEdit.accounts,
+      events: afterEdit.events,
+      cards: afterEdit.cards,
+      cardCycles: afterEdit.cardCycles,
+      loans: afterEdit.loans,
+      receivables: afterEdit.receivables,
+      startDate: '2026-07-01',
+      endDate: '2026-07-15',
+    }).filter((event) => event.kind === 'receivable-settlement');
+    expect(receipts).toEqual([
+      expect.objectContaining({
+        accountId: 'profile-a-reserve',
+        amountCents: 12_000,
+        date: '2026-07-12',
+        sourceRecordId: 'editable-assigned-receipt',
+      }),
+    ]);
+  });
+
   it('replaces one anchored occurrence with an actual receipt without duplicating cash', () => {
     const store = openStore();
     store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);

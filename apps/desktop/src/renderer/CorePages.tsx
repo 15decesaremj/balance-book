@@ -29,11 +29,13 @@ import {
   expandRecurrence,
   firstAnchoredReceivableSettlementDate,
   hasRecurringReceivableSchedule,
+  materializeForecastEvents,
   materializeCommittedRefinanceEvents,
   pendingRefinanceSettlementCentsForDate,
   pendingRefinanceEconomicSettlementCentsForDate,
   projectLoanBalanceAtEndOfDate,
   projectLoanPayoffAtDate,
+  projectReceivableBalances,
   projectRollingReceivableBalances,
   prepareRollingForecastContext,
   projectedCycleObligation,
@@ -91,7 +93,7 @@ import {
   reconciliationResolutionLabel,
 } from './record-controls';
 import { refinanceLoanCandidates } from './refinance-view-model';
-import { dollarsToCents, formatMoney } from './utils';
+import { dollarsToCents, formatMoney, formatPlainDate } from './utils';
 import { LoadingSkeleton } from './LoadingSkeleton';
 import { useEditorReveal } from './useEditorReveal';
 
@@ -99,13 +101,13 @@ const useCoreStyles = makeStyles({
   header: {
     display: 'grid',
     gap: tokens.spacingVerticalXS,
-    marginBottom: tokens.spacingVerticalXXL,
+    marginBottom: '28px',
     maxWidth: '900px',
     '& h1': { letterSpacing: '-0.035em' },
   },
   panel: {
-    padding: tokens.spacingHorizontalXL,
-    marginBottom: tokens.spacingVerticalXL,
+    padding: 'clamp(20px, 2.3vw, 28px)',
+    marginBottom: '24px',
     border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
     borderRadius: tokens.borderRadiusXLarge,
     backgroundColor: tokens.colorNeutralBackground1,
@@ -141,7 +143,8 @@ const useCoreStyles = makeStyles({
   metrics: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-    gap: tokens.spacingHorizontalL,
+    gap: '18px',
+    marginBottom: '24px',
   },
   metric: {
     padding: tokens.spacingHorizontalXL,
@@ -175,10 +178,10 @@ const useCoreStyles = makeStyles({
   recordGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))',
-    gap: tokens.spacingHorizontalL,
+    gap: '18px',
   },
   recordCard: {
-    padding: tokens.spacingHorizontalL,
+    padding: '20px',
     display: 'grid',
     gap: tokens.spacingVerticalM,
     alignContent: 'start',
@@ -211,7 +214,7 @@ const useCoreStyles = makeStyles({
   sectionIntro: {
     display: 'grid',
     gap: tokens.spacingVerticalS,
-    marginBottom: tokens.spacingVerticalL,
+    marginBottom: '18px',
   },
   eyebrow: {
     color: tokens.colorNeutralForeground3,
@@ -224,6 +227,86 @@ const useCoreStyles = makeStyles({
     fontSize: tokens.fontSizeBase500,
     fontWeight: tokens.fontWeightSemibold,
     fontVariantNumeric: 'tabular-nums',
+  },
+  progressTrack: {
+    width: '100%',
+    height: '9px',
+    overflow: 'hidden',
+    borderRadius: tokens.borderRadiusCircular,
+    backgroundColor: tokens.colorNeutralBackground4,
+    boxShadow: `inset 0 1px 2px ${tokens.colorNeutralShadowAmbient}`,
+  },
+  progressFill: {
+    display: 'block',
+    height: '100%',
+    borderRadius: tokens.borderRadiusCircular,
+    backgroundImage: `linear-gradient(90deg, ${tokens.colorBrandBackground}, ${tokens.colorBrandForeground1})`,
+    transitionProperty: 'width',
+    transitionDuration: tokens.durationNormal,
+  },
+  progressFillPositive: {
+    backgroundImage: `linear-gradient(90deg, ${tokens.colorPaletteGreenBackground3}, ${tokens.colorPaletteGreenForeground1})`,
+  },
+  summaryStrip: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))',
+    gap: tokens.spacingHorizontalM,
+    marginBottom: tokens.spacingVerticalXL,
+  },
+  summaryTile: {
+    minWidth: 0,
+    padding: tokens.spacingHorizontalL,
+    display: 'grid',
+    gap: tokens.spacingVerticalXS,
+    border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusXLarge,
+    backgroundColor: tokens.colorNeutralBackground1,
+    boxShadow: tokens.shadow4,
+  },
+  payoffHero: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto',
+    gap: tokens.spacingHorizontalXL,
+    alignItems: 'center',
+    '@media (max-width: 640px)': { gridTemplateColumns: '1fr' },
+  },
+  inactiveLoanDisclosure: {
+    overflow: 'hidden',
+    border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusXLarge,
+    backgroundColor: tokens.colorNeutralBackground1,
+    boxShadow: tokens.shadow4,
+    '&[open] > summary': {
+      borderBottom: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    },
+    '& > .fui-Card': {
+      margin: tokens.spacingHorizontalM,
+      boxShadow: 'none !important',
+    },
+  },
+  inactiveLoanSummary: {
+    minHeight: '72px',
+    padding: `${tokens.spacingVerticalM} ${tokens.spacingHorizontalXL}`,
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto',
+    gap: tokens.spacingHorizontalL,
+    alignItems: 'center',
+    '&::marker': { color: tokens.colorBrandForeground1 },
+    '@media (max-width: 540px)': { gridTemplateColumns: '1fr' },
+  },
+  inactiveLoanSummaryMeta: {
+    display: 'grid',
+    gap: tokens.spacingVerticalXXS,
+    color: tokens.colorNeutralForeground2,
+  },
+  inlineEditor: {
+    marginTop: tokens.spacingVerticalL,
+    padding: tokens.spacingHorizontalL,
+    display: 'grid',
+    gap: tokens.spacingVerticalM,
+    border: `${tokens.strokeWidthThin} solid ${tokens.colorBrandStroke2}`,
+    borderRadius: tokens.borderRadiusXLarge,
+    backgroundColor: tokens.colorBrandBackground2,
   },
   muted: { color: tokens.colorNeutralForeground3 },
   divider: {
@@ -485,6 +568,36 @@ export const isRecurringRunRateActive = (
 export const defaultReceivableReceiptDate = (asOfDate: PlainDateString): PlainDateString =>
   Temporal.PlainDate.from(asOfDate).with({ day: 1 }).add({ months: 1 }).toString();
 
+export const scheduledReceivableEffectText = (input: {
+  date: PlainDateString;
+  accountName: string;
+  cashAmountCents: number;
+  owedReductionCents: number;
+}): string => {
+  const cashText = formatMoney(input.cashAmountCents);
+  const owedText = formatMoney(input.owedReductionCents);
+  const prefix = `Scheduled effect on ${input.date}: +${cashText} to ${input.accountName}`;
+  if (input.cashAmountCents === input.owedReductionCents) {
+    return `${prefix} and -${owedText} from projected Money Owed.`;
+  }
+  if (input.owedReductionCents === 0) {
+    return `${prefix}. Projected Money Owed does not fall because this receipt has no matching accrued balance.`;
+  }
+  const notYetOwedCents = Math.max(0, input.cashAmountCents - input.owedReductionCents);
+  return `${prefix} and -${owedText} from projected Money Owed. The other ${formatMoney(
+    notYetOwedCents,
+  )} is scheduled cash that was not already owed.`;
+};
+
+export const receivableExpectedTimingText = (input: {
+  expectedDate: PlainDateString;
+  nextScheduledReceipt?: PlainDateString;
+  settlementDateConfirmed?: boolean;
+}): string =>
+  input.settlementDateConfirmed === false
+    ? `${input.nextScheduledReceipt ?? input.expectedDate} (unconfirmed)`
+    : (input.nextScheduledReceipt ?? 'No future occurrence');
+
 export const anchoredReceivableDateForEdit = (input: {
   existing?: ManagedRecordsDto['receivables'][number];
   anchorEvent: ForecastEvent;
@@ -728,6 +841,85 @@ export const selectCardStatementSummaryCycles = (
   return { comingDue, latestStatement };
 };
 
+export const aggregateKnownLimitCardUtilization = (
+  cards: readonly {
+    currentBalanceCents: number;
+    creditLimitCents?: number;
+  }[],
+): {
+  currentBalanceCents: number;
+  creditLimitCents: number;
+  knownLimitCardCount: number;
+  totalCardCount: number;
+  utilizationPercent?: number;
+} => {
+  const cardsWithKnownLimits = cards.filter(
+    (card): card is { currentBalanceCents: number; creditLimitCents: number } =>
+      card.creditLimitCents !== undefined && card.creditLimitCents > 0,
+  );
+  const currentBalanceCents = cardsWithKnownLimits.reduce(
+    (total, card) => total + card.currentBalanceCents,
+    0,
+  );
+  const creditLimitCents = cardsWithKnownLimits.reduce(
+    (total, card) => total + card.creditLimitCents,
+    0,
+  );
+  return {
+    currentBalanceCents,
+    creditLimitCents,
+    knownLimitCardCount: cardsWithKnownLimits.length,
+    totalCardCount: cards.length,
+    ...(creditLimitCents > 0
+      ? { utilizationPercent: (currentBalanceCents / creditLimitCents) * 100 }
+      : {}),
+  };
+};
+
+export const cardUtilizationPresentation = (
+  currentBalanceCents: number,
+  creditLimitCents: number,
+): { utilizationPercent: number; barPercent: number } | undefined => {
+  if (creditLimitCents <= 0) return undefined;
+  const utilizationPercent = Math.max(0, (currentBalanceCents / creditLimitCents) * 100);
+  return {
+    utilizationPercent,
+    barPercent: Math.max(0, Math.min(100, utilizationPercent)),
+  };
+};
+
+export const latestClosedStatementForReconciliation = (input: {
+  cardId: string;
+  asOfDate: PlainDateString;
+  cycles: readonly CreditCardCycle[];
+  modeled?: {
+    latestStatementCents: number;
+    latestStatementDate?: PlainDateString;
+  };
+}): { amountCents: number; date: PlainDateString } | undefined => {
+  if (input.modeled?.latestStatementDate !== undefined) {
+    return {
+      amountCents: input.modeled.latestStatementCents,
+      date: input.modeled.latestStatementDate,
+    };
+  }
+  const latestStoredStatement = input.cycles
+    .filter(
+      (cycle) =>
+        cycle.cardId === input.cardId &&
+        cycle.lockedStatementCents !== undefined &&
+        ['closed-statement', 'scheduled-payment', 'paid'].includes(cycle.state) &&
+        compareDates(cycle.closesOn, input.asOfDate) <= 0,
+    )
+    .sort((left, right) => compareDates(right.closesOn, left.closesOn))[0];
+  return latestStoredStatement?.lockedStatementCents === undefined
+    ? undefined
+    : {
+        amountCents: latestStoredStatement.lockedStatementCents,
+        date: latestStoredStatement.closesOn,
+      };
+};
+
 export const nextActiveLoanPaymentDate = (
   loan: Loan,
   asOf: PlainDateString,
@@ -847,7 +1039,6 @@ const forecastEventKinds: ForecastEvent['kind'][] = [
   'payable',
   'card-payment',
   'loan-payment',
-  'receivable-settlement',
   'reward-deposit',
   'baseline-spending',
   'investment-contribution',
@@ -862,6 +1053,8 @@ const isRecordLibraryType = (value: string | null): value is RecordLibraryType =
   value !== null && recordLibraryTypes.includes(value as RecordLibraryType);
 const isForecastEventKind = (value: string | null): value is ForecastEvent['kind'] =>
   value !== null && forecastEventKinds.includes(value as ForecastEvent['kind']);
+const receivableSettlementGuidance =
+  'Use Money Owed to schedule or record received money so the cash deposit stays linked to the correct owed balance and recurring installment.';
 const makeEditRequest = (
   entityType: UpsertManagedEntityRequest['entityType'],
   record: object,
@@ -870,6 +1063,41 @@ const makeEditRequest = (
     entityType,
     payload: Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'userId')),
   }) as UpsertManagedEntityRequest;
+
+export const scheduledCardPaymentRequest = (input: {
+  existing?: ForecastEvent;
+  newId: string;
+  accountId: string;
+  date: PlainDateString;
+  amountCents: number;
+  label: string;
+  sourceCycleId?: string;
+  cardId: string;
+}): UpsertManagedEntityRequest => {
+  const existingPayload = input.existing
+    ? (makeEditRequest('forecast-event', input.existing).payload as Record<string, unknown>)
+    : {};
+  return {
+    entityType: 'forecast-event',
+    payload: {
+      ...existingPayload,
+      id: input.existing?.id ?? input.newId,
+      accountId: input.accountId,
+      date: input.date,
+      kind: 'card-payment',
+      direction: 'outflow',
+      amountCents: input.amountCents,
+      certainty: 'confirmed',
+      status: 'scheduled',
+      label: input.label,
+      sourceRecordId: input.sourceCycleId,
+      hypothetical: false,
+      accepted: false,
+      paymentMethod: 'cash-account',
+      cardId: input.cardId,
+    },
+  } as UpsertManagedEntityRequest;
+};
 
 const loadRecords = async (): Promise<ManagedRecordsDto> => {
   const result = await window.balanceBook.listRecords();
@@ -954,6 +1182,9 @@ export const makeRequest = (type: EditorType, form: FormData): UpsertManagedEnti
       };
     case 'forecast-event': {
       const eventKind = get(form, 'eventKind') as ForecastEvent['kind'];
+      if (eventKind === 'receivable-settlement') {
+        throw new Error(receivableSettlementGuidance);
+      }
       const recurrenceFrequency = get(form, 'recurrenceFrequency');
       const recurrenceRule =
         recurrenceFrequency === 'monthly'
@@ -1245,6 +1476,14 @@ export const makeForecastEventEditRequest = (
 ): ForecastEventRequest => {
   const initialPaymentMethod = eventPaymentMethod(event);
   const selectedEventKind = get(form, 'editEventKind') as ForecastEvent['kind'];
+  if (selectedEventKind === 'receivable-settlement' && event.kind !== 'receivable-settlement') {
+    throw new Error(receivableSettlementGuidance);
+  }
+  if (event.kind === 'receivable-settlement' && selectedEventKind !== 'receivable-settlement') {
+    throw new Error(
+      'A linked received-money record must remain a receivable settlement. Use Money Owed to manage its owed-balance association.',
+    );
+  }
   const selectedPaymentMethod = get(form, 'editEventPaymentMethod') as ReturnType<
     typeof eventPaymentMethod
   >;
@@ -1594,6 +1833,11 @@ const ForecastEventGuidedEditor = ({
                 readOnly
               />
             </>
+          ) : event.kind === 'receivable-settlement' ? (
+            <>
+              <input type="hidden" name="editEventKind" value="receivable-settlement" />
+              <Input value="Receivable settlement (managed in Money Owed)" readOnly />
+            </>
           ) : (
             <Select
               name="editEventKind"
@@ -1614,7 +1858,6 @@ const ForecastEventGuidedEditor = ({
               <option value="payable">Payable</option>
               <option value="card-payment">Card payment</option>
               <option value="loan-payment">Loan payment</option>
-              <option value="receivable-settlement">Receivable settlement</option>
               <option value="reward-deposit">Cash reward deposit</option>
               <option value="manual-adjustment">Manual adjustment</option>
               <option value="baseline-spending">Baseline spending</option>
@@ -1623,6 +1866,9 @@ const ForecastEventGuidedEditor = ({
             </Select>
           )}
         </Field>
+        {event.kind === 'receivable-settlement' && (
+          <Text className={styles.muted}>{receivableSettlementGuidance}</Text>
+        )}
         <Field label="Direction">
           {isTransfer ? (
             <>
@@ -2140,6 +2386,23 @@ export const RecordsPage = (): React.JSX.Element => {
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
         throw new Error('The record must be a JSON object.');
       }
+      if (editing.entityType === 'forecast-event') {
+        const existingEvent = records?.events.find(
+          (forecastEvent) => forecastEvent.id === editing.payload.id,
+        );
+        const nextKind = (payload as { kind?: unknown }).kind;
+        if (nextKind === 'receivable-settlement' && existingEvent?.kind !== nextKind) {
+          throw new Error(receivableSettlementGuidance);
+        }
+        if (
+          existingEvent?.kind === 'receivable-settlement' &&
+          nextKind !== 'receivable-settlement'
+        ) {
+          throw new Error(
+            'A linked received-money record must remain a receivable settlement. Use Money Owed to manage its owed-balance association.',
+          );
+        }
+      }
       const result = await window.balanceBook.upsertRecord({
         entityType: editing.entityType,
         payload,
@@ -2606,13 +2869,13 @@ export const RecordsPage = (): React.JSX.Element => {
                     <option value="payable">Payable</option>
                     <option value="card-payment">Card payment</option>
                     <option value="loan-payment">Loan payment</option>
-                    <option value="receivable-settlement">Receivable settlement</option>
                     <option value="reward-deposit">Cash reward deposit</option>
                     <option value="baseline-spending">Baseline spending</option>
                     <option value="investment-contribution">Investment contribution</option>
                     <option value="manual-adjustment">Manual adjustment</option>
                   </Select>
                 </Field>
+                <Text className={styles.muted}>{receivableSettlementGuidance}</Text>
                 <Field
                   label="Direction"
                   hint={
@@ -4385,7 +4648,11 @@ export const IncomePage = (): React.JSX.Element => {
               >
                 <Input
                   name="incomeDate"
-                  aria-label="First or next arrival"
+                  aria-label={
+                    incomeRoutingMode === 'routed'
+                      ? 'Next official payday'
+                      : 'First or next arrival'
+                  }
                   type="date"
                   value={incomeNominalDate}
                   onChange={(_, data) => setIncomeNominalDate(data.value)}
@@ -5668,6 +5935,9 @@ export const CardsPage = (): React.JSX.Element => {
   const [editingCardId, setEditingCardId] = useState<string | 'new' | null>(null);
   const [editingCycleId, setEditingCycleId] = useState<string | 'new' | null>(null);
   const [cycleCardId, setCycleCardId] = useState<string | null>(null);
+  const [schedulingPaymentCardId, setSchedulingPaymentCardId] = useState<string | null>(null);
+  const [editingScheduledPaymentId, setEditingScheduledPaymentId] = useState<string | null>(null);
+  const [recordingPaymentCycleId, setRecordingPaymentCycleId] = useState<string | null>(null);
   const [paymentPolicyChoice, setPaymentPolicyChoice] = useState<
     'full-statement' | 'minimum' | 'fixed' | 'manual'
   >('full-statement');
@@ -5729,6 +5999,37 @@ export const CardsPage = (): React.JSX.Element => {
         .sort()
         .at(-1) ?? Temporal.Now.plainDateISO().toString(),
   });
+  const debtByCard = new Map(
+    records.cards.map((card) => [
+      card.id,
+      snapshot?.revolvingDebtByCard?.find((summary) => summary.cardId === card.id) ??
+        summarizeRevolvingDebt({
+          card,
+          cycles: records.cardCycles,
+          asOfDate,
+          events: records.events,
+        }),
+    ]),
+  );
+  const totalCardBalanceCents = [...debtByCard.values()].reduce(
+    (total, debt) => total + debt.currentBalanceCents,
+    0,
+  );
+  const totalAmountDueCents = [...debtByCard.values()].reduce(
+    (total, debt) => total + debt.amountCurrentlyDueCents,
+    0,
+  );
+  const totalCarryCents = [...debtByCard.values()].reduce(
+    (total, debt) => total + debt.carryingBalanceCents,
+    0,
+  );
+  const aggregateUtilization = aggregateKnownLimitCardUtilization(
+    records.cards.map((card) => ({
+      currentBalanceCents: debtByCard.get(card.id)?.currentBalanceCents ?? 0,
+      creditLimitCents: card.creditLimitCents,
+    })),
+  );
+  const totalUtilizationPercent = aggregateUtilization.utilizationPercent ?? 0;
 
   const refreshCardSnapshot = async (): Promise<void> => {
     const forecast = await window.balanceBook.getForecast();
@@ -5819,6 +6120,101 @@ export const CardsPage = (): React.JSX.Element => {
     } else setError(response.error);
   };
 
+  const scheduleCardPayment = async (event: FormEvent<HTMLFormElement>, card: CreditCard) => {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const sourceCycleId = get(form, 'sourceCycleId');
+    const existingPayment = editingScheduledPaymentId
+      ? records.events.find((item) => item.id === editingScheduledPaymentId)
+      : undefined;
+    if (editingScheduledPaymentId && !existingPayment) {
+      setError('That scheduled payment is no longer available. Refresh and try again.');
+      return;
+    }
+    const response = await window.balanceBook.upsertRecord(
+      scheduledCardPaymentRequest({
+        existing: existingPayment,
+        newId: crypto.randomUUID(),
+        accountId: get(form, 'accountId'),
+        date: get(form, 'date') as PlainDateString,
+        amountCents: cents(form, 'amount'),
+        label: get(form, 'label') || `${card.name} scheduled payment`,
+        sourceCycleId: sourceCycleId || undefined,
+        cardId: card.id,
+      }),
+    );
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    setRecords(response.value);
+    setSchedulingPaymentCardId(null);
+    setEditingScheduledPaymentId(null);
+    setMessage(
+      existingPayment
+        ? `${card.name} payment updated. Its revised cash effect is now in the forecast.`
+        : `${card.name} payment scheduled. Its dated cash effect is now in the forecast.`,
+    );
+    setError(null);
+    formElement.reset();
+    await refreshCardSnapshot();
+  };
+
+  const recordStatementPayment = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const cycle = records.cardCycles.find((item) => item.id === recordingPaymentCycleId);
+    if (!cycle) {
+      setError('The statement cycle could not be found.');
+      return;
+    }
+    const response = await window.balanceBook.upsertRecord({
+      entityType: 'card-cycle',
+      payload: {
+        ...cycle,
+        state: 'paid',
+        paymentOn: get(form, 'paymentOn'),
+        actualPaymentCents: cents(form, 'actualPayment'),
+      },
+    } as UpsertManagedEntityRequest);
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    setRecords(response.value);
+    setRecordingPaymentCycleId(null);
+    const paidCents = cents(form, 'actualPayment');
+    const statementCents = cycle.lockedStatementCents ?? 0;
+    setMessage(
+      paidCents < statementCents
+        ? `Partial payment recorded. ${formatMoney(statementCents - paidCents)} now carries forward.`
+        : paidCents > statementCents
+          ? `Statement paid with ${formatMoney(paidCents - statementCents)} extra applied to the card balance.`
+          : 'Statement marked paid in full.',
+    );
+    setError(null);
+    await refreshCardSnapshot();
+  };
+
+  const cancelScheduledCardPayment = async (payment: ForecastEvent): Promise<void> => {
+    const response = await window.balanceBook.upsertRecord(
+      makeEditRequest('forecast-event', { ...payment, status: 'cancelled' }),
+    );
+    if (!response.ok) {
+      setError(response.error);
+      return;
+    }
+    setRecords(response.value);
+    if (editingScheduledPaymentId === payment.id) {
+      setEditingScheduledPaymentId(null);
+      setSchedulingPaymentCardId(null);
+    }
+    setMessage(`${payment.label} cancelled. Its cash effect was removed from the forecast.`);
+    setError(null);
+    await refreshCardSnapshot();
+  };
+
   const reactivateCard = async (card: CreditCard): Promise<void> => {
     const request = makeEditRequest('credit-card', card);
     const payload = request.payload as Record<string, unknown>;
@@ -5839,12 +6235,52 @@ export const CardsPage = (): React.JSX.Element => {
     <>
       <div className={styles.header}>
         <Title1 as="h1">Cards and revolving credit</Title1>
-        <Text>
-          Keep the statement already coming due separate from spending in the open cycle. Locked
-          statements feed the later cash payment; open-cycle activity rolls into its own future
-          payment.
-        </Text>
+        <Text>See what is due, what is being spent now, and what the forecast will pay next.</Text>
       </div>
+      <section className={styles.summaryStrip} aria-label="Credit card summary">
+        <Card className={styles.summaryTile}>
+          <Text className={styles.eyebrow}>Total card balances</Text>
+          <Text className={styles.amount}>{formatMoney(totalCardBalanceCents)}</Text>
+          <Text className={styles.muted}>{formatMoney(totalAmountDueCents)} currently due</Text>
+        </Card>
+        <Card className={styles.summaryTile}>
+          <Text className={styles.eyebrow}>Utilization on known limits</Text>
+          <Text className={styles.amount}>{totalUtilizationPercent.toFixed(1)}%</Text>
+          <div
+            className={styles.progressTrack}
+            role="progressbar"
+            aria-label="Total credit utilization"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(Math.min(100, totalUtilizationPercent))}
+            aria-valuetext={`${totalUtilizationPercent.toFixed(1)}% utilization`}
+          >
+            <span
+              className={styles.progressFill}
+              style={{ width: `${Math.min(100, totalUtilizationPercent)}%` }}
+            />
+          </div>
+          <Text className={styles.muted}>
+            {aggregateUtilization.creditLimitCents > 0
+              ? `${formatMoney(aggregateUtilization.currentBalanceCents)} of ${formatMoney(aggregateUtilization.creditLimitCents)} · ${aggregateUtilization.knownLimitCardCount} of ${aggregateUtilization.totalCardCount} cards`
+              : 'Add limits to calculate utilization'}
+          </Text>
+        </Card>
+        <Card className={styles.summaryTile}>
+          <Text className={styles.eyebrow}>Balance carrying</Text>
+          <Text className={styles.amount}>{formatMoney(totalCarryCents)}</Text>
+          <Text className={totalCarryCents === 0 ? styles.positive : styles.warning}>
+            {totalCarryCents === 0 ? 'Paid-in-full behavior' : 'Review partial payments'}
+          </Text>
+        </Card>
+        <Card className={styles.summaryTile}>
+          <Text className={styles.eyebrow}>Active cards</Text>
+          <Text className={styles.amount}>
+            {records.cards.filter((card) => card.status === 'active').length}
+          </Text>
+          <Text className={styles.muted}>{records.cards.length} total accounts</Text>
+        </Card>
+      </section>
       {(message || error) && (
         <Card className={styles.panel}>
           {message && (
@@ -6322,14 +6758,13 @@ export const CardsPage = (): React.JSX.Element => {
                 event.status !== 'skipped',
             )
             .sort((left, right) => left.date.localeCompare(right.date));
-          const debt =
-            snapshot?.revolvingDebtByCard?.find((summary) => summary.cardId === card.id) ??
-            summarizeRevolvingDebt({
-              card,
-              cycles: records.cardCycles,
-              asOfDate,
-              events: records.events,
-            });
+          const debt = debtByCard.get(card.id)!;
+          const utilization = card.creditLimitCents
+            ? cardUtilizationPresentation(debt.currentBalanceCents, card.creditLimitCents)
+            : undefined;
+          const editingScheduledPayment = editingScheduledPaymentId
+            ? linkedManualPayments.find((payment) => payment.id === editingScheduledPaymentId)
+            : undefined;
           return (
             <Card className={styles.panel} key={card.id}>
               <div className={styles.recordHeader}>
@@ -6339,7 +6774,7 @@ export const CardsPage = (): React.JSX.Element => {
                     {card.issuer ? `${card.issuer} · ` : ''}
                     {card.lastFour ? `ending ${card.lastFour} · ` : ''}
                     Paid from {account?.name ?? 'missing funding account'} ·{' '}
-                    {card.accountKind.replaceAll('-', ' ')} ·{' '}
+                    {card.accountKind.replaceAll('-', ' ')} · Autopay:{' '}
                     {card.paymentPolicy.replaceAll('-', ' ')}
                     {card.aprBasisPoints === undefined
                       ? ''
@@ -6371,8 +6806,143 @@ export const CardsPage = (): React.JSX.Element => {
                       ? 'Add final or historical statement'
                       : 'Add statement cycle'}
                   </Button>
+                  <Button
+                    onClick={() => {
+                      setEditingScheduledPaymentId(null);
+                      setSchedulingPaymentCardId((current) =>
+                        current === card.id ? null : card.id,
+                      );
+                    }}
+                  >
+                    Schedule payment
+                  </Button>
                 </div>
               </div>
+              {utilization !== undefined && (
+                <div className={styles.compact}>
+                  <div className={styles.recordHeader}>
+                    <Text className={styles.eyebrow}>Utilization</Text>
+                    <Text>
+                      <strong>{utilization.utilizationPercent.toFixed(1)}%</strong> ·{' '}
+                      {formatMoney(debt.currentBalanceCents)} of{' '}
+                      {formatMoney(card.creditLimitCents!)}
+                    </Text>
+                  </div>
+                  <div
+                    className={styles.progressTrack}
+                    role="progressbar"
+                    aria-label={`${card.name} utilization`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(utilization.barPercent)}
+                    aria-valuetext={`${utilization.utilizationPercent.toFixed(1)}% utilization`}
+                  >
+                    <span
+                      className={styles.progressFill}
+                      style={{ width: `${utilization.barPercent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+              {schedulingPaymentCardId === card.id && (
+                <form
+                  key={editingScheduledPayment?.id ?? `new-payment:${card.id}`}
+                  className={styles.inlineEditor}
+                  onSubmit={(event) => void scheduleCardPayment(event, card)}
+                >
+                  <div className={styles.sectionIntro}>
+                    <strong>
+                      {editingScheduledPayment
+                        ? 'Edit scheduled payment'
+                        : 'Schedule a future payment'}
+                    </strong>
+                    <Text className={styles.muted}>
+                      Add as many dated payments as needed. A payment linked to a statement replaces
+                      that portion of its forecasted autopay; an unlinked payment is additional.
+                    </Text>
+                  </div>
+                  <div className={styles.grid}>
+                    <Field label="Payment date">
+                      <Input
+                        name="date"
+                        type="date"
+                        min={asOfDate}
+                        defaultValue={editingScheduledPayment?.date}
+                        required
+                      />
+                    </Field>
+                    <Field label="Amount">
+                      <Input
+                        name="amount"
+                        inputMode="decimal"
+                        defaultValue={centsInput(editingScheduledPayment?.amountCents)}
+                        required
+                      />
+                    </Field>
+                    <Field label="Pay from">
+                      <Select
+                        name="accountId"
+                        defaultValue={editingScheduledPayment?.accountId ?? card.fundingAccountId}
+                        required
+                      >
+                        {records.accounts.map((cashAccount) => (
+                          <option value={cashAccount.id} key={cashAccount.id}>
+                            {cashAccount.name}
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                    <Field
+                      label="Statement (optional)"
+                      hint="Link it when this payment is meant to cover a specific statement."
+                    >
+                      <Select
+                        name="sourceCycleId"
+                        defaultValue={editingScheduledPayment?.sourceRecordId ?? ''}
+                      >
+                        <option value="">Additional or not yet assigned</option>
+                        {cycles
+                          .filter(
+                            (cycle) =>
+                              cycle.state !== 'paid' ||
+                              cycle.id === editingScheduledPayment?.sourceRecordId,
+                          )
+                          .sort((left, right) => left.dueOn.localeCompare(right.dueOn))
+                          .map((cycle) => (
+                            <option value={cycle.id} key={cycle.id}>
+                              Due {cycle.dueOn} ·{' '}
+                              {formatMoney(
+                                cycle.lockedStatementCents ?? projectedCycleObligation(card, cycle),
+                              )}
+                            </option>
+                          ))}
+                      </Select>
+                    </Field>
+                    <Field label="Label (optional)">
+                      <Input
+                        name="label"
+                        defaultValue={
+                          editingScheduledPayment?.label ?? `${card.name} scheduled payment`
+                        }
+                      />
+                    </Field>
+                  </div>
+                  <div className={styles.actions}>
+                    <Button type="submit" appearance="primary">
+                      {editingScheduledPayment ? 'Save payment changes' : 'Add payment to forecast'}
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        setSchedulingPaymentCardId(null);
+                        setEditingScheduledPaymentId(null);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </form>
+              )}
               {card.status === 'closed' && (
                 <div role="status" className={styles.muted}>
                   Retired {card.closedOn}. New purchases, baselines, and Spending Power are off;
@@ -6408,9 +6978,12 @@ export const CardsPage = (): React.JSX.Element => {
                       : 'Add the most recently closed statement.'}
                   </Text>
                   {comingDue && (
-                    <Button onClick={() => startCycleEdit(comingDue.id)}>
-                      Edit coming-due statement
-                    </Button>
+                    <div className={styles.actions}>
+                      <Button onClick={() => setRecordingPaymentCycleId(comingDue.id)}>
+                        Mark statement paid
+                      </Button>
+                      <Button onClick={() => startCycleEdit(comingDue.id)}>Edit statement</Button>
+                    </div>
                   )}
                 </Card>
                 <Card className={styles.recordCard}>
@@ -6509,6 +7082,52 @@ export const CardsPage = (): React.JSX.Element => {
                   )}
                 </Card>
               </div>
+              {recordingPaymentCycleId &&
+                cycles.some((cycle) => cycle.id === recordingPaymentCycleId) &&
+                (() => {
+                  const paymentCycle = cycles.find(
+                    (cycle) => cycle.id === recordingPaymentCycleId,
+                  )!;
+                  return (
+                    <form className={styles.inlineEditor} onSubmit={recordStatementPayment}>
+                      <div className={styles.sectionIntro}>
+                        <strong>Record statement payment</strong>
+                        <Text className={styles.muted}>
+                          Forecasts continue to assume the configured autopay until you record what
+                          actually happened. Paying less than the statement creates card carry.
+                        </Text>
+                      </div>
+                      <div className={styles.grid}>
+                        <Field label="Paid on">
+                          <Input
+                            name="paymentOn"
+                            type="date"
+                            min={paymentCycle.closesOn}
+                            max={asOfDate}
+                            defaultValue={asOfDate}
+                            required
+                          />
+                        </Field>
+                        <Field label="Amount paid">
+                          <Input
+                            name="actualPayment"
+                            inputMode="decimal"
+                            defaultValue={centsInput(paymentCycle.lockedStatementCents)}
+                            required
+                          />
+                        </Field>
+                      </div>
+                      <div className={styles.actions}>
+                        <Button type="submit" appearance="primary">
+                          Mark statement paid
+                        </Button>
+                        <Button type="button" onClick={() => setRecordingPaymentCycleId(null)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </form>
+                  );
+                })()}
               {linkedManualPayments.length > 0 && (
                 <div className={styles.divider}>
                   <div className={styles.sectionIntro}>
@@ -6528,7 +7147,31 @@ export const CardsPage = (): React.JSX.Element => {
                             {payment.date} · {payment.status}
                           </Text>
                         </div>
-                        <Text>{formatMoney(payment.amountCents)}</Text>
+                        <div className={styles.actions}>
+                          <Text>{formatMoney(payment.amountCents)}</Text>
+                          {payment.status !== 'paid' &&
+                            compareDates(payment.date, asOfDate) >= 0 && (
+                              <>
+                                <Button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingScheduledPaymentId(payment.id);
+                                    setSchedulingPaymentCardId(card.id);
+                                    setMessage(null);
+                                    setError(null);
+                                  }}
+                                >
+                                  Edit payment
+                                </Button>
+                                <Button
+                                  type="button"
+                                  onClick={() => void cancelScheduledCardPayment(payment)}
+                                >
+                                  Cancel payment
+                                </Button>
+                              </>
+                            )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -6646,6 +7289,19 @@ export const LoansPage = (): React.JSX.Element => {
     }).map((loan) => [loan.id, loan] as const),
   );
   const effectiveLoanIds = new Set(effectiveLoanById.keys());
+  const activeLoanSummaries = records.loans
+    .filter((loan) => effectiveLoanIds.has(loan.id))
+    .map((loan) =>
+      effectiveLoanPageMetrics(loan, effectiveLoanById.get(loan.id), today, records.events),
+    );
+  const activeLoanBalanceCents = activeLoanSummaries.reduce(
+    (total, summary) => total + summary.modeled.totalCents,
+    0,
+  );
+  const activeLoanPaymentsCents = activeLoanSummaries.reduce(
+    (total, summary) => total + summary.recordedPaymentCents,
+    0,
+  );
   const editingLoanIsRefinanceManaged = Boolean(
     editingLoan &&
     (originPlanByLoanId.has(editingLoan.id) || retirementPlanByLoanId.has(editingLoan.id)),
@@ -6852,11 +7508,29 @@ export const LoansPage = (): React.JSX.Element => {
       <div className={styles.header}>
         <Title1 as="h1">Loans</Title1>
         <Text>
-          Add whatever your lender gives you. Balance Book fills solvable gaps, labels calculated
-          values, amortizes the debt on real dates, and keeps total cash drafts separate from the
-          amount applied to principal and interest.
+          Track payoff progress at a glance. Open a loan only when you need its full assumptions or
+          amortization ledger.
         </Text>
       </div>
+      <section className={styles.summaryStrip} aria-label="Loan portfolio summary">
+        <Card className={styles.summaryTile}>
+          <Text className={styles.eyebrow}>Remaining loan debt</Text>
+          <Text className={styles.value}>{formatMoney(activeLoanBalanceCents)}</Text>
+        </Card>
+        <Card className={styles.summaryTile}>
+          <Text className={styles.eyebrow}>Regular payments</Text>
+          <Text className={styles.amount}>{formatMoney(activeLoanPaymentsCents)}</Text>
+          <Text className={styles.muted}>Across {activeLoanSummaries.length} active loans</Text>
+        </Card>
+        <Card className={styles.summaryTile}>
+          <Text className={styles.eyebrow}>Modeled daily interest</Text>
+          <Text className={styles.amount}>
+            {formatMoney(
+              activeLoanSummaries.reduce((total, summary) => total + summary.dailyInterestCents, 0),
+            )}
+          </Text>
+        </Card>
+      </section>
       {(message || error) && (
         <Card className={styles.panel}>
           {message && (
@@ -7219,6 +7893,17 @@ export const LoansPage = (): React.JSX.Element => {
           const amortizationRows = effectiveLoanById.has(loan.id)
             ? loanAmortizationLedger(effectiveLoanById.get(loan.id)!, today, records.events)
             : [];
+          const originalPrincipalCents = Math.max(
+            loan.originalPrincipalCents ?? loan.principalCents,
+            modeled.totalCents,
+          );
+          const paidOffPercent =
+            originalPrincipalCents > 0
+              ? Math.max(0, Math.min(100, (1 - modeled.totalCents / originalPrincipalCents) * 100))
+              : 100;
+          const remainingPayments = amortizationRows.filter(
+            (row) => row.type !== 'additional-principal',
+          ).length;
           const lifecycle = cancelledReplacementIds.has(loan.id)
             ? 'Cancelled replacement loan'
             : retirementPlan && compareDates(today, retirementPlan.payoffDate) >= 0
@@ -7240,7 +7925,7 @@ export const LoansPage = (): React.JSX.Element => {
             cancelledReplacementIds.has(loan.id) ||
             Boolean(originPlan && compareDates(today, originPlan.payoffDate) < 0) ||
             Boolean(retirementPlan);
-          return (
+          const loanCard = (
             <Card className={styles.panel} key={loan.id}>
               <div className={styles.recordHeader}>
                 <Title2 as="h2">{loan.name}</Title2>
@@ -7260,125 +7945,172 @@ export const LoansPage = (): React.JSX.Element => {
                   )}
                 </div>
               </div>
-              <div className={styles.grid}>
-                <Text>
-                  Lender and type:{' '}
-                  {[loan.lender, loan.loanType].filter(Boolean).join(' · ') || 'Not entered'}
-                </Text>
-                <Text>Recorded lender principal: {formatMoney(loan.principalCents)}</Text>
-                <Text>
-                  Effective modeled balance ({today}): {formatMoney(modeled.totalCents)}
-                </Text>
-                <Text>Contract rate: {(loan.annualRateBasisPoints / 100).toFixed(2)}%</Text>
-                <Text>
-                  {effectiveMetrics.active
-                    ? 'Active payment'
-                    : futureReplacement
-                      ? 'Future payment terms'
-                      : 'Historical payment'}
-                  : {formatMoney(effectiveMetrics.recordedPaymentCents)}
-                </Text>
-                <Text>
-                  Next payment:{' '}
-                  {effectiveMetrics.nextPaymentDate ??
-                    (futureReplacement
-                      ? `Starts ${originPlan!.firstPaymentDate}`
-                      : retiredByRefinance
-                        ? `None — retired ${retirementPlan!.payoffDate}`
-                        : 'None — loan is not active')}
-                </Text>
-                <Text>
-                  Payoff structure:{' '}
-                  {loan.amortizationStructure === 'balloon'
-                    ? 'Balloon or bullet'
-                    : 'Fully amortizing'}
-                </Text>
-                <Text>Contractual maturity: {loan.maturityDate ?? 'Not entered'}</Text>
-                {loan.amortizationStructure === 'balloon' && (
-                  <Text>
-                    Expected balloon beyond the regular payment:{' '}
-                    {loan.expectedBalloonCents === undefined
-                      ? 'Calculated from the schedule'
-                      : formatMoney(loan.expectedBalloonCents)}
-                  </Text>
-                )}
-                <Text>
-                  Original loan:{' '}
-                  {loan.originalPrincipalCents === undefined
-                    ? 'Not entered'
-                    : `${formatMoney(loan.originalPrincipalCents)}${loan.originalDate ? ` on ${loan.originalDate}` : ''}`}
-                </Text>
-                <Text>
-                  Original term:{' '}
-                  {loan.originalTermMonths === undefined
-                    ? 'Not entered'
-                    : `${loan.originalTermMonths} months`}
-                </Text>
-                <Text>
-                  Cash draft: {formatMoney(loan.cashPaymentCents ?? loan.paymentCents)}
-                  {(loan.cashPaymentCents ?? loan.paymentCents) === loan.paymentCents
-                    ? ' (all applied to debt)'
-                    : ` (${formatMoney(loan.paymentCents)} applied to debt)`}
-                </Text>
-                {loan.inferredFields && loan.inferredFields.length > 0 && (
-                  <Text>
-                    Calculated setup fields:{' '}
-                    {loan.inferredFields.map(loanSetupFieldLabel).join(', ')}
-                  </Text>
-                )}
-                <Text>Lifecycle: {lifecycle}</Text>
-                <Text>
-                  Cash schedule:{' '}
-                  {!effectiveMetrics.active
-                    ? futureReplacement
-                      ? `Begins on ${originPlan!.firstPaymentDate}`
-                      : retiredByRefinance
-                        ? `Stopped on ${retirementPlan!.payoffDate}`
-                        : 'No active scheduled payments'
-                    : loan.includeInCashForecast === false
-                      ? 'Excluded (already deducted or paid off)'
-                      : `${loan.paymentFrequency ?? 'monthly'} from funding account`}
-                </Text>
-                <Text>
-                  Daily accrual ({loan.accrualConvention}): {formatMoney(dailyInterestCents)}
-                </Text>
-                <Text>
-                  Modeled payoff timing:{' '}
-                  {!payoff
-                    ? futureReplacement
-                      ? `Begins when the loan closes on ${originPlan!.closingDate}`
-                      : 'No remaining active payoff'
-                    : !payoff.costKnown || !payoff.paidOffDate
-                      ? 'Not amortizing on the current terms'
-                      : `${payoff.paidOffDate}${
-                          payoff.remainingTermMonths === null
-                            ? ''
-                            : ` (${payoff.remainingTermMonths} months)`
-                        }`}
-                </Text>
-                <Text>
-                  Remaining modeled interest:{' '}
-                  {!payoff
-                    ? futureReplacement
-                      ? 'Not accruing before closing'
-                      : formatMoney(0)
-                    : payoff.remainingInterestCents === null
-                      ? 'Not finite'
-                      : formatMoney(payoff.remainingInterestCents)}
-                </Text>
-                {payoff && payoff.maturityPaymentCents > loan.paymentCents && (
-                  <Text
-                    className={
-                      loan.amortizationStructure === 'fully-amortizing' ? styles.error : undefined
-                    }
+              <div className={styles.payoffHero}>
+                <div className={styles.stack}>
+                  <div className={styles.recordHeader}>
+                    <div className={styles.compact}>
+                      <Text className={styles.eyebrow}>Payoff progress</Text>
+                      <Text className={styles.value}>{paidOffPercent.toFixed(0)}%</Text>
+                    </div>
+                    <div className={styles.compact}>
+                      <Text className={styles.eyebrow}>Remaining balance</Text>
+                      <Text className={styles.amount}>{formatMoney(modeled.totalCents)}</Text>
+                    </div>
+                  </div>
+                  <div
+                    className={styles.progressTrack}
+                    role="progressbar"
+                    aria-label={`${loan.name} payoff progress`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(paidOffPercent)}
                   >
-                    {loan.amortizationStructure === 'balloon'
-                      ? 'Modeled contractual maturity payment'
-                      : 'Unexpected maturity balloon'}
-                    : {formatMoney(payoff.maturityPaymentCents)}
+                    <span
+                      className={`${styles.progressFill} ${styles.progressFillPositive}`}
+                      style={{ width: `${paidOffPercent}%` }}
+                    />
+                  </div>
+                  <Text className={styles.muted}>
+                    {remainingPayments} modeled payment{remainingPayments === 1 ? '' : 's'} left ·{' '}
+                    {payoff?.paidOffDate ? `target ${payoff.paidOffDate}` : lifecycle}
                   </Text>
-                )}
+                </div>
+                <div className={styles.compact}>
+                  <Text className={styles.eyebrow}>Next payment</Text>
+                  <Text className={styles.amount}>
+                    {formatMoney(effectiveMetrics.recordedPaymentCents)}
+                  </Text>
+                  <Text className={styles.muted}>
+                    {effectiveMetrics.nextPaymentDate ?? 'No active payment'}
+                  </Text>
+                </div>
               </div>
+              <details className={styles.disclosure}>
+                <summary>Loan details and assumptions</summary>
+                <div>
+                  <div className={styles.grid}>
+                    <Text>
+                      Lender and type:{' '}
+                      {[loan.lender, loan.loanType].filter(Boolean).join(' · ') || 'Not entered'}
+                    </Text>
+                    <Text>Recorded lender principal: {formatMoney(loan.principalCents)}</Text>
+                    <Text>
+                      Effective modeled balance ({today}): {formatMoney(modeled.totalCents)}
+                    </Text>
+                    <Text>Contract rate: {(loan.annualRateBasisPoints / 100).toFixed(2)}%</Text>
+                    <Text>
+                      {effectiveMetrics.active
+                        ? 'Active payment'
+                        : futureReplacement
+                          ? 'Future payment terms'
+                          : 'Historical payment'}
+                      : {formatMoney(effectiveMetrics.recordedPaymentCents)}
+                    </Text>
+                    <Text>
+                      Next payment:{' '}
+                      {effectiveMetrics.nextPaymentDate ??
+                        (futureReplacement
+                          ? `Starts ${originPlan!.firstPaymentDate}`
+                          : retiredByRefinance
+                            ? `None — retired ${retirementPlan!.payoffDate}`
+                            : 'None — loan is not active')}
+                    </Text>
+                    <Text>
+                      Payoff structure:{' '}
+                      {loan.amortizationStructure === 'balloon'
+                        ? 'Balloon or bullet'
+                        : 'Fully amortizing'}
+                    </Text>
+                    <Text>Contractual maturity: {loan.maturityDate ?? 'Not entered'}</Text>
+                    {loan.amortizationStructure === 'balloon' && (
+                      <Text>
+                        Expected balloon beyond the regular payment:{' '}
+                        {loan.expectedBalloonCents === undefined
+                          ? 'Calculated from the schedule'
+                          : formatMoney(loan.expectedBalloonCents)}
+                      </Text>
+                    )}
+                    <Text>
+                      Original loan:{' '}
+                      {loan.originalPrincipalCents === undefined
+                        ? 'Not entered'
+                        : `${formatMoney(loan.originalPrincipalCents)}${loan.originalDate ? ` on ${loan.originalDate}` : ''}`}
+                    </Text>
+                    <Text>
+                      Original term:{' '}
+                      {loan.originalTermMonths === undefined
+                        ? 'Not entered'
+                        : `${loan.originalTermMonths} months`}
+                    </Text>
+                    <Text>
+                      Cash draft: {formatMoney(loan.cashPaymentCents ?? loan.paymentCents)}
+                      {(loan.cashPaymentCents ?? loan.paymentCents) === loan.paymentCents
+                        ? ' (all applied to debt)'
+                        : ` (${formatMoney(loan.paymentCents)} applied to debt)`}
+                    </Text>
+                    {loan.inferredFields && loan.inferredFields.length > 0 && (
+                      <Text>
+                        Calculated setup fields:{' '}
+                        {loan.inferredFields.map(loanSetupFieldLabel).join(', ')}
+                      </Text>
+                    )}
+                    <Text>Lifecycle: {lifecycle}</Text>
+                    <Text>
+                      Cash schedule:{' '}
+                      {!effectiveMetrics.active
+                        ? futureReplacement
+                          ? `Begins on ${originPlan!.firstPaymentDate}`
+                          : retiredByRefinance
+                            ? `Stopped on ${retirementPlan!.payoffDate}`
+                            : 'No active scheduled payments'
+                        : loan.includeInCashForecast === false
+                          ? 'Excluded (already deducted or paid off)'
+                          : `${loan.paymentFrequency ?? 'monthly'} from funding account`}
+                    </Text>
+                    <Text>
+                      Daily accrual ({loan.accrualConvention}): {formatMoney(dailyInterestCents)}
+                    </Text>
+                    <Text>
+                      Modeled payoff timing:{' '}
+                      {!payoff
+                        ? futureReplacement
+                          ? `Begins when the loan closes on ${originPlan!.closingDate}`
+                          : 'No remaining active payoff'
+                        : !payoff.costKnown || !payoff.paidOffDate
+                          ? 'Not amortizing on the current terms'
+                          : `${payoff.paidOffDate}${
+                              payoff.remainingTermMonths === null
+                                ? ''
+                                : ` (${payoff.remainingTermMonths} months)`
+                            }`}
+                    </Text>
+                    <Text>
+                      Remaining modeled interest:{' '}
+                      {!payoff
+                        ? futureReplacement
+                          ? 'Not accruing before closing'
+                          : formatMoney(0)
+                        : payoff.remainingInterestCents === null
+                          ? 'Not finite'
+                          : formatMoney(payoff.remainingInterestCents)}
+                    </Text>
+                    {payoff && payoff.maturityPaymentCents > loan.paymentCents && (
+                      <Text
+                        className={
+                          loan.amortizationStructure === 'fully-amortizing'
+                            ? styles.error
+                            : undefined
+                        }
+                      >
+                        {loan.amortizationStructure === 'balloon'
+                          ? 'Modeled contractual maturity payment'
+                          : 'Unexpected maturity balloon'}
+                        : {formatMoney(payoff.maturityPaymentCents)}
+                      </Text>
+                    )}
+                  </div>
+                </div>
+              </details>
               {effectiveMetrics.active && (
                 <details className={styles.disclosure}>
                   <summary>Upcoming amortization ledger ({amortizationRows.length} rows)</summary>
@@ -7443,6 +8175,24 @@ export const LoansPage = (): React.JSX.Element => {
               )}
             </Card>
           );
+          if (effectiveMetrics.active) return loanCard;
+          return (
+            <details className={styles.inactiveLoanDisclosure} key={loan.id}>
+              <summary className={styles.inactiveLoanSummary}>
+                <span className={styles.inactiveLoanSummaryMeta}>
+                  <strong>{loan.name}</strong>
+                  <Text size={200}>{lifecycle}</Text>
+                </span>
+                <span className={styles.inactiveLoanSummaryMeta}>
+                  <Text size={200}>
+                    {futureReplacement ? 'Future balance' : 'Last modeled balance'}
+                  </Text>
+                  <strong>{formatMoney(modeled.totalCents)}</strong>
+                </span>
+              </summary>
+              {loanCard}
+            </details>
+          );
         })
       )}
     </>
@@ -7467,6 +8217,7 @@ export const ReceivablesPage = (): React.JSX.Element => {
     'before',
   );
   const [settlementOffsetDayCount, setSettlementOffsetDayCount] = useState(2);
+  const [includeInCashForecast, setIncludeInCashForecast] = useState(false);
   const [settlementReceivableId, setSettlementReceivableId] = useState('');
   const receivableActionRef = useRef<'save' | 'settle' | null>(null);
   const [receivableAction, setReceivableAction] = useState<'save' | 'settle' | null>(null);
@@ -7513,14 +8264,13 @@ export const ReceivablesPage = (): React.JSX.Element => {
     const anchorEvent = recurringBillAnchors.find((candidate) => candidate.id === anchorEventId);
     if (!anchorEvent || !Number.isInteger(dayCount) || dayCount < 0 || dayCount > 366) return;
     try {
-      setExpectedReceiptDate(
-        anchoredReceivableDateForEdit({
-          existing: editingReceivable,
-          anchorEvent: anchorEvent,
-          settlementOffsetDays: direction === 'before' ? -dayCount : dayCount,
-          onOrAfter: today,
-        }),
-      );
+      const nextExpectedDate = anchoredReceivableDateForEdit({
+        existing: editingReceivable,
+        anchorEvent: anchorEvent,
+        settlementOffsetDays: direction === 'before' ? -dayCount : dayCount,
+        onOrAfter: today,
+      });
+      setExpectedReceiptDate(nextExpectedDate);
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to calculate the first receipt.');
@@ -7548,6 +8298,7 @@ export const ReceivablesPage = (): React.JSX.Element => {
     setSettlementAnchorEventId(receivable?.settlementAnchorEventId ?? '');
     setSettlementOffsetDirection((receivable?.settlementOffsetDays ?? -2) < 0 ? 'before' : 'after');
     setSettlementOffsetDayCount(Math.abs(receivable?.settlementOffsetDays ?? -2));
+    setIncludeInCashForecast(receivable ? receivable.includeInCashForecast !== false : false);
     setEditingReceivableId(receivableId);
   };
   const receivableReplayStartDate =
@@ -7608,6 +8359,79 @@ export const ReceivablesPage = (): React.JSX.Element => {
       return receivableSettlementDates({ receivable, events: records.events, endDate });
     } catch {
       return [];
+    }
+  };
+  const nextPlannedReceiptFor = (
+    receivable: ManagedRecordsDto['receivables'][number],
+  ): ForecastEvent | undefined => {
+    try {
+      const scheduleEvents = records.events.filter(
+        (event) =>
+          event.kind === 'receivable-settlement' || event.id === receivable.settlementAnchorEventId,
+      );
+      return materializeForecastEvents({
+        accounts: records.accounts,
+        events: scheduleEvents,
+        cards: [],
+        cardCycles: [],
+        loans: [],
+        receivables: [receivable],
+        startDate: today,
+        endDate: addDays(today, 800),
+        plannedReceivableStartDate: today,
+      })
+        .filter(
+          (event) =>
+            event.kind === 'receivable-settlement' &&
+            event.status === 'planned' &&
+            event.certainty !== 'uncertain' &&
+            event.sourceRecordId === receivable.id &&
+            event.id === `receivable-settlement-${receivable.id}@${event.date}`,
+        )
+        .sort((left, right) => left.date.localeCompare(right.date))[0];
+    } catch {
+      return undefined;
+    }
+  };
+  const plannedOwedReductionFor = (
+    receivable: ManagedRecordsDto['receivables'][number],
+    receiptDate: PlainDateString,
+  ): number | undefined => {
+    try {
+      const projectionStartDate = [
+        receivableReplayStartDate,
+        receivable.accrualDate,
+        ...records.events
+          .filter((event) => event.kind === 'receivable-settlement')
+          .map((event) => event.date),
+      ]
+        .filter((date): date is PlainDateString => date !== undefined)
+        .reduce((earliest, date) => (compareDates(date, earliest) < 0 ? date : earliest), today);
+      const common = {
+        receivables: [receivable],
+        settlementEvents: records.events,
+        startDate: projectionStartDate,
+        endDate: receiptDate,
+        currentBalancesAsOfDate: today,
+        mode: 'expected' as const,
+        includeConfirmedReceivablesConservatively:
+          records.policy?.includeConfirmedReceivablesConservatively ?? true,
+      };
+      const withPlannedReceipt = projectReceivableBalances({
+        ...common,
+        plannedSettlementStartDate: today,
+      }).at(-1);
+      const withoutPlannedReceipt = projectReceivableBalances({
+        ...common,
+        plannedSettlementStartDate: addDays(receiptDate, 1),
+      }).at(-1);
+      if (!withPlannedReceipt || !withoutPlannedReceipt) return undefined;
+      return Math.max(
+        0,
+        withoutPlannedReceipt.endingOutstandingCents - withPlannedReceipt.endingOutstandingCents,
+      );
+    } catch {
+      return undefined;
     }
   };
   const settlementOccurrences =
@@ -7777,10 +8601,11 @@ export const ReceivablesPage = (): React.JSX.Element => {
         amountCents: cents(form, 'amount'),
         date: get(form, 'date'),
         occurrenceDate: get(form, 'occurrenceDate') || undefined,
+        destinationAccountId: get(form, 'destinationAccountId'),
       });
       if (response.ok) {
         setRecords(response.value);
-        setMessage('Receipt recorded once as cash and linked to the correct balance occurrence.');
+        setMessage('Funds released once to the selected account and removed from Money Owed.');
         formElement.reset();
       } else setError(response.error);
     } catch (caught) {
@@ -7795,9 +8620,9 @@ export const ReceivablesPage = (): React.JSX.Element => {
       <div className={styles.header}>
         <Title1 as="h1">Money owed to you</Title1>
         <Text>
-          Separate money already owed from future recurring reimbursements. A settlement becomes
-          cash once; a recurring schedule creates future expected receipts without inflating the
-          balance owed today.
+          Keep today&apos;s Settle Up balance separate from future recurring amounts. A recurring
+          amount becomes owed on its scheduled date; it becomes cash only when you release it to a
+          checking account.
         </Text>
       </div>
       {(message || error) && (
@@ -7821,10 +8646,10 @@ export const ReceivablesPage = (): React.JSX.Element => {
           <Text className={styles.muted}>Open, unsettled balances only</Text>
         </Card>
         <Card className={styles.metric}>
-          <Text>Average monthly recurring receipts</Text>
+          <Text>Average monthly future receivables</Text>
           <Text className={styles.value}>{formatMoney(monthlyRecurring)}</Text>
           <Text className={styles.muted}>
-            Monthly equivalent across every recurring schedule; not owed today
+            Becomes owed on future schedule dates; not owed today
           </Text>
         </Card>
         <Card className={styles.metric}>
@@ -7867,9 +8692,9 @@ export const ReceivablesPage = (): React.JSX.Element => {
                 {editingReceivable ? 'Edit money-owed record' : 'Add money owed to you'}
               </Title2>
               <Text>
-                Current balance, future cash receipts, and future balance growth are separate. For a
-                recurring reimbursement with nothing owed today, enter $0 for both current amounts
-                and configure the two schedules below.
+                Enter today&apos;s Settle Up balance separately from future recurring amounts. For a
+                recurring amount with nothing owed today, leave both current amounts at $0 and set
+                when each future amount becomes owed.
               </Text>
             </div>
             <div className={styles.grid}>
@@ -7909,10 +8734,10 @@ export const ReceivablesPage = (): React.JSX.Element => {
             </div>
             <div className={mergeClasses(styles.formSection, styles.receiptSection)}>
               <div className={styles.compact}>
-                <strong>When and where the cash should arrive</strong>
+                <strong>When the amount becomes owed</strong>
                 <Text className={styles.muted}>
-                  The forecast adds cash only on this date and only to the account you choose. The
-                  amount remains money owed to you until then.
+                  Each occurrence increases future Money Owed on this date. It does not touch a
+                  checking account until you release that occurrence after the cash arrives.
                 </Text>
               </div>
               <div className={styles.grid}>
@@ -7939,9 +8764,9 @@ export const ReceivablesPage = (): React.JSX.Element => {
                     <Select
                       name="recurrenceFrequency"
                       value={receiptFrequency}
-                      onChange={(_, data) =>
-                        setReceiptFrequency(data.value as RecurrenceRule['frequency'])
-                      }
+                      onChange={(_, data) => {
+                        setReceiptFrequency(data.value as RecurrenceRule['frequency']);
+                      }}
                     >
                       <option value="weekly">Weekly</option>
                       <option value="biweekly">Every two weeks</option>
@@ -8024,16 +8849,18 @@ export const ReceivablesPage = (): React.JSX.Element => {
                 <Field
                   label={
                     receiptTimingMode === 'bill-relative'
-                      ? 'First calculated received date'
+                      ? 'First calculated owed date'
                       : receiptTimingMode === 'once'
-                        ? 'Expected received date'
-                        : 'First expected received date'
+                        ? 'Expected owed or release date'
+                        : 'First date it becomes owed'
                   }
                   hint={
                     receiptTimingMode === 'bill-relative'
                       ? 'Calculated from the bill schedule above; later receipts keep the same before-or-after rule.'
                       : editingReceivable
-                        ? 'Changing this date moves the expected cash in the forecast.'
+                        ? includeInCashForecast
+                          ? 'Changing this date moves the expected cash and matching Money Owed timing in the forecast.'
+                          : 'Changing this date moves when the amount accrues in Money Owed. Checking cash moves only after you release it.'
                         : 'New receipts default to the first day of next month; change it whenever you know a better date.'
                   }
                 >
@@ -8043,12 +8870,14 @@ export const ReceivablesPage = (): React.JSX.Element => {
                     required
                     readOnly={receiptTimingMode === 'bill-relative'}
                     value={expectedReceiptDate}
-                    onChange={(_, data) => setExpectedReceiptDate(data.value)}
+                    onChange={(_, data) => {
+                      setExpectedReceiptDate(data.value);
+                    }}
                   />
                 </Field>
                 <Field
-                  label="Account receiving the cash"
-                  hint="Only this account balance increases on the received date."
+                  label="Default release account"
+                  hint="You can choose a different checking account each time you release funds."
                 >
                   <Select
                     name="destinationAccountId"
@@ -8076,8 +8905,8 @@ export const ReceivablesPage = (): React.JSX.Element => {
                 {receiptTimingMode !== 'once' && (
                   <>
                     <Field
-                      label="Amount received each time"
-                      hint="This creates each future cash receipt; it does not increase today's owed balance."
+                      label="Amount that becomes owed each time"
+                      hint="It appears only in future Money Owed until that occurrence date arrives."
                     >
                       <Input
                         name="recurringAmount"
@@ -8108,12 +8937,14 @@ export const ReceivablesPage = (): React.JSX.Element => {
               />
               <Checkbox
                 name="includeInCashForecast"
-                defaultChecked={editingReceivable?.includeInCashForecast !== false}
-                label="Include these expected receipts in the cash forecast"
+                checked={includeInCashForecast}
+                onChange={(_, data) => setIncludeInCashForecast(Boolean(data.checked))}
+                label="Automatically release each occurrence into checking on its schedule"
               />
               <Text className={styles.muted}>
-                Confidence and the forecast checkbox control the projection. Date confirmation is
-                only a record-status label.
+                Leave automatic release off for Settle Up-style reimbursements. The forecast will
+                still include future Money Owed, and you will choose the destination when cash
+                actually arrives.
               </Text>
             </div>
             <div className={styles.formSection}>
@@ -8247,9 +9078,8 @@ export const ReceivablesPage = (): React.JSX.Element => {
           <div className={styles.sectionIntro}>
             <Title2 as="h2">Record money received</Title2>
             <Text>
-              Use this only when cash actually arrives. A current balance is reduced; a recurring
-              receipt replaces the scheduled installment you choose below. Either way, cash is
-              created exactly once.
+              Release an owed amount only when cash actually arrives, then choose the checking
+              account that received it. The owed balance falls and cash rises exactly once.
             </Text>
           </div>
           <form className={styles.form} onSubmit={(event) => void settle(event)}>
@@ -8276,6 +9106,22 @@ export const ReceivablesPage = (): React.JSX.Element => {
               <Field label="Date received">
                 <Input name="date" type="date" defaultValue={today} max={today} required />
               </Field>
+              <Field label="Release into">
+                <Select
+                  name="destinationAccountId"
+                  key={`${settlementReceivable?.id ?? 'none'}-destination`}
+                  defaultValue={
+                    settlementReceivable?.destinationAccountId ?? records.accounts[0]?.id ?? ''
+                  }
+                  required
+                >
+                  {records.accounts.map((account) => (
+                    <option value={account.id} key={account.id}>
+                      {account.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
               {settlementReceivable && hasRecurringReceivableSchedule(settlementReceivable) && (
                 <Field
                   label="Installment this receipt settles"
@@ -8297,7 +9143,7 @@ export const ReceivablesPage = (): React.JSX.Element => {
               )}
             </div>
             <Button appearance="primary" type="submit" disabled={receivableAction !== null}>
-              {receivableAction === 'settle' ? 'Recording…' : 'Record received cash'}
+              {receivableAction === 'settle' ? 'Releasing…' : 'Release to checking'}
             </Button>
           </form>
         </Card>
@@ -8317,6 +9163,10 @@ export const ReceivablesPage = (): React.JSX.Element => {
               );
               const currentOutstanding =
                 currentOwedById.get(receivable.id) ?? receivable.remainingAmountCents;
+              const plannedCashReceipt = nextPlannedReceiptFor(receivable);
+              const plannedOwedReductionCents = plannedCashReceipt
+                ? plannedOwedReductionFor(receivable, plannedCashReceipt.date)
+                : undefined;
               const nextScheduledReceipt = hasRecurringReceivableSchedule(receivable)
                 ? receiptDatesThrough(receivable, addDays(today, 800)).find(
                     (date) => compareDates(date, today) >= 0,
@@ -8353,9 +9203,11 @@ export const ReceivablesPage = (): React.JSX.Element => {
                         Expected timing
                       </Text>
                       <strong>
-                        {receivable.settlementDateConfirmed === false
-                          ? 'Not confirmed'
-                          : (nextScheduledReceipt ?? 'No future occurrence')}
+                        {receivableExpectedTimingText({
+                          expectedDate: receivable.expectedDate,
+                          nextScheduledReceipt,
+                          settlementDateConfirmed: receivable.settlementDateConfirmed,
+                        })}
                       </strong>
                     </div>
                     <div className={styles.recordFact}>
@@ -8365,6 +9217,28 @@ export const ReceivablesPage = (): React.JSX.Element => {
                       <strong>{destination?.name ?? 'Missing account'}</strong>
                     </div>
                   </div>
+                  {plannedCashReceipt && plannedOwedReductionCents !== undefined ? (
+                    <Text className={styles.positive}>
+                      {scheduledReceivableEffectText({
+                        date: plannedCashReceipt.date,
+                        accountName: destination?.name ?? 'Missing account',
+                        cashAmountCents: plannedCashReceipt.amountCents,
+                        owedReductionCents: plannedOwedReductionCents,
+                      })}
+                    </Text>
+                  ) : plannedCashReceipt ? (
+                    <Text className={styles.positive}>
+                      {`Scheduled cash on ${plannedCashReceipt.date}: +${formatMoney(
+                        plannedCashReceipt.amountCents,
+                      )} to ${destination?.name ?? 'Missing account'}. The matching Money Owed effect is unavailable.`}
+                    </Text>
+                  ) : (
+                    <Text className={styles.muted}>
+                      {receivable.includeInCashForecast === false
+                        ? 'Held in Money Owed until you release the amount to a checking account.'
+                        : 'No automatic cash release could be generated; review its date, destination, and confidence.'}
+                    </Text>
+                  )}
                   <Text className={styles.muted}>Confidence: {receivable.certainty}</Text>
                   {(receivable.relatedExpenseId || receivable.paymentInstrument) && (
                     <Text className={styles.muted}>
@@ -8397,14 +9271,14 @@ export const ReceivablesPage = (): React.JSX.Element => {
       </Card>
       <Card className={styles.panel}>
         <div className={styles.sectionIntro}>
-          <Title2 as="h2">Recurring future receipts</Title2>
+          <Title2 as="h2">Recurring future receivables</Title2>
           <Text>
-            These are schedules, not balances owed today. Only forecast-enabled schedules create
-            expected cash on future dates.
+            These simple schedules are not part of today&apos;s Settle Up balance. Each occurrence
+            becomes Money Owed on its date, then waits for you to release it to checking.
           </Text>
         </div>
         {recurringReceivables.length === 0 ? (
-          <Text>No recurring receipts.</Text>
+          <Text>No recurring future receivables.</Text>
         ) : (
           <div className={styles.recordGrid}>
             {recurringReceivables.map((receivable) => {
@@ -8434,8 +9308,8 @@ export const ReceivablesPage = (): React.JSX.Element => {
                     Next {nextScheduledReceipt ?? 'No future occurrence'} ·{' '}
                     {destination?.name ?? 'missing account'} ·{' '}
                     {receivable.includeInCashForecast === false
-                      ? 'tracked only, excluded from forecast'
-                      : `${receivable.certainty} forecast receipt`}
+                      ? 'held as Money Owed until released'
+                      : `${receivable.certainty} automatic cash release`}
                   </Text>
                   {(receivable.relatedExpenseId || receivable.paymentInstrument) && (
                     <Text className={styles.muted}>
@@ -8457,7 +9331,7 @@ export const ReceivablesPage = (): React.JSX.Element => {
                     </Text>
                   )}
                   <Button onClick={() => beginReceivableEdit(receivable.id)}>
-                    Edit recurring receipt
+                    Edit recurring receivable
                   </Button>
                 </Card>
               );
@@ -8506,18 +9380,27 @@ export const ReceivablesPage = (): React.JSX.Element => {
             </p>
           ) : (
             <div className={styles.rows}>
-              {settlementHistory.slice(0, 24).map((settlement) => (
-                <div className={styles.row} key={settlement.id}>
-                  <div>
-                    <strong>{settlement.label}</strong>
-                    <br />
-                    <Text>
-                      {settlement.date} · {settlement.status}
-                    </Text>
+              {settlementHistory.map((settlement) => {
+                const destination = records.accounts.find(
+                  (account) => account.id === settlement.accountId,
+                );
+                return (
+                  <div className={styles.row} key={settlement.id}>
+                    <div>
+                      <strong>{settlement.label}</strong>
+                      <br />
+                      <Text>
+                        {settlement.date} · {settlement.status} · deposited to{' '}
+                        {destination?.name ?? 'missing account'}
+                        {settlement.receivableOccurrenceDate
+                          ? ` · installment scheduled ${settlement.receivableOccurrenceDate}`
+                          : ''}
+                      </Text>
+                    </div>
+                    <Text>{formatMoney(settlement.amountCents)}</Text>
                   </div>
-                  <Text>{formatMoney(settlement.amountCents)}</Text>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </details>
@@ -9035,6 +9918,11 @@ export const ReconciliationPage = (): React.JSX.Element => {
   const expectedBalance = expectedAccountBalanceOn(snapshot, selectedAccountId, selectedDate);
   const reconciliationIncomePlans = summarizeIncomePlans(records.events);
   const reconciliationIncomeStreams = summarizeBaseIncomeStreams(reconciliationIncomePlans);
+  const reconciliationAsOfDate = snapshot?.startDate ?? selectedDate;
+  const currentIncomePhases = reconciliationIncomeStreams.map((stream) => ({
+    stream,
+    phase: effectiveIncomePhase(stream, reconciliationAsOfDate),
+  }));
   const reconciliationGroupedIncomeEventIds = new Set(
     reconciliationIncomeStreams.flatMap((stream) =>
       incomeStreamMemberEvents(records.events, reconciliationIncomePlans, stream).map(
@@ -9105,184 +9993,261 @@ export const ReconciliationPage = (): React.JSX.Element => {
       <div className={styles.header}>
         <Title1 as="h1">Reconciliation</Title1>
         <Text>
-          Compare an actual account balance with the expected forecast without rewriting history.
-          Saving this check records the variance; it does not move cash or change account balances.
+          A compact source-of-truth check for today. Use the manual balance check only when a bank
+          or issuer disagrees with the model.
         </Text>
       </div>
-      <Card className={styles.panel}>
-        <form className={styles.form} onSubmit={(event) => void submit(event)}>
-          {message && (
-            <div role="status" className={styles.positive}>
-              {message}
-            </div>
-          )}
-          {error && (
-            <div role="alert" className={styles.error}>
-              {error}
-            </div>
-          )}
-          <div className={styles.grid}>
-            <Field label="Account">
-              <Select
-                name="accountId"
-                value={selectedAccountId}
-                onChange={(_, data) => {
-                  setSelectedAccountId(data.value);
-                  setForecastBalanceOverridden(false);
-                  const nextExpectedBalance = expectedAccountBalanceOn(
-                    snapshot,
-                    data.value,
-                    selectedDate,
-                  );
-                  setForecastBalance(
-                    nextExpectedBalance === undefined ? '' : centsInput(nextExpectedBalance),
-                  );
-                }}
-                required
-              >
-                {records.accounts.map((item) => (
-                  <option value={item.id} key={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field label="Date">
-              <Input
-                name="date"
-                type="date"
-                value={selectedDate}
-                onChange={(_, data) => {
-                  setSelectedDate(data.value);
-                  setForecastBalanceOverridden(false);
-                  const nextExpectedBalance = expectedAccountBalanceOn(
-                    snapshot,
-                    selectedAccountId,
-                    data.value,
-                  );
-                  setForecastBalance(
-                    nextExpectedBalance === undefined ? '' : centsInput(nextExpectedBalance),
-                  );
-                }}
-                required
-              />
-            </Field>
-            <Field
-              label="Expected modeled balance"
-              hint="Prefilled from the expected forecast for this account and date. You can override it to preserve the exact number you compared."
-            >
-              <Input
-                name="forecast"
-                inputMode="decimal"
-                value={forecastBalance}
-                onChange={(_, data) => {
-                  setForecastBalance(data.value);
-                  setForecastBalanceOverridden(true);
-                }}
-                required
-              />
-            </Field>
-            <Field label="Actual balance">
-              <Input name="actual" inputMode="decimal" required />
-            </Field>
-            <Field label="Resolution">
-              <Select name="resolution">
-                <option value="unresolved">Unresolved</option>
-                <option value="explained">Explained</option>
-                <option value="adjusted">Marked adjusted elsewhere (record only)</option>
-              </Select>
-            </Field>
-          </div>
-          {expectedBalance === undefined && (
-            <Text className={styles.warning}>
-              This date/account is outside the available forecast. Enter the modeled balance you
-              compared, or choose a date inside the current forecast horizon.
-            </Text>
-          )}
-          <Field label="Note (optional)">
-            <Textarea name="note" />
-          </Field>
-          <Button appearance="primary" type="submit">
-            Save reconciliation
-          </Button>
-        </form>
-      </Card>
-      <Card className={styles.panel}>
-        <Title2 as="h2">History</Title2>
-        {records.reconciliations.length === 0 ? (
-          <Text>No balance checks recorded yet.</Text>
-        ) : (
-          records.reconciliations.map((item) => (
-            <p key={item.id}>
-              <strong>{item.date}</strong> · variance {formatMoney(item.varianceCents)} ·{' '}
-              {reconciliationResolutionLabel(item.resolution)}
-            </p>
-          ))
+      <section className={styles.summaryStrip} aria-label="Current reconciliation facts">
+        {records.accounts.map((account) => {
+          const modeled = snapshot?.cashAccounts?.find((item) => item.id === account.id);
+          return (
+            <Card className={styles.summaryTile} key={`cash:${account.id}`}>
+              <Text className={styles.eyebrow}>Checking · {account.name}</Text>
+              <Text className={styles.amount}>
+                {formatMoney(modeled?.balanceCents ?? account.openingBalanceCents)}
+              </Text>
+              <Text className={styles.muted}>As of {reconciliationAsOfDate}</Text>
+            </Card>
+          );
+        })}
+        {records.cards.map((card) => {
+          const debt = snapshot?.revolvingDebtByCard?.find((item) => item.cardId === card.id);
+          const latestStatement = latestClosedStatementForReconciliation({
+            cardId: card.id,
+            asOfDate: reconciliationAsOfDate,
+            cycles: records.cardCycles,
+            modeled: debt,
+          });
+          return (
+            <Card className={styles.summaryTile} key={`card:${card.id}`}>
+              <Text className={styles.eyebrow}>Card · {card.name}</Text>
+              <Text className={styles.amount}>
+                {debt ? formatMoney(debt.currentBalanceCents) : 'Refresh needed'}
+              </Text>
+              <Text className={styles.muted}>Current balance</Text>
+              <Text className={styles.muted}>
+                Current due: {debt ? formatMoney(debt.amountCurrentlyDueCents) : 'No model'}
+              </Text>
+              <Text className={styles.muted}>
+                {latestStatement
+                  ? `Latest closed statement: ${formatMoney(latestStatement.amountCents)} · ${formatPlainDate(latestStatement.date)}`
+                  : 'No closed statement recorded'}
+              </Text>
+            </Card>
+          );
+        })}
+        {currentIncomePhases.flatMap(({ stream, phase }) =>
+          phase.events.map((incomeEvent) => (
+            <Card className={styles.summaryTile} key={`pay:${stream.id}:${incomeEvent.accountId}`}>
+              <Text className={styles.eyebrow}>
+                Paycheck ·{' '}
+                {records.accounts.find((account) => account.id === incomeEvent.accountId)?.name ??
+                  'Unknown account'}
+              </Text>
+              <Text className={styles.amount}>{formatMoney(incomeEvent.amountCents)}</Text>
+              <Text className={styles.muted}>
+                {Math.max(0, -(incomeEvent.incomeArrivalOffsetDays ?? 0))} day(s) early
+              </Text>
+            </Card>
+          )),
         )}
-      </Card>
+      </section>
       <Card className={styles.panel}>
-        <Title2 as="h2">Resolve forecast events</Title2>
-        <Text>
-          Preserve the original event while marking what actually happened. Use the full record
-          editor to change a date or amount before resolving it. Routed paycheck deposits stay
-          together and are managed from Income and raises.
-        </Text>
-        <div className={styles.rows}>
-          {reconciliationIncomeStreams.map((stream) => {
-            const phase = effectiveIncomePhase(stream, selectedDate);
-            return (
-              <div className={styles.row} key={`income-stream:${stream.id}`}>
-                <div className={styles.compact}>
-                  <strong>{incomeStreamTitle(stream, phase)}</strong>
-                  <Text>
-                    One income source ·{' '}
-                    {formatMoney(
-                      effectiveIncomeStreamTotalCents(
-                        stream,
-                        reconciliationIncomePlans,
-                        selectedDate,
-                      ),
-                    )}{' '}
-                    current take-home ({formatMoney(phase.totalCents)} base) ·{' '}
-                    {incomePhaseAllocationLabel(phase, records.accounts)}
-                  </Text>
-                  <Text className={styles.muted}>
-                    Status and routing apply to the linked paycheck plan, not one account leg.
-                  </Text>
-                </div>
-                <Button onClick={() => navigate('/income')}>Manage paycheck</Button>
-              </div>
-            );
-          })}
-          {records.events
-            .filter((event) => !reconciliationGroupedIncomeEventIds.has(event.id))
-            .map((event) => (
-              <div className={styles.row} key={event.id}>
-                <div>
-                  <strong>{event.label}</strong>
-                  <br />
-                  <Text>
-                    {event.date} · {formatMoney(event.amountCents)} · {event.status}
-                  </Text>
-                </div>
-                <Select
-                  aria-label={`Status for ${event.label}`}
-                  value={event.status}
-                  onChange={(_, data) =>
-                    void updateEventStatus(event, data.value as ForecastEvent['status'])
-                  }
-                >
-                  <option value="planned">Planned</option>
-                  <option value="scheduled">Scheduled</option>
-                  <option value="confirmed">Received/confirmed</option>
-                  <option value="paid">Paid</option>
-                  <option value="skipped">Skipped</option>
-                  <option value="cancelled">Cancelled</option>
-                </Select>
-              </div>
-            ))}
+        <div className={styles.recordHeader}>
+          <div className={styles.compact}>
+            <Title2 as="h2">Manual tools</Title2>
+            <Text className={styles.muted}>
+              Rare corrections stay separate from the normal account, card, and income controls.
+            </Text>
+          </div>
+          <Button
+            appearance="primary"
+            onClick={() => navigate('/records?type=forecast-event&mode=add')}
+          >
+            Add future entry
+          </Button>
         </div>
       </Card>
+      <details className={styles.disclosure}>
+        <summary>Compare an actual balance</summary>
+        <div>
+          <form className={styles.form} onSubmit={(event) => void submit(event)}>
+            {message && (
+              <div role="status" className={styles.positive}>
+                {message}
+              </div>
+            )}
+            {error && (
+              <div role="alert" className={styles.error}>
+                {error}
+              </div>
+            )}
+            <div className={styles.grid}>
+              <Field label="Account">
+                <Select
+                  name="accountId"
+                  value={selectedAccountId}
+                  onChange={(_, data) => {
+                    setSelectedAccountId(data.value);
+                    setForecastBalanceOverridden(false);
+                    const nextExpectedBalance = expectedAccountBalanceOn(
+                      snapshot,
+                      data.value,
+                      selectedDate,
+                    );
+                    setForecastBalance(
+                      nextExpectedBalance === undefined ? '' : centsInput(nextExpectedBalance),
+                    );
+                  }}
+                  required
+                >
+                  {records.accounts.map((item) => (
+                    <option value={item.id} key={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Date">
+                <Input
+                  name="date"
+                  type="date"
+                  value={selectedDate}
+                  onChange={(_, data) => {
+                    setSelectedDate(data.value);
+                    setForecastBalanceOverridden(false);
+                    const nextExpectedBalance = expectedAccountBalanceOn(
+                      snapshot,
+                      selectedAccountId,
+                      data.value,
+                    );
+                    setForecastBalance(
+                      nextExpectedBalance === undefined ? '' : centsInput(nextExpectedBalance),
+                    );
+                  }}
+                  required
+                />
+              </Field>
+              <Field
+                label="Expected modeled balance"
+                hint="Prefilled from the expected forecast for this account and date. You can override it to preserve the exact number you compared."
+              >
+                <Input
+                  name="forecast"
+                  inputMode="decimal"
+                  value={forecastBalance}
+                  onChange={(_, data) => {
+                    setForecastBalance(data.value);
+                    setForecastBalanceOverridden(true);
+                  }}
+                  required
+                />
+              </Field>
+              <Field label="Actual balance">
+                <Input name="actual" inputMode="decimal" required />
+              </Field>
+              <Field label="Resolution">
+                <Select name="resolution">
+                  <option value="unresolved">Unresolved</option>
+                  <option value="explained">Explained</option>
+                  <option value="adjusted">Marked adjusted elsewhere (record only)</option>
+                </Select>
+              </Field>
+            </div>
+            {expectedBalance === undefined && (
+              <Text className={styles.warning}>
+                This date/account is outside the available forecast. Enter the modeled balance you
+                compared, or choose a date inside the current forecast horizon.
+              </Text>
+            )}
+            <Field label="Note (optional)">
+              <Textarea name="note" />
+            </Field>
+            <Button appearance="primary" type="submit">
+              Save reconciliation
+            </Button>
+          </form>
+        </div>
+      </details>
+      <details className={styles.disclosure}>
+        <summary>Balance-check history ({records.reconciliations.length})</summary>
+        <div>
+          {records.reconciliations.length === 0 ? (
+            <Text>No balance checks recorded yet.</Text>
+          ) : (
+            records.reconciliations.map((item) => (
+              <p key={item.id}>
+                <strong>{item.date}</strong> · variance {formatMoney(item.varianceCents)} ·{' '}
+                {reconciliationResolutionLabel(item.resolution)}
+              </p>
+            ))
+          )}
+        </div>
+      </details>
+      <details className={styles.disclosure}>
+        <summary>Resolve individual forecast events</summary>
+        <div>
+          <Text>
+            Mark what actually happened while preserving the original event. Routed paychecks stay
+            together on the Income page.
+          </Text>
+          <div className={styles.rows}>
+            {reconciliationIncomeStreams.map((stream) => {
+              const phase = effectiveIncomePhase(stream, selectedDate);
+              return (
+                <div className={styles.row} key={`income-stream:${stream.id}`}>
+                  <div className={styles.compact}>
+                    <strong>{incomeStreamTitle(stream, phase)}</strong>
+                    <Text>
+                      One income source ·{' '}
+                      {formatMoney(
+                        effectiveIncomeStreamTotalCents(
+                          stream,
+                          reconciliationIncomePlans,
+                          selectedDate,
+                        ),
+                      )}{' '}
+                      current take-home ({formatMoney(phase.totalCents)} base) ·{' '}
+                      {incomePhaseAllocationLabel(phase, records.accounts)}
+                    </Text>
+                    <Text className={styles.muted}>
+                      Status and routing apply to the linked paycheck plan, not one account leg.
+                    </Text>
+                  </div>
+                  <Button onClick={() => navigate('/income')}>Manage paycheck</Button>
+                </div>
+              );
+            })}
+            {records.events
+              .filter((event) => !reconciliationGroupedIncomeEventIds.has(event.id))
+              .map((event) => (
+                <div className={styles.row} key={event.id}>
+                  <div>
+                    <strong>{event.label}</strong>
+                    <br />
+                    <Text>
+                      {event.date} · {formatMoney(event.amountCents)} · {event.status}
+                    </Text>
+                  </div>
+                  <Select
+                    aria-label={`Status for ${event.label}`}
+                    value={event.status}
+                    onChange={(_, data) =>
+                      void updateEventStatus(event, data.value as ForecastEvent['status'])
+                    }
+                  >
+                    <option value="planned">Planned</option>
+                    <option value="scheduled">Scheduled</option>
+                    <option value="confirmed">Received/confirmed</option>
+                    <option value="paid">Paid</option>
+                    <option value="skipped">Skipped</option>
+                    <option value="cancelled">Cancelled</option>
+                  </Select>
+                </div>
+              ))}
+          </div>
+        </div>
+      </details>
     </>
   );
 };

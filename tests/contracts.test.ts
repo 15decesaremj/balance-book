@@ -6,6 +6,9 @@ import {
   dailyCashPointSchema,
   displayStateForForecastEvent,
   forecastDailyEventSchema,
+  forecastRequestSchema,
+  forecastSnapshotSchema,
+  scenarioRequestSchema,
   upsertManagedEntityRequestSchema,
   verticalSliceInputSchema,
 } from '../apps/desktop/src/shared/contracts';
@@ -17,6 +20,27 @@ describe('desktop request contracts', () => {
     openingBalanceCents: 10_000,
     hardFloorCents: 0,
   };
+
+  it('keeps saved scenarios conservative by default while allowing Overview to request expected mode', () => {
+    const request = {
+      description: 'Synthetic purchase',
+      amountCents: 15_000,
+      settlementDate: '2026-07-20',
+      fundingType: 'cash' as const,
+      accountId: 'synthetic-account',
+    };
+    expect(scenarioRequestSchema.parse(request).forecastMode).toBe('conservative');
+    expect(scenarioRequestSchema.parse({ ...request, forecastMode: 'expected' }).forecastMode).toBe(
+      'expected',
+    );
+  });
+
+  it('allows Charts to request a longer read-only forecast horizon', () => {
+    expect(forecastRequestSchema.parse({})).toEqual({});
+    expect(forecastRequestSchema.parse({ requiredEndDate: '2027-07-20' })).toEqual({
+      requiredEndDate: '2027-07-20',
+    });
+  });
 
   it('accepts a first forecast without fabricated optional records', () => {
     expect(verticalSliceInputSchema.parse(minimalSetup)).toEqual(minimalSetup);
@@ -64,6 +88,53 @@ describe('desktop request contracts', () => {
     ).toThrow(/both source timing days/i);
   });
 
+  it('accepts every onboarding payment policy and requires policy-specific amounts', () => {
+    const automaticCard = {
+      cardName: 'Synthetic automatic card',
+      cardEstimateCents: 10_000,
+      cardEstimatePolicy: 'actual-reset' as const,
+      cardPaymentDayOfMonth: 15,
+      cardStatementCloseDayOfMonth: 25,
+    };
+    expect(
+      verticalSliceInputSchema.parse({
+        ...minimalSetup,
+        ...automaticCard,
+        cardPaymentPolicy: 'full-statement',
+      }),
+    ).toMatchObject({ cardPaymentPolicy: 'full-statement' });
+    expect(
+      verticalSliceInputSchema.parse({
+        ...minimalSetup,
+        ...automaticCard,
+        cardPaymentPolicy: 'minimum',
+        cardMinimumPaymentCents: 2_500,
+      }),
+    ).toMatchObject({ cardPaymentPolicy: 'minimum', cardMinimumPaymentCents: 2_500 });
+    expect(
+      verticalSliceInputSchema.parse({
+        ...minimalSetup,
+        ...automaticCard,
+        cardPaymentPolicy: 'fixed',
+        cardFixedPaymentCents: 7_500,
+      }),
+    ).toMatchObject({ cardPaymentPolicy: 'fixed', cardFixedPaymentCents: 7_500 });
+    expect(() =>
+      verticalSliceInputSchema.parse({
+        ...minimalSetup,
+        ...automaticCard,
+        cardPaymentPolicy: 'minimum',
+      }),
+    ).toThrow(/minimum payment policy requires/i);
+    expect(() =>
+      verticalSliceInputSchema.parse({
+        ...minimalSetup,
+        ...automaticCard,
+        cardPaymentPolicy: 'fixed',
+      }),
+    ).toThrow(/fixed payment policy requires/i);
+  });
+
   it('rejects card payment policies whose required amount is unresolved', () => {
     const card = {
       id: 'synthetic-card',
@@ -105,6 +176,28 @@ describe('desktop request contracts', () => {
         }),
       ).toThrow(/locked statement amount is required/i);
     }
+  });
+
+  it('accepts an actual card payment above the statement balance', () => {
+    expect(
+      upsertManagedEntityRequestSchema.parse({
+        entityType: 'card-cycle',
+        payload: {
+          id: 'synthetic-overpaid-cycle',
+          cardId: 'synthetic-card',
+          opensOn: '2026-06-01',
+          closesOn: '2026-06-30',
+          dueOn: '2026-07-15',
+          paymentOn: '2026-07-15',
+          state: 'paid',
+          defaultEstimateCents: 10_000,
+          actualActivityCents: 10_000,
+          plannedActivityCents: 0,
+          lockedStatementCents: 10_000,
+          actualPaymentCents: 15_000,
+        },
+      }),
+    ).toMatchObject({ payload: { actualPaymentCents: 15_000 } });
   });
 
   it('requires every cash card payment to identify the card liability it reduces', () => {
@@ -210,6 +303,56 @@ describe('desktop request contracts', () => {
             expectedCashCents: 0,
           },
         ],
+      }),
+    ).toThrow();
+  });
+
+  it('requires dated independent account lows for every card runway response', () => {
+    const cardPower = {
+      cardId: 'synthetic-card',
+      cardName: 'Synthetic card',
+      fundingAccountId: 'synthetic-checking',
+      fundingAccountName: 'Synthetic checking',
+      statementAmountCents: 0,
+      currentCycleAmountCents: 0,
+      spendingPowerCents: 10_000,
+      cashBackedCapacityCents: 10_000,
+      spendingPowerStatus: 'determinate' as const,
+      prePaymentShortfallCents: 0,
+      baselineEstimateSlackCents: 0,
+      futurePositionLowCents: 10_000,
+      futurePositionLowDate: '2026-08-11',
+      futurePositionLowCashCents: 8_000,
+      futurePositionLowReceivableCents: 2_000,
+      futurePositionLowAccountBalances: [
+        {
+          accountId: 'synthetic-checking',
+          accountName: 'Synthetic checking',
+          endingBalanceCents: 8_000,
+        },
+      ],
+      futureAccountLows: [
+        {
+          accountId: 'synthetic-checking',
+          accountName: 'Synthetic checking',
+          endingBalanceCents: -500,
+          date: '2026-08-12',
+        },
+      ],
+      futureCashLowCents: 8_000,
+      futureCashLowDate: '2026-08-11',
+      fundingAccountLowCents: -750,
+      fundingAccountLowDate: '2026-08-12',
+    };
+
+    expect(
+      forecastSnapshotSchema.parse({ setupComplete: true, cardSpendingPower: [cardPower] })
+        .cardSpendingPower?.[0]?.futureAccountLows,
+    ).toEqual(cardPower.futureAccountLows);
+    expect(() =>
+      forecastSnapshotSchema.parse({
+        setupComplete: true,
+        cardSpendingPower: [{ ...cardPower, futureAccountLows: undefined }],
       }),
     ).toThrow();
   });

@@ -9,6 +9,9 @@ import {
   type ForecastEvent,
 } from '@balance-book/domain';
 import {
+  assessPurchaseSafety,
+  assessReceivableFundingCoverage,
+  assessReceivableFundingCoverageSequence,
   buildForecastBundle,
   deriveEffectiveCashFloorPolicy,
   materializeForecastEvents,
@@ -535,6 +538,350 @@ describe('daily-driver floor and funding controls', () => {
       initiationDate: '2026-07-18',
       arrivalDate: '2026-07-19',
     });
+  });
+
+  it("reports the deepest low in each account's first contiguous below-floor period", () => {
+    const pnc = account({
+      id: 'pnc',
+      name: 'PNC',
+      openingBalanceCents: 0,
+      canFundOtherAccounts: false,
+    });
+    const sofi = account({
+      id: 'sofi',
+      name: 'SoFi',
+      openingBalanceCents: 10_000,
+      canFundOtherAccounts: false,
+    });
+    const result = buildForecastBundle({
+      accounts: [pnc, sofi],
+      events: [
+        event({
+          id: 'pnc-first-low',
+          accountId: pnc.id,
+          date: '2026-08-15',
+          kind: 'direct-commitment',
+          direction: 'outflow',
+          amountCents: 46_390,
+          incomeType: undefined,
+        }),
+        event({
+          id: 'pnc-deeper-next-day',
+          accountId: pnc.id,
+          date: '2026-08-16',
+          kind: 'direct-commitment',
+          direction: 'outflow',
+          amountCents: 14_470,
+          incomeType: undefined,
+        }),
+        event({
+          id: 'pnc-recovers',
+          accountId: pnc.id,
+          date: '2026-08-17',
+          amountCents: 70_000,
+        }),
+        event({
+          id: 'pnc-unrelated-later-period',
+          accountId: pnc.id,
+          date: '2026-09-01',
+          kind: 'direct-commitment',
+          direction: 'outflow',
+          amountCents: 200_000,
+          incomeType: undefined,
+        }),
+        event({
+          id: 'sofi-first-low',
+          accountId: sofi.id,
+          date: '2026-10-05',
+          kind: 'direct-commitment',
+          direction: 'outflow',
+          amountCents: 17_211,
+          incomeType: undefined,
+        }),
+      ],
+      policy: { ...policy, horizonDays: 120 },
+      startDate: '2026-07-14',
+      endDate: '2026-10-10',
+    });
+
+    expect(result.conservative.transferNeeds).toMatchObject([
+      {
+        accountId: pnc.id,
+        date: '2026-08-15',
+        shortfallCents: 46_390,
+        horizonDeepestShortfallCents: 60_860,
+        horizonDeepestShortfallDate: '2026-08-16',
+        horizonAdditionalShortfallCents: 14_470,
+      },
+      {
+        accountId: sofi.id,
+        date: '2026-10-05',
+        shortfallCents: 7_211,
+        horizonDeepestShortfallCents: 7_211,
+        horizonDeepestShortfallDate: '2026-10-05',
+        horizonAdditionalShortfallCents: 0,
+      },
+    ]);
+    expect(
+      assessReceivableFundingCoverage({
+        need: result.conservative.transferNeeds[0]!,
+        receivableDays: [
+          { date: '2026-08-15', endingOutstandingCents: 50_000 },
+          { date: '2026-08-16', endingOutstandingCents: 55_000 },
+        ],
+      }),
+    ).toEqual({
+      receivableOutstandingCents: 50_000,
+      receivableReleaseNeededCents: 46_390,
+      uncoveredAfterReceivablesCents: 0,
+      deepestReceivableOutstandingCents: 55_000,
+      deepestReceivableReleaseNeededCents: 55_000,
+      deepestUncoveredAfterReceivablesCents: 5_860,
+    });
+  });
+
+  it('never promises the same projected receivable dollars to two funding actions', () => {
+    const coverage = assessReceivableFundingCoverageSequence({
+      needs: [
+        {
+          date: '2026-08-15',
+          shortfallCents: 40_000,
+          horizonDeepestShortfallDate: '2026-08-16',
+          horizonDeepestShortfallCents: 60_000,
+        },
+        {
+          date: '2026-08-20',
+          shortfallCents: 50_000,
+          horizonDeepestShortfallDate: '2026-08-20',
+          horizonDeepestShortfallCents: 50_000,
+        },
+      ],
+      receivableDays: [
+        { date: '2026-08-15', endingOutstandingCents: 100_000 },
+        { date: '2026-08-16', endingOutstandingCents: 100_000 },
+        { date: '2026-08-20', endingOutstandingCents: 100_000 },
+      ],
+    });
+
+    expect(coverage[0]).toMatchObject({
+      receivableReleaseNeededCents: 40_000,
+      deepestReceivableReleaseNeededCents: 60_000,
+      deepestUncoveredAfterReceivablesCents: 0,
+    });
+    expect(coverage[1]).toMatchObject({
+      receivableOutstandingCents: 40_000,
+      receivableReleaseNeededCents: 40_000,
+      uncoveredAfterReceivablesCents: 10_000,
+    });
+  });
+
+  it('rechecks a later lower-low after an intervening account consumes Money Owed', () => {
+    const coverage = assessReceivableFundingCoverageSequence({
+      needs: [
+        {
+          date: '2026-08-15',
+          shortfallCents: 40_000,
+          horizonDeepestShortfallDate: '2026-08-30',
+          horizonDeepestShortfallCents: 60_000,
+        },
+        {
+          date: '2026-08-20',
+          shortfallCents: 50_000,
+          horizonDeepestShortfallDate: '2026-08-20',
+          horizonDeepestShortfallCents: 50_000,
+        },
+      ],
+      receivableDays: [
+        { date: '2026-08-15', endingOutstandingCents: 100_000 },
+        { date: '2026-08-20', endingOutstandingCents: 100_000 },
+        { date: '2026-08-30', endingOutstandingCents: 100_000 },
+      ],
+    });
+
+    expect(coverage[0]).toMatchObject({
+      receivableReleaseNeededCents: 40_000,
+      deepestReceivableOutstandingCents: 50_000,
+      deepestReceivableReleaseNeededCents: 50_000,
+      deepestUncoveredAfterReceivablesCents: 10_000,
+    });
+    expect(coverage[1]).toMatchObject({
+      receivableOutstandingCents: 60_000,
+      receivableReleaseNeededCents: 50_000,
+      uncoveredAfterReceivablesCents: 0,
+    });
+    expect(
+      coverage.reduce(
+        (total, item) =>
+          total +
+          Math.max(item.receivableReleaseNeededCents, item.deepestReceivableReleaseNeededCents),
+        0,
+      ),
+    ).toBe(100_000);
+  });
+
+  it('assesses a purchase from its cash date instead of rejecting it for an earlier global gap', () => {
+    const pnc = account({
+      id: 'pnc',
+      name: 'PNC',
+      openingBalanceCents: 10_000,
+      canFundOtherAccounts: false,
+    });
+    const sofi = account({
+      id: 'sofi',
+      name: 'SoFi',
+      openingBalanceCents: 500_000,
+      canFundOtherAccounts: false,
+    });
+    const forecast = buildForecastBundle({
+      accounts: [pnc, sofi],
+      events: [
+        event({
+          id: 'earlier-gap',
+          accountId: pnc.id,
+          date: '2026-07-15',
+          kind: 'direct-commitment',
+          direction: 'outflow',
+          amountCents: 20_000,
+          incomeType: undefined,
+        }),
+        event({
+          id: 'earlier-recovery',
+          accountId: pnc.id,
+          date: '2026-07-16',
+          amountCents: 20_000,
+        }),
+        event({
+          id: 'card-purchase-payment',
+          accountId: pnc.id,
+          date: '2026-08-15',
+          kind: 'scenario',
+          direction: 'outflow',
+          amountCents: 15_000,
+          incomeType: undefined,
+          hypothetical: true,
+          accepted: true,
+        }),
+      ],
+      policy,
+      startDate: '2026-07-14',
+      endDate: '2026-08-20',
+    });
+    expect(forecast.availableToDeployCents).toBe(0);
+
+    const covered = assessPurchaseSafety({
+      forecast: forecast.conservative,
+      cashLeavesOn: '2026-08-15',
+      fundingAccountId: pnc.id,
+      fundingAccountFloorCents: 0,
+      protectedTotalFloorCents: 0,
+      receivableDays: [{ date: '2026-08-15', endingOutstandingCents: 15_000 }],
+    });
+    expect(covered).toMatchObject({
+      safe: true,
+      fundingAccountLowCents: -5_000,
+      fundingAccountLowDate: '2026-08-15',
+      fundingAccountShortfallCents: 5_000,
+      receivableOutstandingCents: 15_000,
+      receivableReleaseNeededCents: 5_000,
+      uncoveredFundingShortfallCents: 0,
+    });
+
+    const uncovered = assessPurchaseSafety({
+      forecast: forecast.conservative,
+      cashLeavesOn: '2026-08-15',
+      fundingAccountId: pnc.id,
+      fundingAccountFloorCents: 0,
+      protectedTotalFloorCents: 0,
+      receivableDays: [{ date: '2026-08-15', endingOutstandingCents: 3_000 }],
+    });
+    expect(uncovered).toMatchObject({
+      safe: false,
+      receivableReleaseNeededCents: 3_000,
+      uncoveredFundingShortfallCents: 2_000,
+    });
+
+    const cardFunded = assessPurchaseSafety({
+      forecast: forecast.conservative,
+      cashLeavesOn: '2026-08-15',
+      fundingAccountId: pnc.id,
+      fundingAccountFloorCents: 0,
+      protectedTotalFloorCents: 0,
+      receivableDays: [{ date: '2026-08-15', endingOutstandingCents: 3_000 }],
+      enforceFundingAccountFloor: false,
+    });
+    expect(cardFunded).toMatchObject({
+      safe: true,
+      totalPositionMarginCents: 495_000,
+      fundingAccountShortfallCents: 5_000,
+      receivableReleaseNeededCents: 3_000,
+      uncoveredFundingShortfallCents: 2_000,
+    });
+  });
+
+  it('recommends funding for the next negative run without conflating a later recovered episode', () => {
+    const source = account({
+      id: 'source',
+      openingBalanceCents: 200_000,
+      hardFloorCents: 100_000,
+      transferDelayDays: 1,
+    });
+    const destination = account({
+      id: 'destination',
+      openingBalanceCents: 100_000,
+      hardFloorCents: 100_000,
+    });
+    const ballast = account({
+      id: 'ballast',
+      openingBalanceCents: 500_000,
+      canFundOtherAccounts: false,
+    });
+    const result = buildForecastBundle({
+      accounts: [source, destination, ballast],
+      events: [
+        event({
+          id: 'first-period-breach',
+          accountId: destination.id,
+          date: '2026-07-17',
+          kind: 'direct-commitment',
+          direction: 'outflow',
+          amountCents: 50_000,
+          incomeType: undefined,
+        }),
+        event({
+          id: 'period-recovery',
+          accountId: destination.id,
+          date: '2026-07-18',
+          amountCents: 50_000,
+        }),
+        event({
+          id: 'later-larger-breach',
+          accountId: destination.id,
+          date: '2026-07-20',
+          kind: 'direct-commitment',
+          direction: 'outflow',
+          amountCents: 150_000,
+          incomeType: undefined,
+        }),
+      ],
+      policy,
+      startDate: '2026-07-14',
+      endDate: '2026-07-21',
+    });
+
+    expect(result.conservative.transferNeeds[0]).toMatchObject({
+      accountId: destination.id,
+      date: '2026-07-17',
+      shortfallCents: 50_000,
+      horizonDeepestShortfallCents: 50_000,
+      horizonDeepestShortfallDate: '2026-07-17',
+      horizonAdditionalShortfallCents: 0,
+      suggestedSourceAccountId: source.id,
+      initiationDate: '2026-07-15',
+      arrivalDate: '2026-07-16',
+      sourceSurplusAfterFloorsCents: 50_000,
+    });
+    expect(result.rawSafeToDeployMarginCents).toBeGreaterThan(0);
+    expect(result.availableToDeployCents).toBe(result.rawSafeToDeployMarginCents);
   });
 
   it('jointly allocates source capacity in need-by order and leaves later needs unresolved', () => {

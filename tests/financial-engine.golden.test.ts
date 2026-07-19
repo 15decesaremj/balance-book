@@ -947,24 +947,24 @@ describe('per-card spending power', () => {
       currentCyclePaymentOn: '2026-02-10',
       currentCycleAmountCents: 5_000,
       spendingPowerCents: 20_000,
-      cashBackedCapacityCents: 3_000,
+      cashBackedCapacityCents: 5_000,
       futurePositionLowCents: 30_000,
       futurePositionLowDate: '2026-02-15',
       futureCashLowCents: 23_000,
       futureCashLowDate: '2026-02-15',
-      fundingAccountLowCents: 8_000,
+      fundingAccountLowCents: 10_000,
       fundingAccountLowDate: '2026-02-15',
     });
     expect(result.find((card) => card.cardId === 'card-late')).toMatchObject({
       currentCyclePaymentOn: '2026-02-20',
       currentCycleAmountCents: 7_500,
       spendingPowerCents: 45_000,
-      cashBackedCapacityCents: 3_000,
+      cashBackedCapacityCents: 5_000,
       futurePositionLowCents: 55_000,
       futurePositionLowDate: '2026-02-25',
       futureCashLowCents: 43_000,
       futureCashLowDate: '2026-02-25',
-      fundingAccountLowCents: 18_000,
+      fundingAccountLowCents: 20_000,
       fundingAccountLowDate: '2026-02-25',
     });
   });
@@ -1038,7 +1038,7 @@ describe('per-card spending power', () => {
       baselineEstimateSlackCents: 0,
       spendingPowerStatus: 'determinate',
       spendingPowerCents: 68_000,
-      cashBackedCapacityCents: 60_000,
+      cashBackedCapacityCents: 68_000,
     });
   });
 
@@ -1098,7 +1098,7 @@ describe('per-card spending power', () => {
       baselineEstimateSlackCents: 15_000,
       spendingPowerStatus: 'determinate',
       spendingPowerCents: 13_000,
-      cashBackedCapacityCents: 18_000,
+      cashBackedCapacityCents: 28_000,
     });
     expect(
       calculateCardPurchaseCashImpact({
@@ -1109,8 +1109,8 @@ describe('per-card spending power', () => {
       }),
     ).toMatchObject({
       baselineScheduledPaymentCents: 20_000,
-      afterPurchaseScheduledPaymentCents: 23_000,
-      incrementalCashPaymentCents: 3_000,
+      afterPurchaseScheduledPaymentCents: 33_000,
+      incrementalCashPaymentCents: 13_000,
     });
     expect(
       calculateCardPurchaseCashImpact({
@@ -1119,7 +1119,7 @@ describe('per-card spending power', () => {
         purchaseDate: '2026-01-15',
         amountCents: safe!.cashBackedCapacityCents + 1,
       }).incrementalCashPaymentCents,
-    ).toBe(3_001);
+    ).toBe(13_001);
 
     const [baselineAlreadyUnsafe] = calculateCardSpendingPower({
       ...common,
@@ -1797,6 +1797,7 @@ describe('committed synthetic golden cases', () => {
     expect(result.days[4]?.consolidatedCashCents).toBe(60_000);
     expect(result.days[4]?.minimumConsolidatedCashCents).toBe(-40_000);
     expect(result.accountShortfalls[0]?.balanceCents).toBe(-40_000);
+    expect(result.transferNeeds).toEqual([]);
   });
 
   it('22. excludes an uncertain receivable from conservative and expected cash', () => {

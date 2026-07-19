@@ -118,7 +118,9 @@ export interface VerticalSliceInput {
   cardPaymentDayOfMonth?: number;
   cardStatementCloseDayOfMonth?: number;
   cardEstimatePolicy?: 'actual-reset' | 'baseline-guardrail';
-  cardPaymentPolicy?: 'full-statement' | 'manual';
+  cardPaymentPolicy?: 'full-statement' | 'minimum' | 'fixed' | 'manual';
+  cardMinimumPaymentCents?: number;
+  cardFixedPaymentCents?: number;
   hardFloorCents: number;
   preferredFloorCents?: number;
 }
@@ -860,6 +862,10 @@ export class BalanceBookStore {
         defaultFutureStatementCents: input.cardEstimateCents,
         estimatePolicy: input.cardEstimatePolicy,
         paymentPolicy: input.cardPaymentPolicy,
+        minimumPaymentCents:
+          input.cardPaymentPolicy === 'minimum' ? input.cardMinimumPaymentCents : undefined,
+        fixedPaymentCents:
+          input.cardPaymentPolicy === 'fixed' ? input.cardFixedPaymentCents : undefined,
         paymentDayOfMonth: input.cardPaymentDayOfMonth,
         statementCloseDayOfMonth: input.cardStatementCloseDayOfMonth,
       });
@@ -1148,6 +1154,17 @@ export class BalanceBookStore {
             .where(and(eq(forecastEvents.id, entity.id), eq(forecastEvents.userId, userId)))
             .get();
           const existingEvent = existingRow ? deserializeForecastEvent(existingRow) : undefined;
+          const editsExistingReceivableSettlement = existingEvent?.kind === 'receivable-settlement';
+          if (entity.kind === 'receivable-settlement' && !editsExistingReceivableSettlement) {
+            throw new Error(
+              'Record received money through Money Owed; receivable settlements cannot be created as generic forecast events',
+            );
+          }
+          if (editsExistingReceivableSettlement && entity.kind !== 'receivable-settlement') {
+            throw new Error(
+              'A receivable settlement must remain linked to Money Owed; cancel it and record the correction there instead',
+            );
+          }
           const occurrenceMetadataFor = (
             candidate: ForecastEvent | undefined,
           ): PlainDateString | undefined => {
@@ -1165,46 +1182,39 @@ export class BalanceBookStore {
           const submittedOccurrenceMetadata = occurrenceMetadataFor(entity);
           const existingOccurrenceMetadata = occurrenceMetadataFor(existingEvent);
           const submittedInternalTarget = entity.receivableOccurrenceTargetCents;
-          const preservesStoredOccurrence =
-            existingEvent?.kind === 'receivable-settlement' &&
-            entity.kind === 'receivable-settlement' &&
-            existingEvent.sourceRecordId === entity.sourceRecordId &&
-            (submittedOccurrenceMetadata === undefined ||
-              submittedOccurrenceMetadata === existingOccurrenceMetadata);
           if (
-            existingEvent?.kind === 'receivable-settlement' &&
-            existingEvent.receivableOccurrenceTargetCents !== undefined &&
-            (entity.kind !== 'receivable-settlement' || !preservesStoredOccurrence)
+            editsExistingReceivableSettlement &&
+            existingEvent.sourceRecordId !== entity.sourceRecordId
+          ) {
+            throw new Error('A receivable settlement cannot be reassigned to a different balance');
+          }
+          if (
+            editsExistingReceivableSettlement &&
+            submittedOccurrenceMetadata !== undefined &&
+            submittedOccurrenceMetadata !== existingOccurrenceMetadata
           ) {
             throw new Error(
               'A targeted receivable receipt cannot be reassigned; cancel it and record the correction instead',
             );
           }
           if (
-            entity.kind === 'receivable-settlement' &&
+            editsExistingReceivableSettlement &&
             submittedInternalTarget !== undefined &&
-            (!preservesStoredOccurrence ||
-              existingEvent?.receivableOccurrenceTargetCents === undefined ||
-              submittedInternalTarget !== existingEvent.receivableOccurrenceTargetCents)
+            submittedInternalTarget !== existingEvent.receivableOccurrenceTargetCents
           ) {
             throw new Error(
               'A recorded receivable occurrence target is managed internally and cannot be supplied or changed',
             );
           }
-          if (
-            preservesStoredOccurrence &&
-            existingEvent?.kind === 'receivable-settlement' &&
-            entity.kind === 'receivable-settlement'
-          ) {
+          if (editsExistingReceivableSettlement) {
             entity = forecastEventSchema.parse({
               ...entity,
+              sourceRecordId: existingEvent.sourceRecordId,
               receivableOccurrenceDate:
                 entity.receivableOccurrenceDate ??
                 existingEvent.receivableOccurrenceDate ??
                 parseReceivableOccurrenceNote(existingEvent.notes),
-              receivableOccurrenceTargetCents:
-                existingEvent.receivableOccurrenceTargetCents ??
-                entity.receivableOccurrenceTargetCents,
+              receivableOccurrenceTargetCents: existingEvent.receivableOccurrenceTargetCents,
             });
           }
           const anchoredReceivables = this.orm
@@ -2361,9 +2371,19 @@ export class BalanceBookStore {
           .from(forecastEvents)
           .where(and(eq(forecastEvents.id, entityId), eq(forecastEvents.userId, userId)))
           .get();
+        const settlementAssociation =
+          eventRow?.kind === 'receivable-settlement'
+            ? this.resolveReceivableSettlementAssociation(
+                userId,
+                deserializeForecastEvent(eventRow),
+                false,
+              )
+            : undefined;
         if (
           eventRow?.kind === 'receivable-settlement' &&
-          eventRow.receivableOccurrenceTargetCents !== null
+          eventRow.receivableOccurrenceTargetCents !== null &&
+          (!settlementAssociation ||
+            hasRecurringReceivableSchedule(settlementAssociation.receivable))
         ) {
           throw new Error(
             'A receipt with frozen occurrence history cannot be deleted; cancel it to preserve the forecast baseline',
@@ -4211,6 +4231,8 @@ export class BalanceBookStore {
     date: string;
     asOfDate: string;
     occurrenceDate?: string;
+    /** Per-release destination. The receivable account remains the default for legacy callers. */
+    destinationAccountId?: string;
   }): string {
     const settlementDate = plainDateSchema.parse(input.date);
     const asOfDate = plainDateSchema.parse(input.asOfDate);
@@ -4249,12 +4271,40 @@ export class BalanceBookStore {
       throw new Error('Selected installment is not part of the receivable schedule');
     }
     const occurrenceDate = requestedOccurrenceDate ?? nearestOccurrenceDate;
+    const oneTimeAccrualOnly =
+      !repeating &&
+      parsedReceivable.remainingAmountCents === 0 &&
+      parsedReceivable.accrualDate !== undefined &&
+      (parsedReceivable.accrualAmountCents ?? 0) > 0 &&
+      parsedReceivable.accrualRecurrenceRule === undefined;
+    if (oneTimeAccrualOnly && compareDates(settlementDate, parsedReceivable.accrualDate!) < 0) {
+      throw new Error('This amount is not owed until its accrual date');
+    }
     const occurrenceUsesStaticBalance =
-      !repeating ||
-      (occurrenceDate === parsedReceivable.expectedDate &&
+      (!repeating && !oneTimeAccrualOnly) ||
+      (repeating &&
+        occurrenceDate === parsedReceivable.expectedDate &&
         parsedReceivable.originalAmountCents > 0);
     let availableAmountCents = parsedReceivable.remainingAmountCents;
     let occurrenceTargetCents: number | undefined;
+    if (oneTimeAccrualOnly) {
+      occurrenceTargetCents = parsedReceivable.accrualAmountCents!;
+      const priorSettlements = this.orm
+        .select()
+        .from(forecastEvents)
+        .where(eq(forecastEvents.userId, input.userId))
+        .all()
+        .map(deserializeForecastEvent)
+        .filter(
+          (event) =>
+            event.kind === 'receivable-settlement' &&
+            event.direction === 'inflow' &&
+            event.sourceRecordId === parsedReceivable.id &&
+            this.isAppliedReceivableSettlement(event),
+        )
+        .reduce((total, event) => total + event.amountCents, 0);
+      availableAmountCents = Math.max(0, occurrenceTargetCents - priorSettlements);
+    }
     if (repeating && !occurrenceUsesStaticBalance) {
       const occurrenceAmountCents =
         parsedReceivable.recurringAmountCents ?? parsedReceivable.originalAmountCents;
@@ -4307,7 +4357,8 @@ export class BalanceBookStore {
     if (input.amountCents <= 0 || input.amountCents > availableAmountCents) {
       throw new Error('Settlement must be positive and no more than the open occurrence amount');
     }
-    this.assertOwnedAccount(input.userId, receivable.destinationAccountId);
+    const destinationAccountId = input.destinationAccountId ?? receivable.destinationAccountId;
+    this.assertOwnedAccount(input.userId, destinationAccountId);
     const timestamp = now();
     const eventId = randomUUID();
     this.raw.transaction(() => {
@@ -4326,7 +4377,7 @@ export class BalanceBookStore {
         .values({
           id: eventId,
           userId: input.userId,
-          accountId: receivable.destinationAccountId,
+          accountId: destinationAccountId,
           date: settlementDate,
           kind: 'receivable-settlement',
           direction: 'inflow',
@@ -4337,7 +4388,7 @@ export class BalanceBookStore {
           sourceRecordId: receivable.id,
           hypothetical: false,
           accepted: false,
-          receivableOccurrenceDate: repeating ? occurrenceDate : null,
+          receivableOccurrenceDate: repeating || oneTimeAccrualOnly ? occurrenceDate : null,
           receivableOccurrenceTargetCents: occurrenceTargetCents ?? null,
           notes: null,
           createdAt: timestamp,
@@ -4360,6 +4411,8 @@ export class BalanceBookStore {
             occurrenceTargetCents,
             recurring: repeating,
             staticBalanceReducedCents: occurrenceUsesStaticBalance ? input.amountCents : 0,
+            destinationAccountId,
+            defaultDestinationAccountId: receivable.destinationAccountId,
           }),
           createdAt: timestamp,
         })
@@ -4768,10 +4821,17 @@ export class BalanceBookStore {
     }
     const repeating = hasRecurringReceivableSchedule(receivable);
     if (!repeating) {
+      const oneTimeAccrualOnly =
+        receivable.remainingAmountCents === 0 &&
+        receivable.accrualDate !== undefined &&
+        (receivable.accrualAmountCents ?? 0) > 0 &&
+        receivable.accrualRecurrenceRule === undefined;
       return {
         receivable,
+        // The expected receipt date identifies the one cash-settlement occurrence. The accrual
+        // date only controls when the amount becomes owed and may legitimately be earlier.
         occurrenceDate: receivable.expectedDate,
-        usesStaticBalance: true,
+        usesStaticBalance: !oneTimeAccrualOnly,
       };
     }
     const scheduleEvents = receivable.settlementAnchorEventId
@@ -4886,6 +4946,16 @@ export class BalanceBookStore {
       );
     }
     if (inactive) return;
+    const repeating = hasRecurringReceivableSchedule(association.receivable);
+    const oneTimeAccrualOnly =
+      !repeating &&
+      association.receivable.remainingAmountCents === 0 &&
+      association.receivable.accrualDate !== undefined &&
+      (association.receivable.accrualAmountCents ?? 0) > 0 &&
+      association.receivable.accrualRecurrenceRule === undefined;
+    if (oneTimeAccrualOnly && compareDates(event.date, association.receivable.accrualDate!) < 0) {
+      throw new Error('This amount is not owed until its accrual date');
+    }
     if (event.amountCents <= 0) {
       throw new Error('A recorded receivable receipt must be positive');
     }
@@ -4896,8 +4966,8 @@ export class BalanceBookStore {
     ) {
       throw new Error('A recorded receivable receipt must be confirmed and non-hypothetical');
     }
-    if (!hasRecurringReceivableSchedule(association.receivable) || association.usesStaticBalance)
-      return;
+    if (association.usesStaticBalance) return;
+    if (!repeating && !oneTimeAccrualOnly) return;
 
     const relatedOtherOccurrenceEvents = this.orm
       .select()
@@ -4917,8 +4987,9 @@ export class BalanceBookStore {
           ? [candidate]
           : [];
       });
-    const currentOccurrenceAmountCents =
-      association.receivable.recurringAmountCents ?? association.receivable.originalAmountCents;
+    const currentOccurrenceAmountCents = repeating
+      ? (association.receivable.recurringAmountCents ?? association.receivable.originalAmountCents)
+      : association.receivable.accrualAmountCents!;
     const recordedTargets = new Set(
       [event, ...relatedOtherOccurrenceEvents].flatMap((candidate) =>
         candidate.receivableOccurrenceTargetCents === undefined
@@ -4927,7 +4998,7 @@ export class BalanceBookStore {
       ),
     );
     if (recordedTargets.size > 1) {
-      throw new Error('Recorded receipts disagree on the recurring occurrence target');
+      throw new Error('Recorded receipts disagree on the receivable occurrence target');
     }
     const occurrenceAmountCents = [...recordedTargets][0] ?? currentOccurrenceAmountCents;
     if (
@@ -4942,7 +5013,11 @@ export class BalanceBookStore {
       .filter((candidate) => this.isAppliedReceivableSettlement(candidate))
       .reduce((total, candidate) => total + candidate.amountCents, 0);
     if (otherSettledCents + event.amountCents > occurrenceAmountCents) {
-      throw new Error('Settlement must be no more than the open recurring occurrence amount');
+      throw new Error(
+        repeating
+          ? 'Settlement must be no more than the open recurring occurrence amount'
+          : 'Settlement must be no more than the open occurrence amount',
+      );
     }
   }
 

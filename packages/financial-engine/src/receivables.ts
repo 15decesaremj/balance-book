@@ -12,8 +12,8 @@ import {
 } from '@balance-book/domain';
 import {
   hasRecurringReceivableSchedule,
+  plannedReceivableSettlementDates,
   receivableForSettlementSourceFromIndex,
-  receivableSettlementDates,
   resolveRecordedReceivableOccurrenceDate,
 } from './receivable-occurrences';
 import { expandRecurrence } from './recurrence';
@@ -71,13 +71,13 @@ export interface DailyReceivableBalance {
   }>;
 }
 
-const datesFor = (input: {
+const plannedDatesFor = (input: {
   receivable: Receivable;
   events?: readonly ForecastEvent[];
   startDate: PlainDateString;
   endDate: PlainDateString;
 }): PlainDateString[] => {
-  return receivableSettlementDates({
+  return plannedReceivableSettlementDates({
     receivable: input.receivable,
     events: input.events,
     endDate: input.endDate,
@@ -140,8 +140,41 @@ export const projectReceivableBalances = (input: {
     input.mode === 'expected'
       ? receivable.certainty !== 'uncertain'
       : receivable.certainty === 'confirmed';
+  const plannedSettlementIncluded = (receivable: Receivable): boolean =>
+    included(receivable) &&
+    receivable.includeInCashForecast !== false &&
+    (input.mode === 'expected' ||
+      (input.includeConfirmedReceivablesConservatively &&
+        receivable.settlementDateConfirmed !== false));
 
   for (const receivable of receivables) {
+    const repeating = hasRecurringReceivableSchedule(receivable);
+    const settlementBelongsToReceivable = (event: ForecastEvent): boolean =>
+      event.kind === 'receivable-settlement' &&
+      event.direction === 'inflow' &&
+      event.userId === receivable.userId &&
+      event.sourceRecordId !== undefined &&
+      receivableForSettlementSourceFromIndex(receivableById, event.sourceRecordId)?.id ===
+        receivable.id;
+    const actualSettlementIncluded = (event: ForecastEvent): boolean =>
+      (event.status === 'confirmed' || event.status === 'paid') &&
+      (input.mode === 'expected'
+        ? event.certainty !== 'uncertain'
+        : event.certainty === 'confirmed' && input.includeConfirmedReceivablesConservatively);
+    const includedActualOccurrenceDates = new Set<PlainDateString>();
+    if (repeating) {
+      for (const event of settlementEvents) {
+        if (!settlementBelongsToReceivable(event) || !actualSettlementIncluded(event)) continue;
+        includedActualOccurrenceDates.add(
+          resolveRecordedReceivableOccurrenceDate({
+            receivable,
+            events: settlementEvents,
+            settlementEvent: event,
+          }),
+        );
+      }
+    }
+
     if (included(receivable) && receivable.accrualDate && receivable.accrualAmountCents) {
       const accrualEndDate =
         receivable.recurrenceEndDate &&
@@ -160,7 +193,7 @@ export const projectReceivableBalances = (input: {
         compareDates(receivable.recurrenceEndDate, addDays(input.endDate, 800)) < 0
           ? receivable.recurrenceEndDate
           : addDays(input.endDate, 800);
-      const settlementOccurrences = receivableSettlementDates({
+      const plannedSettlementOccurrences = plannedReceivableSettlementDates({
         receivable,
         events: settlementEvents,
         endDate:
@@ -168,6 +201,11 @@ export const projectReceivableBalances = (input: {
             ? receivable.expectedDate
             : occurrenceSearchEnd,
       });
+      // A recorded early receipt is real cash and may prepay the first accrual. It remains a valid
+      // pairing candidate even though an equivalent unrecorded planned receipt is suppressed.
+      const settlementOccurrences = [
+        ...new Set([...plannedSettlementOccurrences, ...includedActualOccurrenceDates]),
+      ].sort(compareDates);
       const currentBalancesAsOfDate = input.currentBalancesAsOfDate;
       const currentBalanceAlreadyIncludesAnAccrual =
         receivable.remainingAmountCents > 0 &&
@@ -204,29 +242,50 @@ export const projectReceivableBalances = (input: {
         accrualsByDate.set(date, values);
       }
     }
-    const settlesInCash =
+    const hasExplicitAccrualSchedule =
+      receivable.accrualDate !== undefined && (receivable.accrualAmountCents ?? 0) > 0;
+    if (
       included(receivable) &&
-      receivable.includeInCashForecast !== false &&
-      (input.mode !== 'conservative' || input.includeConfirmedReceivablesConservatively);
-    if (!settlesInCash) continue;
+      repeating &&
+      receivable.includeInCashForecast === false &&
+      !hasExplicitAccrualSchedule
+    ) {
+      // A release-only recurring definition does not need a duplicate accrual schedule. Each
+      // selected receipt occurrence is itself the date on which that installment becomes owed.
+      // The first occurrence is skipped only when it already represents a stored static balance.
+      const occurrenceAccrualDates = plannedReceivableSettlementDates({
+        receivable,
+        events: settlementEvents,
+        endDate: input.endDate,
+      });
+      for (const date of occurrenceAccrualDates) {
+        if (compareDates(date, input.startDate) < 0 || compareDates(date, input.endDate) > 0) {
+          continue;
+        }
+        const occurrenceUsesStaticBalance =
+          date === receivable.expectedDate && receivable.originalAmountCents > 0;
+        if (occurrenceUsesStaticBalance) continue;
+        const cents = receivable.recurringAmountCents ?? receivable.originalAmountCents;
+        if (cents <= 0) continue;
+        const values = accrualsByDate.get(date) ?? [];
+        values.push({ receivableId: receivable.id, occurrenceDate: date, cents });
+        accrualsByDate.set(date, values);
+      }
+    }
     const actualSettlementsByOccurrence = new Map<
       PlainDateString,
       Array<{ date: PlainDateString; cents: number; included: boolean }>
     >();
     const recordedTargetsByOccurrence = new Map<PlainDateString, number>();
-    const repeating = hasRecurringReceivableSchedule(receivable);
-    if (repeating) {
+    const oneTimeAccrualOnly =
+      !repeating &&
+      receivable.remainingAmountCents === 0 &&
+      receivable.accrualDate !== undefined &&
+      (receivable.accrualAmountCents ?? 0) > 0 &&
+      receivable.accrualRecurrenceRule === undefined;
+    if (repeating || oneTimeAccrualOnly) {
       for (const event of settlementEvents) {
-        if (
-          event.kind !== 'receivable-settlement' ||
-          event.direction !== 'inflow' ||
-          event.userId !== receivable.userId ||
-          !event.sourceRecordId ||
-          receivableForSettlementSourceFromIndex(receivableById, event.sourceRecordId)?.id !==
-            receivable.id
-        ) {
-          continue;
-        }
+        if (!settlementBelongsToReceivable(event)) continue;
         const occurrenceDate = resolveRecordedReceivableOccurrenceDate({
           receivable,
           events: settlementEvents,
@@ -251,27 +310,45 @@ export const projectReceivableBalances = (input: {
         values.push({
           date: event.date,
           cents: event.amountCents,
-          included:
-            input.mode === 'expected'
-              ? event.certainty !== 'uncertain'
-              : event.certainty === 'confirmed' && input.includeConfirmedReceivablesConservatively,
+          included: actualSettlementIncluded(event),
         });
         actualSettlementsByOccurrence.set(occurrenceDate, values);
       }
     }
-    for (const date of datesFor({
-      receivable,
-      events: settlementEvents,
-      startDate: input.startDate,
-      endDate: input.endDate,
-    })) {
+    // `includeInCashForecast=false` is explicit-release mode: the accrual still creates Money
+    // Owed, but no unrecorded receipt is allowed to appear in a bank account. Confirmed release
+    // events remain real cash and reduce only their linked occurrence below.
+    const plannedDates =
+      receivable.includeInCashForecast === false
+        ? []
+        : plannedDatesFor({
+            receivable,
+            events: settlementEvents,
+            startDate: input.startDate,
+            endDate: input.endDate,
+          });
+    const plannedDateSet = new Set(plannedDates);
+    const occurrenceDates = [...new Set([...plannedDates, ...actualSettlementsByOccurrence.keys()])]
+      .filter((date) => {
+        if (plannedDateSet.has(date)) return true;
+        return (actualSettlementsByOccurrence.get(date) ?? []).some(
+          (settlement) =>
+            settlement.included &&
+            compareDates(settlement.date, input.startDate) >= 0 &&
+            compareDates(settlement.date, input.endDate) <= 0,
+        );
+      })
+      .sort(compareDates);
+    for (const date of occurrenceDates) {
       const occurrenceCents =
         recordedTargetsByOccurrence.get(date) ??
         (repeating
           ? date === receivable.expectedDate && receivable.originalAmountCents > 0
             ? receivable.remainingAmountCents
             : (receivable.recurringAmountCents ?? receivable.originalAmountCents)
-          : receivable.remainingAmountCents);
+          : receivable.remainingAmountCents > 0
+            ? receivable.remainingAmountCents
+            : (receivable.accrualAmountCents ?? 0));
       const occurrenceUsesStaticBalance =
         repeating && date === receivable.expectedDate && receivable.originalAmountCents > 0;
       const actualSettlements = actualSettlementsByOccurrence.get(date) ?? [];
@@ -282,7 +359,12 @@ export const projectReceivableBalances = (input: {
         ? occurrenceCents
         : Math.max(0, occurrenceCents - includedActualCents);
       const plannedSettlementStartDate = input.plannedSettlementStartDate ?? input.startDate;
-      if (plannedCents > 0 && compareDates(date, plannedSettlementStartDate) >= 0) {
+      if (
+        plannedDateSet.has(date) &&
+        plannedSettlementIncluded(receivable) &&
+        plannedCents > 0 &&
+        compareDates(date, plannedSettlementStartDate) >= 0
+      ) {
         const values = settlementsByDate.get(date) ?? [];
         values.push({ receivableId: receivable.id, occurrenceDate: date, cents: plannedCents });
         settlementsByDate.set(date, values);
@@ -381,13 +463,18 @@ export const projectRollingReceivableBalances = (input: {
   const replayCandidates = [
     input.replayStartDate,
     input.startDate,
-    ...input.receivables.flatMap((receivable) =>
-      receivable.remainingAmountCents === 0 &&
-      receivable.accrualDate &&
-      compareDates(receivable.accrualDate, input.endDate) <= 0
-        ? [receivable.accrualDate]
-        : [],
-    ),
+    ...input.receivables.flatMap((receivable) => {
+      if (receivable.remainingAmountCents !== 0) return [];
+      const firstAccrualDate =
+        receivable.accrualDate && (receivable.accrualAmountCents ?? 0) > 0
+          ? receivable.accrualDate
+          : hasRecurringReceivableSchedule(receivable) && receivable.includeInCashForecast === false
+            ? receivable.expectedDate
+            : undefined;
+      return firstAccrualDate && compareDates(firstAccrualDate, input.endDate) <= 0
+        ? [firstAccrualDate]
+        : [];
+    }),
     ...(input.settlementEvents ?? []).flatMap((event) => {
       const source = receivableForSettlementSourceFromIndex(receivableById, event.sourceRecordId);
       return event.kind === 'receivable-settlement' &&

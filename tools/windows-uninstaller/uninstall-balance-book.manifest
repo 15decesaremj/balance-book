@@ -4,7 +4,7 @@
     name="BalanceBook.Uninstaller"
     processorArchitecture="amd64"
     type="win32"
-    version="1.1.0.0"
+    version="1.1.1.0"
   />
   <description>Balance Book uninstaller</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">

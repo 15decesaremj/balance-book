@@ -629,6 +629,47 @@ describe('local database and authentication', () => {
     ).toEqual({ cycle_timing_complete: 0 });
   });
 
+  it('persists onboarding minimum and fixed card payment amounts', () => {
+    const store = openStore();
+    store.initializeProfiles([
+      { id: 'profile-minimum', displayName: 'Minimum', username: 'minimum' },
+      { id: 'profile-fixed', displayName: 'Fixed', username: 'fixed' },
+    ]);
+    const base = {
+      balanceAsOf: '2026-01-01',
+      accountName: 'Synthetic checking',
+      openingBalanceCents: 100_000,
+      cardEstimateCents: 10_000,
+      cardPaymentDayOfMonth: 15,
+      cardStatementCloseDayOfMonth: 25,
+      cardEstimatePolicy: 'actual-reset' as const,
+      hardFloorCents: 0,
+    };
+    store.saveVerticalSlice('profile-minimum', {
+      ...base,
+      cardName: 'Minimum card',
+      cardPaymentPolicy: 'minimum',
+      cardMinimumPaymentCents: 2_500,
+    });
+    store.saveVerticalSlice('profile-fixed', {
+      ...base,
+      cardName: 'Fixed card',
+      cardPaymentPolicy: 'fixed',
+      cardFixedPaymentCents: 7_500,
+    });
+
+    expect(store.getManagedRecords('profile-minimum').cards[0]).toMatchObject({
+      paymentPolicy: 'minimum',
+      minimumPaymentCents: 2_500,
+      fixedPaymentCents: undefined,
+    });
+    expect(store.getManagedRecords('profile-fixed').cards[0]).toMatchObject({
+      paymentPolicy: 'fixed',
+      fixedPaymentCents: 7_500,
+      minimumPaymentCents: undefined,
+    });
+  });
+
   it('persists complete-core records and round-trips an authenticated backup', async () => {
     const store = openStore();
     store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
@@ -2046,10 +2087,77 @@ describe('local database and authentication', () => {
     expect(records.events.some((event) => event.id === eventId)).toBe(false);
   });
 
-  it('moves and releases the static balance effect when settlement source or kind changes', () => {
+  it('rejects generic receivable-settlement creation and cloned settlement IDs', () => {
     const store = openStore();
     store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
     store.saveVerticalSlice('profile-a', setup);
+    store.upsertManagedEntity('profile-a', 'receivable', {
+      id: 'protected-receivable',
+      source: 'Synthetic source',
+      description: 'Protected balance',
+      originalAmountCents: 10_000,
+      remainingAmountCents: 10_000,
+      expectedDate: '2026-01-10',
+      destinationAccountId: 'profile-a-primary-cash',
+      certainty: 'expected',
+      includeInCashForecast: true,
+    });
+
+    const genericSettlement = {
+      id: 'generic-receivable-settlement',
+      accountId: 'profile-a-primary-cash',
+      date: '2026-01-05',
+      kind: 'receivable-settlement' as const,
+      direction: 'inflow' as const,
+      amountCents: 4_000,
+      certainty: 'confirmed' as const,
+      status: 'confirmed' as const,
+      label: 'Generic received cash',
+      sourceRecordId: 'protected-receivable',
+      paymentMethod: 'cash-account' as const,
+    };
+    expect(() =>
+      store.upsertManagedEntity('profile-a', 'forecast-event', genericSettlement),
+    ).toThrow(/Money Owed.*cannot be created as generic forecast events/i);
+
+    const eventId = store.recordReceivableSettlement({
+      userId: 'profile-a',
+      receivableId: 'protected-receivable',
+      amountCents: 4_000,
+      date: '2026-01-05',
+      asOfDate: '2026-01-05',
+    });
+    const event = store
+      .getManagedRecords('profile-a')
+      .events.find((candidate) => candidate.id === eventId)!;
+    expect(() =>
+      store.upsertManagedEntity('profile-a', 'forecast-event', {
+        ...event,
+        id: 'cloned-receivable-settlement',
+      }),
+    ).toThrow(/Money Owed.*cannot be created as generic forecast events/i);
+
+    const records = store.getManagedRecords('profile-a');
+    expect(
+      records.events.filter((candidate) => candidate.kind === 'receivable-settlement'),
+    ).toEqual([expect.objectContaining({ id: eventId, sourceRecordId: 'protected-receivable' })]);
+    expect(records.receivables[0]?.remainingAmountCents).toBe(6_000);
+  });
+
+  it('locks a static settlement association while allowing a valid receipt correction', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
+    store.saveVerticalSlice('profile-a', setup);
+    store.upsertManagedEntity('profile-a', 'cash-account', {
+      id: 'profile-a-reserve-cash',
+      name: 'Synthetic reserve',
+      type: 'savings',
+      openingBalanceCents: 50_000,
+      balanceAsOf: '2026-01-01',
+      includedInLiquidity: true,
+      canFundOtherAccounts: true,
+      transferDelayDays: 0,
+    });
     for (const id of ['source-receivable-a', 'source-receivable-b']) {
       store.upsertManagedEntity('profile-a', 'receivable', {
         id,
@@ -2070,33 +2178,67 @@ describe('local database and authentication', () => {
       date: '2026-01-05',
       asOfDate: '2026-01-05',
     });
-    let event = store
+    const event = store
       .getManagedRecords('profile-a')
       .events.find((candidate) => candidate.id === eventId)!;
 
+    expect(() =>
+      store.upsertManagedEntity('profile-a', 'forecast-event', {
+        ...event,
+        sourceRecordId: 'source-receivable-b',
+      }),
+    ).toThrow(/cannot be reassigned to a different balance/i);
+    expect(() =>
+      store.upsertManagedEntity('profile-a', 'forecast-event', {
+        ...event,
+        kind: 'manual-adjustment',
+      }),
+    ).toThrow(/must remain linked to Money Owed/i);
+    expect(() =>
+      store.upsertManagedEntity('profile-a', 'forecast-event', {
+        ...event,
+        receivableOccurrenceDate: '2026-01-10',
+      }),
+    ).toThrow(/targeted receivable receipt cannot be reassigned/i);
+    expect(() =>
+      store.upsertManagedEntity('profile-a', 'forecast-event', {
+        ...event,
+        receivableOccurrenceTargetCents: 10_000,
+      }),
+    ).toThrow(/occurrence target requires an occurrence date/i);
+
+    let records = store.getManagedRecords('profile-a');
+    const receivableA = records.receivables.find(
+      (receivable) => receivable.id === 'source-receivable-a',
+    )!;
+    store.upsertManagedEntity('profile-a', 'receivable', {
+      ...receivableA,
+      userId: undefined,
+      destinationAccountId: 'profile-a-reserve-cash',
+    });
     store.upsertManagedEntity('profile-a', 'forecast-event', {
       ...event,
-      sourceRecordId: 'source-receivable-b',
+      accountId: 'profile-a-reserve-cash',
+      date: '2026-01-06',
+      amountCents: 5_000,
+      label: 'Corrected received cash',
     });
-    let records = store.getManagedRecords('profile-a');
+    records = store.getManagedRecords('profile-a');
     expect(
       Object.fromEntries(
         records.receivables
           .filter((receivable) => receivable.id.startsWith('source-receivable-'))
           .map((receivable) => [receivable.id, receivable.remainingAmountCents]),
       ),
-    ).toEqual({ 'source-receivable-a': 10_000, 'source-receivable-b': 6_000 });
-
-    event = records.events.find((candidate) => candidate.id === eventId)!;
-    store.upsertManagedEntity('profile-a', 'forecast-event', {
-      ...event,
-      kind: 'manual-adjustment',
+    ).toEqual({ 'source-receivable-a': 5_000, 'source-receivable-b': 10_000 });
+    expect(records.events.find((candidate) => candidate.id === eventId)).toMatchObject({
+      accountId: 'profile-a-reserve-cash',
+      date: '2026-01-06',
+      amountCents: 5_000,
+      label: 'Corrected received cash',
+      kind: 'receivable-settlement',
+      sourceRecordId: 'source-receivable-a',
     });
-    records = store.getManagedRecords('profile-a');
-    expect(
-      records.receivables.find((receivable) => receivable.id === 'source-receivable-b')
-        ?.remainingAmountCents,
-    ).toBe(10_000);
   });
 
   it('rolls back invalid and cross-profile settlement edits without changing either record', () => {
@@ -2136,7 +2278,7 @@ describe('local database and authentication', () => {
         ...originalEvent,
         sourceRecordId: 'profile-b-private-receivable',
       }),
-    ).toThrow(/owned by this profile/i);
+    ).toThrow(/cannot be reassigned to a different balance/i);
     expect(() =>
       store.upsertManagedEntity('profile-a', 'forecast-event', {
         ...originalEvent,

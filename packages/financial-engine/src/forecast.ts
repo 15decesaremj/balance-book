@@ -293,6 +293,10 @@ export const buildForecast = (input: {
   }
   const days: DailyForecast[] = [];
   const shortfallMap = new Map<string, AccountShortfall>();
+  // Funding actions are based on the balance the user actually carries into the next day.
+  // Intraday minima remain available separately for conservative safety diagnostics, but an
+  // untimed morning outflow followed by a same-day paycheck must not create a false transfer need.
+  const closingShortfallMap = new Map<string, AccountShortfall>();
   const dependencies = new Set<string>();
 
   for (const date of dates) {
@@ -388,6 +392,21 @@ export const buildForecast = (input: {
       };
     });
 
+    for (const account of accounts) {
+      if (compareDates(date, account.balanceAsOf) < 0) continue;
+      const endingBalance = balances.get(account.id)!;
+      const floor = account.hardFloorCents ?? 0;
+      if (endingBalance >= floor) continue;
+      closingShortfallMap.set(`${account.id}:${date}`, {
+        accountId: account.id,
+        date,
+        balanceCents: endingBalance,
+        floorCents: floor,
+        shortfallCents: moneyCentsSchema.parse(floor - endingBalance),
+        eventIds: [...appliedByAccount.get(account.id)!],
+      });
+    }
+
     const consolidatedCashCents = addCents(
       ...accountBalances
         .filter(({ accountId }) => {
@@ -431,25 +450,40 @@ export const buildForecast = (input: {
     };
   });
 
+  // `accountShortfalls` intentionally retains intraday evidence for conservative diagnostics.
+  // Transfer recommendations below use daily closing shortfalls so a recovered same-day dip is
+  // not presented as money the user needs to move.
   const accountShortfalls = [...shortfallMap.values()];
   const shortfallsByAccount = new Map<string, AccountShortfall[]>();
-  for (const shortfall of accountShortfalls) {
+  for (const shortfall of closingShortfallMap.values()) {
     const entries = shortfallsByAccount.get(shortfall.accountId) ?? [];
     entries.push(shortfall);
     shortfallsByAccount.set(shortfall.accountId, entries);
   }
   const consolidatedTransferNeeds = [...shortfallsByAccount.entries()]
     .map(([accountId, shortfalls]) => {
-      const earliest = [...shortfalls].sort((left, right) =>
-        compareDates(left.date, right.date),
-      )[0]!;
-      const deepest = shortfalls.reduce((largest, candidate) =>
+      const ordered = [...shortfalls].sort((left, right) => compareDates(left.date, right.date));
+      const earliest = ordered[0]!;
+      // A funding action is anchored to the next below-floor episode, not an unrelated later
+      // episode. Once the account recovers to its floor, a future breach becomes a separate
+      // planning decision. Closing shortfalls contain one entry per date, so consecutive dates
+      // describe the complete first below-floor period.
+      const firstContiguousPeriod = [earliest];
+      for (const candidate of ordered.slice(1)) {
+        const previous = firstContiguousPeriod.at(-1)!;
+        if (compareDates(candidate.date, addDays(previous.date, 1)) !== 0) break;
+        firstContiguousPeriod.push(candidate);
+      }
+      const deepest = firstContiguousPeriod.reduce((largest, candidate) =>
         candidate.shortfallCents > largest.shortfallCents ? candidate : largest,
       );
       return {
         accountId,
         earliest,
         deepest,
+        // A transfer recommendation solves the next contiguous below-floor period. A later breach
+        // after the account has recovered is a separate dated action and must not make today's
+        // otherwise-safe source look unavailable.
         horizonRequiredCents: deepest.shortfallCents,
       };
     })

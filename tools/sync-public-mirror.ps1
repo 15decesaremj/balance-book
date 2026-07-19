@@ -68,11 +68,19 @@ if ($privateOrigin.TrimEnd('/').Replace('.git', '') -ne $PrivateRepository.TrimE
 
 $sourceCommit = (Get-GitOutput $repositoryRoot @('rev-parse', 'HEAD') | Select-Object -First 1).Trim()
 $sourceTree = (Get-GitOutput $repositoryRoot @('rev-parse', 'HEAD^{tree}') | Select-Object -First 1).Trim()
-$cachedPrivateUpstream = @(& git -C $repositoryRoot rev-parse '@{u}' 2>$null)
-$privateCachedParity = $LASTEXITCODE -eq 0 -and $cachedPrivateUpstream.Count -eq 1 -and $cachedPrivateUpstream[0].Trim() -eq $sourceCommit
+$privateUpstreamRef = @(Get-GitOutput $repositoryRoot @('for-each-ref', '--format=%(upstream)', "refs/heads/$ExpectedSourceBranch"))
+$cachedPrivateUpstream = @()
+if ($privateUpstreamRef.Count -eq 1 -and $privateUpstreamRef[0].Trim()) {
+  $cachedPrivateUpstream = @(Get-GitOutput $repositoryRoot @('rev-parse', $privateUpstreamRef[0].Trim()))
+}
+$privateCachedParity = $cachedPrivateUpstream.Count -eq 1 -and $cachedPrivateUpstream[0].Trim() -eq $sourceCommit
 $publicHead = (Get-GitOutput $destinationPath @('rev-parse', 'HEAD') | Select-Object -First 1).Trim()
-$cachedPublicUpstream = @(& git -C $destinationPath rev-parse '@{u}' 2>$null)
-$publicCachedParity = $LASTEXITCODE -eq 0 -and $cachedPublicUpstream.Count -eq 1 -and $cachedPublicUpstream[0].Trim() -eq $publicHead
+$publicUpstreamRef = @(Get-GitOutput $destinationPath @('for-each-ref', '--format=%(upstream)', "refs/heads/$ExpectedPublicBranch"))
+$cachedPublicUpstream = @()
+if ($publicUpstreamRef.Count -eq 1 -and $publicUpstreamRef[0].Trim()) {
+  $cachedPublicUpstream = @(Get-GitOutput $destinationPath @('rev-parse', $publicUpstreamRef[0].Trim()))
+}
+$publicCachedParity = $cachedPublicUpstream.Count -eq 1 -and $cachedPublicUpstream[0].Trim() -eq $publicHead
 if ((-not $privateCachedParity -or -not $publicCachedParity) -and -not $AllowUnpushedLocalCandidate) {
   throw 'Private source and public mirror must each equal their cached upstream. Fetch, reconcile, and push before a publishable sync.'
 }

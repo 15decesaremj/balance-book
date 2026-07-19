@@ -130,6 +130,8 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await skipLink.focus();
   await window.keyboard.press('Enter');
   await expect(mainContent).toBeFocused();
+  await expect(skipLink).toHaveCSS('opacity', '0');
+  await expect(skipLink).toHaveCSS('pointer-events', 'none');
   await window.getByRole('button', { name: 'Start guided setup' }).click();
   await expect(window.getByRole('heading', { name: 'First forecast setup' })).toBeVisible();
   await window.getByRole('button', { name: 'Continue' }).click();
@@ -215,7 +217,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await window.getByLabel('Planned activity').fill('0.00');
   await window.getByRole('button', { name: 'Save statement cycle' }).click();
 
-  await window.getByRole('button', { name: 'Add credit card' }).click();
+  await window.getByRole('button', { name: 'Add card or credit line' }).click();
   await window.getByLabel('Card name').fill('Rewards card');
   await window.getByLabel('Typical future statement').fill('400.00');
   await window.getByLabel('Statement closes on day').fill('15');
@@ -325,8 +327,30 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   );
   expect(everydaySafeSpendCents).toBeGreaterThan(0);
   const everydaySummary = window.getByLabel('Everyday card safe spending summary');
-  await expect(everydaySummary.getByLabel('Everyday card limiting date balances')).toBeVisible();
-  await expect(everydaySummary.getByLabel('Everyday card payment date balances')).toBeVisible();
+  await expect(everydaySummary.getByLabel('Everyday card runway lows')).toBeVisible();
+  await expect(everydaySummary.getByLabel('Everyday card total position low')).toHaveText(
+    /^\$[\d,]+\.\d{2}$/,
+  );
+  await expect(everydaySummary.getByLabel('Everyday card Primary checking account low')).toHaveText(
+    /^-?\$[\d,]+\.\d{2}$/,
+  );
+  await expect(everydaySummary.getByText('Available spend in current cycle')).toBeVisible();
+  await expect(everydaySummary.getByText('Cash-only capacity', { exact: true })).toHaveCount(0);
+  await expect(everydaySummary.getByText('Funding-account low', { exact: true })).toHaveCount(0);
+  await expect(window.getByText('Lowest liquid cash', { exact: true })).toHaveCount(0);
+  await expect(
+    window.getByRole('heading', { name: 'How each safe-spend limit is calculated' }),
+  ).toHaveCount(0);
+  await expect(window.getByLabel('Upcoming cash events table')).toHaveAttribute('tabindex', '0');
+  await expect(
+    window.getByRole('heading', { name: 'Debt, net worth, and review status' }),
+  ).toBeVisible();
+
+  // Available spend follows the selected total-position runway. The purchase advisor is the
+  // stricter conservative cash/account boundary, so exercise it against the separately displayed
+  // cash-only capacity instead of assuming those intentionally distinct controls are identical.
+  await window.getByRole('button', { name: 'Conservative' }).click();
+  await expect(window.getByText('Lowest liquid cash', { exact: true })).toBeVisible();
   const everydayFundingLow = everydaySummary
     .getByText('Funding-account low', { exact: true })
     .locator('..');
@@ -341,15 +365,6 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await expect(window.getByText('Future liquid cash low').first()).toBeVisible();
   await expect(window.getByText('Explain this card').first()).toBeVisible();
   await expect(window.getByRole('heading', { name: 'Position versus cash' })).toBeVisible();
-  await expect(window.getByLabel('Upcoming cash events table')).toHaveAttribute('tabindex', '0');
-  await expect(
-    window.getByRole('heading', { name: 'Debt, net worth, and review status' }),
-  ).toBeVisible();
-
-  // Available spend follows the selected total-position runway. The purchase advisor is the
-  // stricter conservative cash/account boundary, so exercise it against the separately displayed
-  // cash-only capacity instead of assuming those intentionally distinct controls are identical.
-  await window.getByRole('button', { name: 'Conservative' }).click();
   const everydayCashOnlyCapacity = window.getByLabel('Everyday card cash-only capacity');
   const everydayCashOnlyCapacityCents = displayedMoneyToCents(
     (await everydayCashOnlyCapacity.textContent()) ?? '',
@@ -363,7 +378,9 @@ test('completes the persistent authenticated forecast vertical slice', async () 
     .fill(centsForInput(everydayCashOnlyCapacityCents));
   await purchaseAdvisor.getByLabel('Purchase date').fill('2026-07-14');
   await purchaseAdvisor.getByRole('button', { name: 'Compare every card' }).click();
-  await expect(purchaseAdvisor.getByText('Recommended card', { exact: true })).toBeVisible();
+  await expect(
+    purchaseAdvisor.getByRole('heading', { name: 'You can use any card' }),
+  ).toBeVisible();
   const rankedSummary = purchaseAdvisor.getByText(/^Compare all 2 ranked card options$/);
   const rankedDisclosure = rankedSummary.locator('..');
   await expect(rankedDisclosure).not.toHaveAttribute('open', '');
@@ -376,8 +393,9 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   const everydayAtDisplayedLimit = purchaseAdvisor
     .getByRole('list', { name: 'Ranked card options' })
     .locator('[aria-label$=": Everyday card"]');
-  await expect(everydayAtDisplayedLimit).toContainText('Passes protected forecast');
-  await expect(everydayAtDisplayedLimit).toContainText('Floor margin after');
+  await expect(everydayAtDisplayedLimit).toContainText('Can use');
+  await expect(everydayAtDisplayedLimit).toContainText('Within total and account thresholds');
+  await expect(everydayAtDisplayedLimit).toContainText('Total-position margin');
   await expect(everydayAtDisplayedLimit).toContainText('$0.00');
 
   await purchaseAdvisor
@@ -391,7 +409,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
     .getByRole('list', { name: 'Ranked card options' })
     .locator('[aria-label$=": Everyday card"]');
   await expect(everydayOneCentOver).toContainText('Needs a plan change');
-  await expect(everydayOneCentOver).toContainText('Breaches protected floor');
+  await expect(everydayOneCentOver).toContainText('Outside a total or account threshold');
   await expect(everydayOneCentOver).toContainText('-$0.01');
   await window.setViewportSize({ width: 430, height: 900 });
   await expect(mobileRouteSelector).toBeVisible();
@@ -463,7 +481,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await window.setViewportSize({ width: 1440, height: 1000 });
 
   await openPrimaryPage(window, 'Credit cards');
-  await expect(window.getByRole('heading', { name: 'Credit cards' })).toBeVisible();
+  await expect(window.getByRole('heading', { name: 'Cards and revolving credit' })).toBeVisible();
   await expect(window.getByText('Latest closed statement')).toHaveCount(2);
   await expect(window.getByText('Current cycle spending recorded')).toHaveCount(2);
   await window.getByRole('button', { name: 'Edit card', exact: true }).first().click();
@@ -477,10 +495,111 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await window.getByRole('button', { name: 'Save statement cycle' }).click();
   await expectStatusMessage(window, 'Statement cycle updated');
   await expect(window.getByText('$125.00')).toBeVisible();
+
+  const everydayCardPanel = window
+    .getByRole('heading', { name: 'Everyday card' })
+    .locator('xpath=ancestor::*[contains(@class, "fui-Card")][1]');
+  const addScheduledPayment = async (input: {
+    date: string;
+    amount: string;
+    label: string;
+  }): Promise<void> => {
+    await everydayCardPanel.getByRole('button', { name: 'Schedule payment' }).click();
+    const paymentForm = everydayCardPanel
+      .getByRole('button', { name: 'Add payment to forecast' })
+      .locator('xpath=ancestor::form[1]');
+    await paymentForm.getByLabel('Payment date').fill(input.date);
+    await paymentForm.getByLabel('Amount').fill(input.amount);
+    await paymentForm.getByLabel('Statement (optional)').selectOption({ index: 1 });
+    await paymentForm.getByLabel('Label (optional)').fill(input.label);
+    await paymentForm.getByRole('button', { name: 'Add payment to forecast' }).click();
+    await expectStatusMessage(
+      window,
+      'payment scheduled. Its dated cash effect is now in the forecast',
+    );
+  };
+  await addScheduledPayment({
+    date: '2026-07-20',
+    amount: '125.00',
+    label: 'Synthetic installment one',
+  });
+  await addScheduledPayment({
+    date: '2026-07-25',
+    amount: '75.00',
+    label: 'Synthetic installment two',
+  });
+  const firstInstallmentRow = everydayCardPanel
+    .getByText('Synthetic installment one', { exact: true })
+    .locator('xpath=ancestor::div[2]');
+  await expect(firstInstallmentRow).toContainText('$125.00');
+  await firstInstallmentRow.getByRole('button', { name: 'Edit payment' }).click();
+  const editPaymentForm = everydayCardPanel
+    .getByRole('button', { name: 'Save payment changes' })
+    .locator('xpath=ancestor::form[1]');
+  await expect(editPaymentForm.getByLabel('Amount')).toHaveValue('125.00');
+  await editPaymentForm.getByLabel('Amount').fill('130.00');
+  await editPaymentForm.getByRole('button', { name: 'Save payment changes' }).click();
+  await expectStatusMessage(
+    window,
+    'payment updated. Its revised cash effect is now in the forecast',
+  );
+  await expect(
+    everydayCardPanel
+      .getByText('Synthetic installment one', { exact: true })
+      .locator('xpath=ancestor::div[2]'),
+  ).toContainText('$130.00');
+  const secondInstallmentRow = everydayCardPanel
+    .getByText('Synthetic installment two', { exact: true })
+    .locator('xpath=ancestor::div[2]');
+  await secondInstallmentRow.getByRole('button', { name: 'Cancel payment' }).click();
+  await expectStatusMessage(window, 'Synthetic installment two cancelled');
+  await expect(
+    everydayCardPanel.getByText('Synthetic installment two', { exact: true }),
+  ).toHaveCount(0);
+
+  await openPrimaryPage(window, 'Cash forecast');
+  const installmentState = window.getByLabel('Synthetic installment one on 2026-07-20 event state');
+  await expect(installmentState).toHaveText('Locked');
+  await expect(installmentState.locator('xpath=ancestor::tr[1]')).toContainText('-$130.00');
+  const remainingAutopayState = window.getByLabel(
+    'Everyday card statement payment on 2026-07-28 event state',
+  );
+  await expect(remainingAutopayState.locator('xpath=ancestor::tr[1]')).toContainText('-$370.00');
+  await expect(window.getByText('Synthetic installment two', { exact: true })).toHaveCount(0);
+
+  await openPrimaryPage(window, 'Credit cards');
   await expectNoSeriousAxeViolations(window);
   await window.screenshot({ path: 'local-screenshots/daily-driver-cards.png', fullPage: true });
 
-  await window.getByRole('button', { name: 'Add credit card' }).click();
+  await openPrimaryPage(window, 'Charts');
+  await expect(window.getByRole('heading', { name: 'Charts' })).toBeVisible();
+  await expect(window.getByRole('heading', { name: 'Balances over time' })).toBeVisible();
+  await expect(window.getByRole('heading', { name: 'Patterns that matter' })).toBeVisible();
+  const chartControls = window.getByRole('region', { name: 'Chart controls' });
+  const historicalToggle = chartControls.getByRole('button', { name: 'Historical' });
+  const futureToggle = chartControls.getByRole('button', { name: 'Expected future' });
+  await expect(historicalToggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(futureToggle).toHaveAttribute('aria-pressed', 'true');
+  await futureToggle.click();
+  await expect(futureToggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(historicalToggle).toHaveAttribute('aria-pressed', 'true');
+  await futureToggle.click();
+  await expect(futureToggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(window.getByText('Average monthly carry')).toBeVisible();
+  await expectNoSeriousAxeViolations(window);
+  await window.setViewportSize({ width: 430, height: 900 });
+  await expect
+    .poll(() => window.evaluate(() => document.documentElement.scrollWidth - globalThis.innerWidth))
+    .toBeLessThanOrEqual(1);
+  await window.screenshot({
+    path: 'local-screenshots/daily-driver-charts-mobile.png',
+    fullPage: true,
+  });
+  await window.setViewportSize({ width: 1440, height: 1000 });
+
+  await openPrimaryPage(window, 'Credit cards');
+
+  await window.getByRole('button', { name: 'Add card or credit line' }).click();
   await window.getByLabel('Card name').fill('Manual timing card');
   await window.getByLabel('Typical future statement').fill('125.00');
   await window.getByLabel('Payment policy').selectOption('manual');
@@ -695,9 +814,9 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await window.getByLabel('Source or label').fill('Routed salary');
   await window.getByLabel('Income type').selectOption('paycheck');
   await window.getByLabel('Net amount', { exact: true }).fill('1000.00');
-  await window.getByLabel('First or next arrival').fill('2027-01-15');
   await window.getByLabel('Cadence').selectOption('biweekly');
   await window.getByLabel('Deposit routing').selectOption('routed');
+  await window.getByLabel('Next official payday').fill('2027-01-15');
   await window.getByLabel('Paycheck destination 1').selectOption({ label: 'Primary checking' });
   await window.getByRole('button', { name: 'Add destination' }).click();
   await window.getByLabel('Paycheck destination 2').selectOption({ label: 'Reserve savings' });
@@ -827,10 +946,65 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await openPrimaryPage(window, 'Money owed to you');
   await expect(window.getByRole('heading', { name: 'Money owed to you' })).toBeVisible();
   await expect(window.getByRole('heading', { name: 'Open balances' })).toBeVisible();
-  await expect(window.getByRole('heading', { name: 'Recurring future receipts' })).toBeVisible();
+  await expect(window.getByRole('heading', { name: 'Recurring future receivables' })).toBeVisible();
   await expect(
     window.getByText('Synthetic recurring reimbursement', { exact: true }),
   ).toBeVisible();
+  await window.getByRole('button', { name: 'Edit open balance' }).click();
+  const moneyOwedEditor = window
+    .getByRole('button', { name: 'Save money-owed record' })
+    .locator('xpath=ancestor::form[1]');
+  const automaticRelease = moneyOwedEditor.getByLabel(
+    'Automatically release each occurrence into checking on its schedule',
+  );
+  const timingMethod = moneyOwedEditor.getByLabel('Timing method');
+  await expect(timingMethod).toHaveValue('once');
+  await automaticRelease.uncheck();
+  await moneyOwedEditor.getByLabel('Expected owed or release date').fill('2026-08-11');
+  const defaultReleaseAccount = moneyOwedEditor.getByLabel('Default release account');
+  await defaultReleaseAccount.selectOption({ label: 'Reserve savings' });
+  const reserveAccountId = await defaultReleaseAccount.inputValue();
+  await expect(automaticRelease).not.toBeChecked();
+  await moneyOwedEditor.getByLabel('I know the date (show it as confirmed)').uncheck();
+  await moneyOwedEditor.getByRole('button', { name: 'Save money-owed record' }).click();
+  await expectStatusMessage(window, 'Money-owed record updated');
+  const savedOpenBalance = window
+    .getByRole('button', { name: 'Edit open balance' })
+    .locator('xpath=ancestor::*[contains(@class,"fui-Card")][1]');
+  await expect(savedOpenBalance).toContainText('2026-08-11 (unconfirmed)');
+  await expect(savedOpenBalance).toContainText('Reserve savings');
+  await expect(savedOpenBalance).toContainText(
+    'Held in Money Owed until you release the amount to a checking account.',
+  );
+
+  const receivedCashForm = window
+    .getByRole('button', { name: 'Release to checking' })
+    .locator('xpath=ancestor::form[1]');
+  const receivableChoice = receivedCashForm.getByLabel('Balance or recurring receipt');
+  const openBalanceChoiceValue = await receivableChoice
+    .locator('option')
+    .filter({ hasText: 'Synthetic open reimbursement' })
+    .getAttribute('value');
+  const recurringChoiceValue = await receivableChoice
+    .locator('option')
+    .filter({ hasText: 'Synthetic recurring reimbursement' })
+    .getAttribute('value');
+  if (!openBalanceChoiceValue) throw new Error('Open receivable option is unavailable');
+  if (!recurringChoiceValue) throw new Error('Recurring receivable option is unavailable');
+  await receivableChoice.selectOption(openBalanceChoiceValue);
+  await expect(receivedCashForm.getByLabel('Release into')).toHaveValue(reserveAccountId);
+  await receivableChoice.selectOption(recurringChoiceValue);
+  await receivedCashForm.getByLabel('Amount received').fill('1.00');
+  await receivedCashForm.getByLabel('Release into').selectOption({ label: 'Reserve savings' });
+  await receivedCashForm.getByLabel('Installment this receipt settles').selectOption('2026-08-28');
+  await receivedCashForm.getByRole('button', { name: 'Release to checking' }).click();
+  await expectStatusMessage(
+    window,
+    'Funds released once to the selected account and removed from Money Owed.',
+  );
+  await window.getByText('Settlement history (1)', { exact: true }).click();
+  await expect(window.getByText(/deposited to Reserve savings/)).toBeVisible();
+  await expect(window.getByText(/installment scheduled 2026-08-28/)).toBeVisible();
   await window.setViewportSize({ width: 430, height: 900 });
   await expect
     .poll(() => window.evaluate(() => document.documentElement.scrollWidth - globalThis.innerWidth))
@@ -841,6 +1015,40 @@ test('completes the persistent authenticated forecast vertical slice', async () 
     fullPage: true,
   });
   await window.setViewportSize({ width: 1440, height: 1000 });
+
+  await openPrimaryPage(window, 'All financial records');
+  await window.getByText('Add a financial record').click();
+  const genericEventKind = window.getByLabel('Event kind');
+  await expect(genericEventKind.locator('option[value="receivable-settlement"]')).toHaveCount(0);
+  await expect(
+    window.getByText(/Use Money Owed to schedule or record received money/),
+  ).toBeVisible();
+  await window.getByLabel('Filter records').selectOption('forecast-event');
+  await window
+    .getByRole('button', {
+      name: 'Edit Settlement: Synthetic recurring reimbursement',
+      exact: true,
+    })
+    .click();
+  const settlementEditor = window.getByRole('form', { name: 'Cash event editor' });
+  await expect(settlementEditor.getByLabel('Event type')).toHaveValue(
+    'Receivable settlement (managed in Money Owed)',
+  );
+  await settlementEditor.getByLabel('Event label').fill('Recorded recurring reimbursement');
+  await settlementEditor.getByRole('button', { name: 'Save event changes' }).click();
+  await expect(settlementEditor.getByRole('status')).toContainText('Cash event updated');
+
+  await window.getByRole('button', { name: 'Advanced edit Housing on card' }).click();
+  await window.getByText('Show advanced structured fields').click();
+  const eventJson = window.getByLabel('Record fields JSON');
+  const attemptedConversion = JSON.parse(await eventJson.inputValue()) as Record<string, unknown>;
+  attemptedConversion.kind = 'receivable-settlement';
+  await eventJson.fill(JSON.stringify(attemptedConversion, null, 2));
+  await window.getByRole('button', { name: 'Save changes' }).click();
+  await expect(window.getByRole('alert')).toContainText(
+    'Use Money Owed to schedule or record received money',
+  );
+  await window.getByRole('button', { name: 'Cancel' }).click();
 
   await openPrimaryPage(window, 'Assets and net worth');
   await expect(window.getByRole('heading', { name: 'Net worth' })).toBeVisible();
@@ -904,14 +1112,16 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await window.getByLabel('New loan name').fill('Synthetic consolidated loan');
   await window.getByLabel('New lender (optional)').fill('Synthetic refinance lender');
   await window.getByLabel('New APR').fill('4.50');
-  await window.getByLabel('Quoted monthly payment (optional)').fill('');
+  await window.getByLabel('Monthly debt payment (optional)').fill('');
   await window.getByLabel('New term months').fill('48');
   await window.getByLabel('Payment account').selectOption({ label: 'Edited primary checking' });
   await window.getByLabel('Total closing and lender fees').fill('300.00');
   await window.getByLabel('Fees included in the new principal').fill('200.00');
   // Principal covers lender payoffs and financed fees, then sends exactly $1,000 of cash-out to
   // the selected destination. Only the $100 unfinanced fee should leave a bank account.
-  await window.getByLabel('New principal').fill(centsForInput(firstPayoffCents + 120_000));
+  await window
+    .getByLabel('New principal', { exact: true })
+    .fill(centsForInput(firstPayoffCents + 120_000));
   await window
     .getByLabel('Account paying cash due at closing')
     .selectOption({ label: 'Edited primary checking' });
@@ -928,9 +1138,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await window.getByRole('button', { name: 'Compare full refinance' }).click();
   await expect(window.getByRole('heading', { name: 'Current plan versus offer' })).toBeVisible();
   const refinanceComparison = window.getByRole('table');
-  await expect(
-    refinanceComparison.getByRole('row', { name: /Monthly payment burden/ }),
-  ).toBeVisible();
+  await expect(refinanceComparison.getByRole('row', { name: /Monthly cash draft/ })).toBeVisible();
   await expect(
     refinanceComparison.getByRole('row', { name: /Net remaining cash cost/ }),
   ).toBeVisible();
@@ -957,7 +1165,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   ).toBeVisible();
   await expect(
     window.getByText(
-      /Synthetic auto loan \+ Synthetic personal loan .* Synthetic consolidated loan/,
+      /Synthetic (?:personal loan \+ Synthetic auto loan|auto loan \+ Synthetic personal loan) .* Synthetic consolidated loan/,
     ),
   ).toBeVisible();
   await expect(window.getByText('Closes: 2026-08-15')).toBeVisible();
@@ -1011,7 +1219,9 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await window.getByLabel('Fees included in the new principal').fill('0.00');
   // This second refinance contributes $500 toward principal and pays $150 of fees, all from the
   // reserve account, proving the cash-contribution branch can stack after a cash-out refinance.
-  await window.getByLabel('New principal').fill(centsForInput(replacementPayoffCents - 50_000));
+  await window
+    .getByLabel('New principal', { exact: true })
+    .fill(centsForInput(replacementPayoffCents - 50_000));
   await window
     .getByLabel('Account paying cash due at closing')
     .selectOption({ label: 'Reserve savings' });
@@ -1105,7 +1315,19 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await expect(stackedFirstPaymentDay).toContainText('Synthetic second replacement payment');
 
   await openPrimaryPage(window, 'Loans');
-  const futureReplacementCard = window
+  const futureReplacementDisclosure = window
+    .getByRole('strong')
+    .filter({ hasText: /^Synthetic consolidated loan$/ })
+    .locator('xpath=ancestor::details[1]');
+  const futureReplacementSummary = futureReplacementDisclosure.locator(':scope > summary');
+  await expect(futureReplacementDisclosure).not.toHaveAttribute('open', '');
+  await expect(futureReplacementSummary).toContainText(
+    'Scheduled to start with Synthetic consolidation refinance on 2026-08-15',
+  );
+  await expect(futureReplacementSummary).toContainText('Future balance');
+  await futureReplacementSummary.click();
+  await expect(futureReplacementDisclosure).toHaveAttribute('open', '');
+  const futureReplacementCard = futureReplacementDisclosure
     .getByRole('heading', { name: 'Synthetic consolidated loan' })
     .locator('..')
     .locator('..');
@@ -1119,6 +1341,8 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   );
 
   await openPrimaryPage(window, 'Reconciliation');
+  const manualBalanceCheck = window.getByText('Compare an actual balance', { exact: true });
+  await manualBalanceCheck.click();
   await window.getByLabel('Date', { exact: true }).fill('2026-08-01');
   await window.getByLabel('Expected modeled balance').fill('2500.00');
   await window.getByLabel('Actual balance').fill('2450.00');

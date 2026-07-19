@@ -1,5 +1,5 @@
 import type { ForecastSnapshotDto, ScenarioResponseDto } from '../shared/contracts';
-import { formatMoney } from './utils';
+import { formatMoney, formatPlainDate } from './utils';
 
 export type DashboardCardPower = NonNullable<ForecastSnapshotDto['cardSpendingPower']>[number];
 
@@ -22,8 +22,8 @@ export const advisorVerdictLabel: Record<ScenarioResponseDto['verdict'], string>
 };
 
 export const advisorStatusLabel: Record<AdvisorResultStatus, string> = {
-  safe: 'Passes protected forecast',
-  'transfer-required': 'Passes after transfer',
+  safe: 'Can use',
+  'transfer-required': 'Can use after transfer',
   'income-dependent': 'Conditional on expected income',
   unsafe: 'Needs a plan change',
 };
@@ -44,6 +44,7 @@ const hasCompleteTransferPlan = (result: CardAdvisorResult): boolean =>
 
 export const advisorResultStatus = (result: CardAdvisorResult): AdvisorResultStatus => {
   const { scenario } = result;
+  if (scenario.purchaseSafety) return scenario.purchaseSafety.safe ? 'safe' : 'unsafe';
   if (scenario.afterHardFloorMarginCents < 0 || scenario.verdict === 'breaches-protected-floor') {
     return 'unsafe';
   }
@@ -77,6 +78,16 @@ export const rankAdvisorResults = (results: CardAdvisorResult[]): CardAdvisorRes
     const safetyDifference =
       advisorSafetyTier[advisorResultStatus(left)] - advisorSafetyTier[advisorResultStatus(right)];
     if (safetyDifference !== 0) return safetyDifference;
+    if (left.scenario.purchaseSafety && right.scenario.purchaseSafety) {
+      const scopedMarginDifference =
+        right.scenario.purchaseSafety.totalPositionMarginCents -
+        left.scenario.purchaseSafety.totalPositionMarginCents;
+      if (scopedMarginDifference !== 0) return scopedMarginDifference;
+      const releaseDifference =
+        left.scenario.purchaseSafety.receivableReleaseNeededCents -
+        right.scenario.purchaseSafety.receivableReleaseNeededCents;
+      if (releaseDifference !== 0) return releaseDifference;
+    }
     const verdictDifference =
       advisorVerdictRank[left.scenario.verdict] - advisorVerdictRank[right.scenario.verdict];
     if (verdictDifference !== 0) return verdictDifference;
@@ -98,6 +109,28 @@ export const rankAdvisorResults = (results: CardAdvisorResult[]): CardAdvisorRes
   });
 
 export const advisorReason = (result: CardAdvisorResult): string => {
+  const scoped = result.scenario.purchaseSafety;
+  if (scoped) {
+    if (scoped.safe && scoped.fundingAccountShortfallCents > 0) {
+      const releasePart =
+        scoped.receivableReleaseNeededCents > 0
+          ? `release ${formatMoney(scoped.receivableReleaseNeededCents)} of Money Owed`
+          : '';
+      const transferPart =
+        scoped.uncoveredFundingShortfallCents > 0
+          ? `move the remaining ${formatMoney(scoped.uncoveredFundingShortfallCents)} from another included cash account`
+          : '';
+      const fundingAction = [releasePart, transferPart].filter(Boolean).join(' and ');
+      return `You can use it because total position stays ${formatMoney(scoped.totalPositionMarginCents)} above its threshold. By ${formatPlainDate(scoped.fundingAccountLowDate)}, ${result.scenario.fundingAccountName} needs ${formatMoney(scoped.fundingAccountShortfallCents)} of funding${fundingAction ? `: ${fundingAction}` : ''}.`;
+    }
+    if (scoped.safe) {
+      return `You can use it. Total position stays ${formatMoney(scoped.totalPositionMarginCents)} above its threshold and ${result.scenario.fundingAccountName} stays above its account minimum.`;
+    }
+    if (scoped.totalPositionMarginCents < 0) {
+      return `Do not use it for this purchase: total position would fall ${formatMoney(Math.abs(scoped.totalPositionMarginCents))} below its threshold on ${formatPlainDate(scoped.totalPositionLowDate)}.`;
+    }
+    return `Do not use it without another funding action: after applying ${formatMoney(scoped.receivableReleaseNeededCents)} of projected money owed, ${result.scenario.fundingAccountName} is still ${formatMoney(scoped.uncoveredFundingShortfallCents)} short on ${formatPlainDate(scoped.fundingAccountLowDate)}.`;
+  }
   const margin = formatMoney(result.scenario.afterHardFloorMarginCents);
   switch (result.scenario.verdict) {
     case 'affordable-under-current-assumptions':

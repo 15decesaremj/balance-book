@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $Destination,
   [string] $PublicRepository = 'https://github.com/15decesaremj/balance-book.git',
-  [string] $CommitMessage = 'release: publish Balance Book 1.1.0 source',
+  [string] $CommitMessage = 'release: publish Balance Book 1.1.1 source',
   [string] $ExpectedSourceBranch = 'master',
   [switch] $AllowUnpushedLocalCandidate
 )

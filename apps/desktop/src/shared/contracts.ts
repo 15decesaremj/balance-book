@@ -91,7 +91,9 @@ export const verticalSliceInputSchema = z
     cardPaymentDayOfMonth: z.number().int().min(1).max(31).optional(),
     cardStatementCloseDayOfMonth: z.number().int().min(1).max(31).optional(),
     cardEstimatePolicy: z.enum(['actual-reset', 'baseline-guardrail']).optional(),
-    cardPaymentPolicy: z.enum(['full-statement', 'manual']).optional(),
+    cardPaymentPolicy: z.enum(['full-statement', 'minimum', 'fixed', 'manual']).optional(),
+    cardMinimumPaymentCents: z.number().int().positive().safe().optional(),
+    cardFixedPaymentCents: z.number().int().positive().safe().optional(),
     hardFloorCents: z.number().int().nonnegative().safe(),
     preferredFloorCents: z.number().int().nonnegative().safe().optional(),
   })
@@ -125,7 +127,11 @@ export const verticalSliceInputSchema = z
       input.cardPaymentPolicy,
     ];
     const cardTiming = [input.cardPaymentDayOfMonth, input.cardStatementCloseDayOfMonth];
-    if ([...cardCore, ...cardTiming].some((value) => value !== undefined)) {
+    if (
+      [...cardCore, ...cardTiming, input.cardMinimumPaymentCents, input.cardFixedPaymentCents].some(
+        (value) => value !== undefined,
+      )
+    ) {
       if (cardCore.some((value) => value === undefined)) {
         context.addIssue({
           code: 'custom',
@@ -149,7 +155,35 @@ export const verticalSliceInputSchema = z
         context.addIssue({
           code: 'custom',
           path: ['cardStatementCloseDayOfMonth'],
-          message: 'Full-statement guidance needs complete card timing',
+          message: 'Automatic payment guidance needs complete card timing',
+        });
+      }
+      if (input.cardPaymentPolicy === 'minimum' && input.cardMinimumPaymentCents === undefined) {
+        context.addIssue({
+          code: 'custom',
+          path: ['cardMinimumPaymentCents'],
+          message: 'A minimum payment policy requires a positive minimum payment amount',
+        });
+      }
+      if (input.cardPaymentPolicy === 'fixed' && input.cardFixedPaymentCents === undefined) {
+        context.addIssue({
+          code: 'custom',
+          path: ['cardFixedPaymentCents'],
+          message: 'A fixed payment policy requires a positive fixed payment amount',
+        });
+      }
+      if (input.cardPaymentPolicy !== 'minimum' && input.cardMinimumPaymentCents !== undefined) {
+        context.addIssue({
+          code: 'custom',
+          path: ['cardMinimumPaymentCents'],
+          message: 'A minimum payment amount is only valid with the minimum payment policy',
+        });
+      }
+      if (input.cardPaymentPolicy !== 'fixed' && input.cardFixedPaymentCents !== undefined) {
+        context.addIssue({
+          code: 'custom',
+          path: ['cardFixedPaymentCents'],
+          message: 'A fixed payment amount is only valid with the fixed payment policy',
         });
       }
     }
@@ -278,6 +312,14 @@ const cardSpendingPowerSchema = z.array(
         endingBalanceCents: z.number().int().safe(),
       }),
     ),
+    futureAccountLows: z.array(
+      z.object({
+        accountId: z.string(),
+        accountName: z.string(),
+        endingBalanceCents: z.number().int().safe(),
+        date: plainDateSchema,
+      }),
+    ),
     paymentDatePositionCents: z.number().int().safe().optional(),
     paymentDateCashCents: z.number().int().safe().optional(),
     paymentDateReceivableCents: z.number().int().nonnegative().safe().optional(),
@@ -329,6 +371,12 @@ const transferNeedsSchema = z.array(
     horizonDeepestShortfallCents: z.number().int().nonnegative().safe().optional(),
     horizonDeepestShortfallDate: plainDateSchema.optional(),
     horizonAdditionalShortfallCents: z.number().int().nonnegative().safe().optional(),
+    receivableOutstandingCents: z.number().int().nonnegative().safe().optional(),
+    receivableReleaseNeededCents: z.number().int().nonnegative().safe().optional(),
+    uncoveredAfterReceivablesCents: z.number().int().nonnegative().safe().optional(),
+    deepestReceivableOutstandingCents: z.number().int().nonnegative().safe().optional(),
+    deepestReceivableReleaseNeededCents: z.number().int().nonnegative().safe().optional(),
+    deepestUncoveredAfterReceivablesCents: z.number().int().nonnegative().safe().optional(),
     initiationDate: plainDateSchema.optional(),
     arrivalDate: plainDateSchema.optional(),
     sourceSurplusAfterFloorsCents: z.number().int().safe().optional(),
@@ -444,6 +492,7 @@ export const scenarioRequestSchema = z
     amountCents: z.number().int().positive().safe(),
     settlementDate: plainDateSchema,
     fundingType: z.enum(['cash', 'card']).default('cash'),
+    forecastMode: z.enum(['expected', 'conservative']).default('conservative'),
     accountId: z.string().min(1).max(128).optional(),
     cardId: z.string().min(1).max(128).optional(),
   })
@@ -470,6 +519,21 @@ export const scenarioResponseSchema = z.object({
   transferNeeds: transferNeedsSchema,
   fundingAccountName: z.string(),
   cardName: z.string().optional(),
+  purchaseSafety: z
+    .object({
+      safe: z.boolean(),
+      totalPositionLowCents: z.number().int().safe(),
+      totalPositionLowDate: plainDateSchema,
+      totalPositionMarginCents: z.number().int().safe(),
+      fundingAccountLowCents: z.number().int().safe(),
+      fundingAccountLowDate: plainDateSchema,
+      fundingAccountFloorCents: z.number().int().nonnegative().safe(),
+      fundingAccountShortfallCents: z.number().int().nonnegative().safe(),
+      receivableOutstandingCents: z.number().int().nonnegative().safe(),
+      receivableReleaseNeededCents: z.number().int().nonnegative().safe(),
+      uncoveredFundingShortfallCents: z.number().int().nonnegative().safe(),
+    })
+    .optional(),
   baselineCardPaymentCents: z.number().int().nonnegative().safe().optional(),
   afterPurchaseCardPaymentCents: z.number().int().nonnegative().safe().optional(),
   incrementalCashPaymentCents: z.number().int().nonnegative().safe().optional(),
@@ -490,6 +554,7 @@ export const receivableSettlementRequestSchema = z
     amountCents: z.number().int().positive().safe(),
     date: plainDateSchema,
     occurrenceDate: plainDateSchema.optional(),
+    destinationAccountId: z.string().min(1).max(128),
   })
   .strict();
 export type ReceivableSettlementRequest = z.infer<typeof receivableSettlementRequestSchema>;
@@ -528,6 +593,11 @@ export const updateCashPolicyRequestSchema = cashFloorPolicySchema;
 export type UpdateCashPolicyRequest = z.infer<typeof updateCashPolicyRequestSchema>;
 
 export const emptyRequestSchema = z.object({}).strict();
+export const forecastRequestSchema = z
+  .object({ requiredEndDate: plainDateSchema.optional() })
+  .strict()
+  .default({});
+export type ForecastRequest = z.infer<typeof forecastRequestSchema>;
 export const successSchema = z.object({ success: z.literal(true) });
 
 export const managedRecordsSchema = z.object({
@@ -738,7 +808,7 @@ export interface BalanceBookApi {
   login(input: LoginRequest): Promise<IpcResult<SessionDto>>;
   logout(): Promise<IpcResult<{ success: true }>>;
   getSession(): Promise<IpcResult<SessionDto | null>>;
-  getForecast(): Promise<IpcResult<ForecastSnapshotDto>>;
+  getForecast(input?: ForecastRequest): Promise<IpcResult<ForecastSnapshotDto>>;
   saveVerticalSlice(input: VerticalSliceRequest): Promise<IpcResult<ForecastSnapshotDto>>;
   getOnboardingDraft(): Promise<IpcResult<OnboardingDraftDto>>;
   saveOnboardingDraft(input: SaveOnboardingDraftRequest): Promise<IpcResult<{ success: true }>>;

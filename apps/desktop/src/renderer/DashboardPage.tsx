@@ -24,7 +24,7 @@ import {
 } from 'recharts';
 import { Temporal } from '@js-temporal/polyfill';
 import { useNavigate } from 'react-router';
-import type { ForecastSnapshotDto } from '../shared/contracts';
+import type { ForecastSnapshotDto, ScenarioResponseDto } from '../shared/contracts';
 import {
   advisorReason,
   advisorResultIsFundable,
@@ -45,13 +45,18 @@ type SeriesId = 'position' | 'cash' | `account:${string}`;
 type DailyPoint = NonNullable<ForecastSnapshotDto['dailyCash']>[number];
 type CardPowerRow = NonNullable<ForecastSnapshotDto['cardSpendingPower']>[number];
 type FundingNeed = NonNullable<ForecastSnapshotDto['transferNeeds']>[number];
+type CashAdvisorResult = {
+  accountId: string;
+  accountName: string;
+  scenario: ScenarioResponseDto;
+};
 
 const useDashboardStyles = makeStyles({
   page: {
     display: 'grid',
     width: '100%',
     minWidth: 0,
-    gap: tokens.spacingVerticalXXL,
+    gap: '24px',
     maxWidth: '1500px',
     marginInline: 'auto',
   },
@@ -77,8 +82,9 @@ const useDashboardStyles = makeStyles({
     gap: '3px',
     padding: '4px',
     border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
-    borderRadius: tokens.borderRadiusLarge,
-    backgroundColor: tokens.colorNeutralBackground3,
+    borderRadius: tokens.borderRadiusCircular,
+    backgroundColor: 'color-mix(in srgb, var(--balance-glass-highlight) 32%, transparent)',
+    backdropFilter: 'blur(18px) saturate(145%)',
   },
   status: {
     display: 'flex',
@@ -89,7 +95,8 @@ const useDashboardStyles = makeStyles({
     border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
     borderLeft: `5px solid ${tokens.colorBrandStroke1}`,
     borderRadius: tokens.borderRadiusXLarge,
-    backgroundColor: tokens.colorNeutralBackground1,
+    backgroundColor: 'var(--balance-glass)',
+    backdropFilter: 'blur(24px) saturate(145%)',
     '@media (max-width: 760px)': { alignItems: 'flex-start', flexDirection: 'column' },
   },
   statusWarning: { borderLeftColor: tokens.colorPaletteDarkOrangeBorder2 },
@@ -141,10 +148,11 @@ const useDashboardStyles = makeStyles({
     gap: tokens.spacingVerticalXL,
     overflow: 'hidden',
     border: `${tokens.strokeWidthThin} solid ${tokens.colorBrandStroke2}`,
-    borderRadius: tokens.borderRadiusXLarge,
-    backgroundColor: tokens.colorNeutralBackground1,
-    backgroundImage: `radial-gradient(circle at 88% 0%, ${tokens.colorBrandBackground2} 0, transparent 45%)`,
+    borderRadius: '28px',
+    backgroundColor: 'var(--balance-glass-strong)',
+    backgroundImage: `radial-gradient(circle at 88% 0%, ${tokens.colorBrandBackground2} 0, transparent 45%), linear-gradient(145deg, var(--balance-glass-highlight), transparent 40%)`,
     boxShadow: tokens.shadow8,
+    backdropFilter: 'blur(28px) saturate(150%)',
   },
   safeSpendGrid: {
     display: 'grid',
@@ -227,6 +235,27 @@ const useDashboardStyles = makeStyles({
     alignItems: 'flex-start',
     gap: tokens.spacingHorizontalM,
   },
+  cardTitleRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: tokens.spacingHorizontalS,
+    minWidth: 0,
+  },
+  resetBadge: {
+    width: '34px',
+    height: '34px',
+    flex: '0 0 34px',
+    display: 'grid',
+    placeItems: 'center',
+    border: `${tokens.strokeWidthThin} solid ${tokens.colorBrandStroke2}`,
+    borderRadius: tokens.borderRadiusCircular,
+    color: tokens.colorBrandForeground1,
+    backgroundColor: tokens.colorBrandBackground2,
+    boxShadow: `inset 0 1px 0 var(--balance-glass-highlight), ${tokens.shadow4}`,
+    fontSize: tokens.fontSizeBase300,
+    fontWeight: tokens.fontWeightBold,
+    fontVariantNumeric: 'tabular-nums',
+  },
   powerValue: {
     display: 'block',
     fontSize: tokens.fontSizeBase600,
@@ -256,9 +285,10 @@ const useDashboardStyles = makeStyles({
     display: 'grid',
     gap: tokens.spacingVerticalL,
     border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
-    borderRadius: tokens.borderRadiusXLarge,
-    backgroundColor: tokens.colorNeutralBackground1,
-    boxShadow: tokens.shadow4,
+    borderRadius: '24px',
+    backgroundColor: 'var(--balance-glass)',
+    boxShadow: `inset 0 1px 0 var(--balance-glass-highlight), ${tokens.shadow4}`,
+    backdropFilter: 'blur(24px) saturate(145%)',
   },
   chart: {
     width: '100%',
@@ -644,6 +674,7 @@ export const DashboardPage = ({
   const [advisorAmount, setAdvisorAmount] = useState('');
   const [advisorDate, setAdvisorDate] = useState(today);
   const [advisorResults, setAdvisorResults] = useState<CardAdvisorResult[] | null>(null);
+  const [cashAdvisorResults, setCashAdvisorResults] = useState<CashAdvisorResult[] | null>(null);
   const [advisorEvaluation, setAdvisorEvaluation] = useState<{
     amountCents: number;
     purchaseDate: string;
@@ -651,6 +682,7 @@ export const DashboardPage = ({
   const [advisorError, setAdvisorError] = useState<string | null>(null);
   const [advisorUnavailableCount, setAdvisorUnavailableCount] = useState(0);
   const [advisorBusy, setAdvisorBusy] = useState(false);
+  const [showAllUpcoming, setShowAllUpcoming] = useState(false);
 
   useEffect(() => {
     void window.balanceBook
@@ -742,6 +774,11 @@ export const DashboardPage = ({
       : snapshot.conservativeIntradaySafetyLowDate;
   const fundingNeeds =
     mode === 'expected' ? (snapshot.expectedTransferNeeds ?? []) : (snapshot.transferNeeds ?? []);
+  const nextFundingNeed = fundingNeeds[0];
+  const nextFundingFloor = nextFundingNeed
+    ? ((snapshot.cashAccounts ?? []).find((account) => account.id === nextFundingNeed.accountId)
+        ?.hardFloorCents ?? 0)
+    : 0;
   const cashHardFloorMargin =
     mode === 'expected'
       ? (snapshot.expectedHardFloorMarginCents ?? snapshot.hardFloorMarginCents ?? 0)
@@ -777,6 +814,7 @@ export const DashboardPage = ({
     setAdvisorError(null);
     setAdvisorUnavailableCount(0);
     setAdvisorResults(null);
+    setCashAdvisorResults(null);
     setAdvisorEvaluation(null);
 
     let amountCents: number;
@@ -795,55 +833,83 @@ export const DashboardPage = ({
       setAdvisorError(`Choose a purchase date on or after ${displayDate(earliestAdvisorDate)}.`);
       return;
     }
-    if (advisorCards.length === 0) {
-      setAdvisorError('Add a current card cycle before comparing purchase options.');
+    if (advisorCards.length === 0 && (snapshot.cashAccounts ?? []).length === 0) {
+      setAdvisorError(
+        'Add a cash account or current card cycle before comparing purchase options.',
+      );
       return;
     }
 
     setAdvisorBusy(true);
     try {
-      const outcomes = await Promise.all(
-        advisorCards.map(async (card): Promise<CardAdvisorResult | null> => {
-          try {
-            const response = await window.balanceBook.evaluateScenario({
-              description: 'Purchase advisor comparison',
-              amountCents,
-              settlementDate: purchaseDate,
-              fundingType: 'card',
-              cardId: card.cardId,
-            });
-            if (!response.ok) return null;
-            const rewardRateBasisPoints = cardRewardRateBasisPoints(card);
-            return {
-              card,
-              scenario: response.value,
-              ...(rewardRateBasisPoints === undefined
-                ? {}
-                : {
-                    rewardRateBasisPoints,
-                    ...(card.rewardType === undefined ? {} : { rewardType: card.rewardType }),
-                    ...(card.rewardType === 'cash-back'
-                      ? {
-                          estimatedRewardCents: Math.round(
-                            (amountCents * rewardRateBasisPoints) / 10_000,
-                          ),
-                        }
-                      : {}),
-                  }),
-            };
-          } catch {
-            return null;
-          }
-        }),
-      );
+      const [outcomes, cashOutcomes] = await Promise.all([
+        Promise.all(
+          advisorCards.map(async (card): Promise<CardAdvisorResult | null> => {
+            try {
+              const response = await window.balanceBook.evaluateScenario({
+                description: 'Purchase advisor comparison',
+                amountCents,
+                settlementDate: purchaseDate,
+                fundingType: 'card',
+                forecastMode: mode,
+                cardId: card.cardId,
+              });
+              if (!response.ok) return null;
+              const rewardRateBasisPoints = cardRewardRateBasisPoints(card);
+              return {
+                card,
+                scenario: response.value,
+                ...(rewardRateBasisPoints === undefined
+                  ? {}
+                  : {
+                      rewardRateBasisPoints,
+                      ...(card.rewardType === undefined ? {} : { rewardType: card.rewardType }),
+                      ...(card.rewardType === 'cash-back'
+                        ? {
+                            estimatedRewardCents: Math.round(
+                              (amountCents * rewardRateBasisPoints) / 10_000,
+                            ),
+                          }
+                        : {}),
+                    }),
+              };
+            } catch {
+              return null;
+            }
+          }),
+        ),
+        Promise.all(
+          (snapshot.cashAccounts ?? []).map(async (account): Promise<CashAdvisorResult | null> => {
+            try {
+              const response = await window.balanceBook.evaluateScenario({
+                description: 'Cash purchase advisor comparison',
+                amountCents,
+                settlementDate: purchaseDate,
+                fundingType: 'cash',
+                forecastMode: mode,
+                accountId: account.id,
+              });
+              return response.ok
+                ? { accountId: account.id, accountName: account.name, scenario: response.value }
+                : null;
+            } catch {
+              return null;
+            }
+          }),
+        ),
+      ]);
       const completed = outcomes.filter(
         (outcome): outcome is CardAdvisorResult => outcome !== null,
       );
       const unavailableCount = advisorCards.length - completed.length;
       setAdvisorUnavailableCount(unavailableCount);
-      if (completed.length === 0) {
+      const completedCash = cashOutcomes.filter(
+        (outcome): outcome is CashAdvisorResult => outcome !== null,
+      );
+      setCashAdvisorResults(completedCash);
+      if (completed.length === 0 && completedCash.length === 0) {
         setAdvisorError(
-          'No current card could be evaluated for that date. Review card-cycle timing and try again.',
+          'No cash account or current card could be evaluated for that date. Review timing and try again.',
         );
         return;
       }
@@ -856,20 +922,30 @@ export const DashboardPage = ({
   const positionMargin = positionLow - hardFloor;
   const positionShortfall = Math.max(0, -positionMargin);
   const cashShortfall = Math.max(0, hardFloor - intradayLow);
-  const statusClass =
-    positionShortfall > 0
+  const expectedOverview = !fullForecast && mode === 'expected';
+  const statusClass = expectedOverview
+    ? positionShortfall > 0
+      ? styles.statusAlert
+      : ''
+    : positionShortfall > 0
       ? styles.statusAlert
       : cashShortfall > 0 || fundingNeeds.length > 0
         ? styles.statusWarning
         : '';
-  const statusTitle =
-    positionShortfall > 0
+  const statusTitle = expectedOverview
+    ? positionShortfall > 0
+      ? `Total position falls ${formatMoney(positionShortfall)} below your protected floor.`
+      : `Your lowest total position is ${formatMoney(positionLow)}.`
+    : positionShortfall > 0
       ? `Total position falls ${formatMoney(positionShortfall)} below your protected floor.`
       : cashShortfall > 0 || fundingNeeds.length > 0
         ? `Your lowest total position is ${formatMoney(positionLow)}; account funding needs attention.`
         : `Your lowest total position is ${formatMoney(positionLow)}.`;
-  const statusBody =
-    positionShortfall > 0
+  const statusBody = expectedOverview
+    ? positionShortfall > 0
+      ? `The expected total position reaches ${formatMoney(positionLow)} on ${displayDate(positionLowDate)}, which is ${formatMoney(positionShortfall)} below the protected floor.`
+      : `The expected total position reaches ${formatMoney(positionLow)} on ${displayDate(positionLowDate)} and leaves ${formatMoney(positionMargin)} above the protected floor.`
+    : positionShortfall > 0
       ? `Cash plus outstanding money owed reaches ${formatMoney(positionLow)} on ${displayDate(positionLowDate)}. Liquid cash reaches ${formatMoney(intradayLow)} on ${displayDate(intradayLowDate)}.`
       : cashShortfall > 0 || fundingNeeds.length > 0
         ? `Cash plus outstanding money owed reaches ${formatMoney(positionLow)} on ${displayDate(positionLowDate)}. Liquid cash reaches ${formatMoney(intradayLow)} on ${displayDate(intradayLowDate)}${fundingNeeds[0] ? `; ${fundingNeeds[0].accountName} needs ${formatMoney(fundingNeeds[0].shortfallCents)} by ${displayDate(fundingNeeds[0].date)}` : ''}. The runway and account-funding warning are shown separately so neither is hidden.`
@@ -888,6 +964,14 @@ export const DashboardPage = ({
       )
     : undefined;
 
+  const changeMode = (nextMode: ForecastMode): void => {
+    setMode(nextMode);
+    setAdvisorResults(null);
+    setCashAdvisorResults(null);
+    setAdvisorEvaluation(null);
+    setAdvisorError(null);
+  };
+
   const modeControl = (
     <div className={styles.segmented} role="group" aria-label="Forecast mode">
       {(['expected', 'conservative'] as const).map((item) => (
@@ -895,7 +979,7 @@ export const DashboardPage = ({
           key={item}
           appearance={mode === item ? 'primary' : 'subtle'}
           aria-pressed={mode === item}
-          onClick={() => setMode(item)}
+          onClick={() => changeMode(item)}
         >
           {item === 'expected' ? 'Expected' : 'Conservative'}
         </Button>
@@ -1361,8 +1445,8 @@ export const DashboardPage = ({
           <Text className={styles.eyebrow}>Overview</Text>
           <Title1 as="h1">How much can I safely spend?</Title1>
           <Text className={styles.detail}>
-            One reconciled runway answer for every card, tied to its payment date, every bank
-            account, money owed to you, and your protected threshold.
+            One reconciled runway answer for every card, tied to its current-cycle due date, every
+            bank account, money owed to you, and your protected threshold.
           </Text>
         </div>
         {modeControl}
@@ -1387,11 +1471,11 @@ export const DashboardPage = ({
               Safe to spend on each card today
             </Title2>
             <Text className={styles.detail}>
-              Available spend is the lowest projected bank-cash-plus-money-owed position from that
-              card&apos;s payment date forward, less your global protected threshold. Account
-              funding risks remain visible separately. The payment-date snapshot shows what exists
-              when the bill is due; the limiting-date snapshot shows why safe spend may be lower
-              later. Each card is its own runway; do not add them together.
+              Available spend is the lowest projected total position from that card&apos;s
+              current-cycle due date forward, less your global protected threshold. Each
+              bank-account low covers the current-cycle risk window through the later of that total
+              low or the actual payment date. Later account episodes stay in Account coverage. Each
+              card is its own runway; do not add them together.
             </Text>
           </div>
           <Button
@@ -1408,6 +1492,15 @@ export const DashboardPage = ({
         ) : (
           <div className={styles.safeSpendGrid}>
             {cardPower.map((card) => {
+              const resetDate = card.currentCycleClosesOn;
+              const daysUntilReset = resetDate
+                ? Math.max(
+                    0,
+                    Temporal.PlainDate.from(today).until(Temporal.PlainDate.from(resetDate), {
+                      largestUnit: 'day',
+                    }).days,
+                  )
+                : undefined;
               const unavailableReason = cardSpendingPowerUnavailableReason(card);
               const fundingFloor =
                 (snapshot.cashAccounts ?? []).find(
@@ -1421,62 +1514,73 @@ export const DashboardPage = ({
                     (account) => account.id === card.prePaymentShortfallAccountId,
                   )?.name
                 : undefined;
+              const runwayAvailable = !unavailableReason && card.spendingPowerCents > 0;
               const safelyFunded =
-                !unavailableReason &&
-                !conditionalOnEarlierFunding &&
-                fundingShortfall === 0 &&
-                card.spendingPowerCents > 0;
+                runwayAvailable && !conditionalOnEarlierFunding && fundingShortfall === 0;
+              const visuallySafe = mode === 'expected' ? runwayAvailable : safelyFunded;
               const status = unavailableReason
                 ? 'Needs card setup'
-                : conditionalOnEarlierFunding || fundingShortfall > 0
-                  ? 'Runway available · funding needed'
-                  : card.spendingPowerCents > 0
+                : mode === 'expected'
+                  ? card.spendingPowerCents > 0
                     ? 'Runway available'
-                    : 'No runway above threshold';
-              const insight = unavailableReason
-                ? unavailableReason
-                : card.spendingPowerCents > 0
-                  ? `The ${mode} total position bottoms at ${formatMoney(card.futurePositionLowCents)} on ${displayDate(card.futurePositionLowDate)} after this card's modeled payment date.`
-                  : card.futurePositionLowCents < hardFloor
-                    ? `The ${mode} total position is already ${formatMoney(hardFloor - card.futurePositionLowCents)} below the protected threshold at its limiting point.`
-                    : 'No additional runway remains above the protected threshold.';
+                    : 'No runway above threshold'
+                  : conditionalOnEarlierFunding || fundingShortfall > 0
+                    ? 'Runway available · funding needed'
+                    : card.spendingPowerCents > 0
+                      ? 'Runway available'
+                      : 'No runway above threshold';
               const fundingInsight = conditionalOnEarlierFunding
                 ? `${earlierShortfallAccount ?? 'A cash account'} falls ${formatMoney(card.prePaymentShortfallCents)} below its minimum on ${displayDate(card.prePaymentShortfallDate)} before this card would be paid.`
                 : fundingShortfall > 0
                   ? `${card.fundingAccountName} needs ${formatMoney(fundingShortfall)} to stay above its minimum.`
                   : null;
-              const paymentDateBalances = card.paymentDateAccountBalances ?? [];
               return (
                 <Card
                   key={card.cardId}
                   aria-label={`${card.cardName} safe spending summary`}
                   className={mergeClasses(
                     styles.safeSpendCard,
-                    safelyFunded ? styles.safeSpendCardSafe : styles.safeSpendCardCaution,
+                    visuallySafe ? styles.safeSpendCardSafe : styles.safeSpendCardCaution,
                   )}
                 >
                   <div className={styles.powerTop}>
-                    <div className={styles.heading}>
-                      <strong>{card.cardName}</strong>
-                      <Text size={200} className={styles.detail}>
-                        Paid from {card.fundingAccountName}
-                      </Text>
+                    <div className={styles.cardTitleRow}>
+                      <span
+                        className={styles.resetBadge}
+                        aria-label={
+                          resetDate
+                            ? `${daysUntilReset} days until the current statement resets on ${displayDate(resetDate)}`
+                            : 'Statement reset date unavailable'
+                        }
+                        title={
+                          resetDate
+                            ? `${daysUntilReset} days until statement close · ${displayDate(resetDate)}`
+                            : 'Add the current cycle close date'
+                        }
+                      >
+                        {daysUntilReset ?? '–'}
+                      </span>
+                      <div className={styles.heading}>
+                        <strong>{card.cardName}</strong>
+                        <Text size={200} className={styles.detail}>
+                          {resetDate
+                            ? `${daysUntilReset === 0 ? 'Resets today' : `Resets in ${daysUntilReset} day${daysUntilReset === 1 ? '' : 's'}`}`
+                            : 'Reset timing unavailable'}
+                          {mode === 'conservative' ? ` · paid from ${card.fundingAccountName}` : ''}
+                        </Text>
+                      </div>
                     </div>
                     <Text
                       className={mergeClasses(
                         styles.insightPill,
-                        safelyFunded ? undefined : styles.insightPillCaution,
+                        visuallySafe ? undefined : styles.insightPillCaution,
                       )}
                     >
                       {status}
                     </Text>
                   </div>
                   <div>
-                    <Text className={styles.metricLabel}>
-                      {conditionalOnEarlierFunding || fundingShortfall > 0
-                        ? 'Available spend after funding'
-                        : 'Available spend now'}
-                    </Text>
+                    <Text className={styles.metricLabel}>Available spend in current cycle</Text>
                     <Text
                       aria-label={`${card.cardName} available spend`}
                       className={mergeClasses(
@@ -1487,76 +1591,35 @@ export const DashboardPage = ({
                       {unavailableReason ? 'Unavailable' : formatMoney(card.spendingPowerCents)}
                     </Text>
                   </div>
-                  <Text className={styles.detail}>{insight}</Text>
-                  {fundingInsight && (
+                  {unavailableReason && <Text className={styles.detail}>{unavailableReason}</Text>}
+                  {mode === 'conservative' && fundingInsight && (
                     <Text size={200} className={styles.warningText}>
-                      Funding warning: {fundingInsight} This runway becomes safe only after the
-                      funding action; the separate cash-only capacity below is what is supported
-                      without that action.
+                      Funding warning: {fundingInsight}
                     </Text>
                   )}
                   {!unavailableReason && (
-                    <div
-                      className={styles.runwayPanel}
-                      aria-label={`${card.cardName} limiting date balances`}
-                    >
-                      <Text className={styles.metricLabel}>
-                        Limiting-date balances · {displayDate(card.futurePositionLowDate)}
-                      </Text>
+                    <div className={styles.runwayPanel} aria-label={`${card.cardName} runway lows`}>
+                      <Text className={styles.metricLabel}>Current-cycle runway lows</Text>
                       <div className={styles.runwayBalanceGrid}>
-                        {card.futurePositionLowAccountBalances.map((account) => (
-                          <div className={styles.fact} key={account.accountId}>
-                            <Text size={200} className={styles.detail}>
-                              {account.accountName}
-                            </Text>
-                            <Text
-                              className={mergeClasses(
-                                styles.factValue,
-                                account.endingBalanceCents < 0 ? styles.dangerText : undefined,
-                              )}
-                            >
-                              {formatMoney(account.endingBalanceCents)}
-                            </Text>
-                          </div>
-                        ))}
                         <div className={styles.fact}>
                           <Text size={200} className={styles.detail}>
-                            Owed to me
+                            Lowest total position
                           </Text>
-                          <Text className={styles.factValue}>
-                            {formatMoney(card.futurePositionLowReceivableCents)}
-                          </Text>
-                        </div>
-                        <div className={styles.fact}>
-                          <Text size={200} className={styles.detail}>
-                            Total position
-                          </Text>
-                          <Text className={styles.factValue}>
+                          <Text
+                            aria-label={`${card.cardName} total position low`}
+                            className={styles.factValue}
+                          >
                             {formatMoney(card.futurePositionLowCents)}
                           </Text>
+                          <Text size={200}>{displayDate(card.futurePositionLowDate)}</Text>
                         </div>
-                      </div>
-                    </div>
-                  )}
-                  {!unavailableReason && card.paymentDatePositionCents !== undefined && (
-                    <div
-                      className={styles.runwayPanel}
-                      aria-label={`${card.cardName} payment date balances`}
-                    >
-                      <Text className={styles.metricLabel}>
-                        Payment-date funding snapshot · {displayDate(card.currentCyclePaymentOn)}
-                      </Text>
-                      <Text size={200} className={styles.detail}>
-                        Balances when this card is due. Available spend above uses the lower point
-                        from this date forward so later commitments are not ignored.
-                      </Text>
-                      <div className={styles.runwayBalanceGrid}>
-                        {paymentDateBalances.map((account) => (
+                        {card.futureAccountLows.map((account) => (
                           <div className={styles.fact} key={account.accountId}>
                             <Text size={200} className={styles.detail}>
-                              {account.accountName}
+                              {account.accountName} low
                             </Text>
                             <Text
+                              aria-label={`${card.cardName} ${account.accountName} account low`}
                               className={mergeClasses(
                                 styles.factValue,
                                 account.endingBalanceCents < 0 ? styles.dangerText : undefined,
@@ -1564,60 +1627,48 @@ export const DashboardPage = ({
                             >
                               {formatMoney(account.endingBalanceCents)}
                             </Text>
+                            <Text size={200}>{displayDate(account.date)}</Text>
                           </div>
                         ))}
-                        <div className={styles.fact}>
-                          <Text size={200} className={styles.detail}>
-                            Owed to me
-                          </Text>
-                          <Text className={styles.factValue}>
-                            {formatMoney(card.paymentDateReceivableCents ?? 0)}
-                          </Text>
-                        </div>
-                        <div className={styles.fact}>
-                          <Text size={200} className={styles.detail}>
-                            Total position
-                          </Text>
-                          <Text className={styles.factValue}>
-                            {formatMoney(card.paymentDatePositionCents)}
-                          </Text>
-                        </div>
                       </div>
                     </div>
                   )}
-                  <div className={styles.safeSpendFacts}>
-                    <div className={styles.fact}>
-                      <Text size={200} className={styles.metricLabel}>
-                        Current cycle
-                      </Text>
-                      <Text className={styles.factValue}>
-                        {formatMoney(card.currentCycleAmountCents)}
-                      </Text>
+                  {mode === 'conservative' && !unavailableReason && (
+                    <div className={styles.safeSpendFacts}>
+                      <div className={styles.fact}>
+                        <Text size={200} className={styles.metricLabel}>
+                          Cash-only capacity
+                        </Text>
+                        <Text
+                          className={styles.factValue}
+                          aria-label={`${card.cardName} cash-only capacity`}
+                        >
+                          {formatMoney(card.cashBackedCapacityCents)}
+                        </Text>
+                      </div>
+                      <div className={styles.fact}>
+                        <Text size={200} className={styles.metricLabel}>
+                          Funding-account low
+                        </Text>
+                        <Text className={styles.factValue}>
+                          {formatMoney(card.fundingAccountLowCents)}
+                        </Text>
+                        <Text size={200} className={styles.detail}>
+                          {displayDate(card.fundingAccountLowDate)} · minimum{' '}
+                          {formatMoney(fundingFloor)}
+                        </Text>
+                      </div>
+                      <div className={styles.fact}>
+                        <Text size={200} className={styles.metricLabel}>
+                          Future liquid cash low
+                        </Text>
+                        <Text className={styles.factValue}>
+                          {formatMoney(card.futureCashLowCents)}
+                        </Text>
+                        <Text size={200}>{displayDate(card.futureCashLowDate)}</Text>
+                      </div>
                     </div>
-                    <div className={styles.fact}>
-                      <Text size={200} className={styles.metricLabel}>
-                        Cash-only capacity
-                      </Text>
-                      <Text
-                        className={styles.factValue}
-                        aria-label={`${card.cardName} cash-only capacity`}
-                      >
-                        {formatMoney(card.cashBackedCapacityCents)}
-                      </Text>
-                    </div>
-                    <div className={styles.fact}>
-                      <Text size={200} className={styles.metricLabel}>
-                        Funding-account low
-                      </Text>
-                      <Text className={styles.factValue}>
-                        {formatMoney(card.fundingAccountLowCents)}
-                      </Text>
-                      <Text size={200} className={styles.detail}>
-                        {displayDate(card.fundingAccountLowDate)} · minimum{' '}
-                        {formatMoney(fundingFloor)}
-                      </Text>
-                    </div>
-                  </div>
+                  )}
                 </Card>
               );
             })}
@@ -1637,28 +1688,46 @@ export const DashboardPage = ({
             </>
           }
         />
+        {mode === 'expected' ? (
+          <Metric
+            label="Total position today"
+            value={snapshot.currentTotalPositionCents ?? currentCash + currentOwed}
+            detail={`As of ${displayDate(snapshot.startDate)}`}
+            explanation="Included bank-account balances plus open money owed as of the forecast start."
+          />
+        ) : (
+          <Metric
+            label="Lowest liquid cash"
+            value={cashLow}
+            detail={displayDate(cashLowDate)}
+            explanation={`The lowest ${mode} daily close across accounts included in liquidity. Intraday cash reaches ${formatMoney(intradayLow)} on ${displayDate(intradayLowDate)}; this cash-only warning does not replace Spending Power.`}
+          />
+        )}
         <Metric
-          label="Lowest liquid cash"
-          value={cashLow}
-          detail={displayDate(cashLowDate)}
-          explanation={`The lowest ${mode} daily close across accounts included in liquidity. Intraday cash reaches ${formatMoney(intradayLow)} on ${displayDate(intradayLowDate)}; this cash-only warning does not replace Spending Power.`}
-        />
-        <Metric
-          label="Next account funding need"
-          value={fundingNeeds[0]?.shortfallCents ?? 0}
+          label="Next account low"
+          value={nextFundingNeed ? nextFundingFloor - nextFundingNeed.shortfallCents : 0}
           detail={
-            fundingNeeds[0]
-              ? `${fundingNeeds[0].accountName} by ${displayDate(fundingNeeds[0].date)}`
+            nextFundingNeed
+              ? `${nextFundingNeed.accountName} on ${displayDate(nextFundingNeed.date)} · deepest in this run ${formatMoney(nextFundingFloor - (nextFundingNeed.horizonDeepestShortfallCents ?? nextFundingNeed.shortfallCents))} on ${displayDate(nextFundingNeed.horizonDeepestShortfallDate ?? nextFundingNeed.date)}`
               : 'No transfer required'
           }
-          explanation="The first amount an individual account needs to remain above its own minimum, after jointly reserving any safe source-account capacity."
+          explanation="The first daily closing balance below an account minimum and the deepest closing balance before that account recovers. Funding Actions below show the exact dollars needed, safe transfers, and projected money owed that could be released."
         />
-        <Metric
-          label="Cash today"
-          value={currentCash}
-          detail={`As of ${displayDate(snapshot.startDate)}`}
-          explanation={`Cash accounts included in liquidity. Money owed to you (${formatMoney(currentOwed)}) improves total position but cannot fund a payment until received.`}
-        />
+        {mode === 'expected' ? (
+          <Metric
+            label="Protected floor"
+            value={hardFloor}
+            detail={`${formatMoney(positionMargin)} expected position margin`}
+            explanation="The global threshold subtracted from total-position lows when calculating Spending Power."
+          />
+        ) : (
+          <Metric
+            label="Cash today"
+            value={currentCash}
+            detail={`As of ${displayDate(snapshot.startDate)}`}
+            explanation={`Cash accounts included in liquidity. Money owed to you (${formatMoney(currentOwed)}) improves total position but cannot fund a payment until received.`}
+          />
+        )}
       </section>
 
       <section
@@ -1685,6 +1754,9 @@ export const DashboardPage = ({
           <ul className={styles.fundingList} aria-label={`${mode} funding actions`}>
             {fundingNeeds.map((need, index) => {
               const actionPath = fundingActionPath(need);
+              const accountFloor =
+                (snapshot.cashAccounts ?? []).find((account) => account.id === need.accountId)
+                  ?.hardFloorCents ?? 0;
               return (
                 <li key={`${need.accountId}-${need.date}-${index}`}>
                   <div className={styles.fundingRow}>
@@ -1706,36 +1778,56 @@ export const DashboardPage = ({
                     <div className={styles.fundingFacts}>
                       <div className={styles.fact}>
                         <Text size={200} className={styles.metricLabel}>
-                          Amount needed
+                          First low
                         </Text>
-                        <Text className={styles.factValue}>{formatMoney(need.shortfallCents)}</Text>
-                        {(need.horizonAdditionalShortfallCents ?? 0) > 0 && (
-                          <Text size={200} className={styles.detail}>
-                            First dated need. Another{' '}
-                            {formatMoney(need.horizonAdditionalShortfallCents ?? 0)} develops by{' '}
-                            {displayDate(need.horizonDeepestShortfallDate)} if nothing else changes.
-                          </Text>
-                        )}
+                        <Text className={styles.factValue}>
+                          {formatMoney(accountFloor - need.shortfallCents)}
+                        </Text>
+                        <Text size={200} className={styles.detail}>
+                          Needs {formatMoney(need.shortfallCents)} by {displayDate(need.date)}
+                        </Text>
                       </div>
                       <div className={styles.fact}>
                         <Text size={200} className={styles.metricLabel}>
-                          Initiate
+                          Deepest in this run
+                        </Text>
+                        <Text className={styles.factValue}>
+                          {formatMoney(
+                            accountFloor -
+                              (need.horizonDeepestShortfallCents ?? need.shortfallCents),
+                          )}
+                        </Text>
+                        <Text size={200} className={styles.detail}>
+                          Needs{' '}
+                          {formatMoney(need.horizonDeepestShortfallCents ?? need.shortfallCents)} by{' '}
+                          {displayDate(need.horizonDeepestShortfallDate ?? need.date)}
+                        </Text>
+                      </div>
+                      <div className={styles.fact}>
+                        <Text size={200} className={styles.metricLabel}>
+                          Initiate transfer
                         </Text>
                         <Text className={styles.factValue}>{displayDate(need.initiationDate)}</Text>
                       </div>
                       <div className={styles.fact}>
                         <Text size={200} className={styles.metricLabel}>
-                          Arrival
+                          Transfer arrival
                         </Text>
                         <Text className={styles.factValue}>{displayDate(need.arrivalDate)}</Text>
                       </div>
-                      <div className={styles.fact}>
-                        <Text size={200} className={styles.metricLabel}>
-                          Needed by
-                        </Text>
-                        <Text className={styles.factValue}>{displayDate(need.date)}</Text>
-                      </div>
                     </div>
+                    {(need.receivableOutstandingCents ?? 0) > 0 ? (
+                      <Text size={200} className={styles.detail}>
+                        {need.uncoveredAfterReceivablesCents === 0 &&
+                        need.deepestUncoveredAfterReceivablesCents === 0
+                          ? `Money owed to you can cover this run if you release ${formatMoney(need.receivableReleaseNeededCents ?? 0)} to ${need.accountName} by ${displayDate(need.date)}${(need.horizonDeepestShortfallDate ?? need.date) === need.date ? '' : ` and ${formatMoney(need.deepestReceivableReleaseNeededCents ?? 0)} total by ${displayDate(need.horizonDeepestShortfallDate)}`}.`
+                          : `Money owed to you can contribute ${formatMoney(need.receivableReleaseNeededCents ?? 0)} by ${displayDate(need.date)} and ${formatMoney(need.deepestReceivableReleaseNeededCents ?? 0)} by ${displayDate(need.horizonDeepestShortfallDate ?? need.date)}, leaving ${formatMoney(need.deepestUncoveredAfterReceivablesCents ?? 0)} still to fund.`}
+                      </Text>
+                    ) : (
+                      <Text size={200} className={styles.detail}>
+                        No projected money owed is available to release by this need.
+                      </Text>
+                    )}
                     {actionPath ? (
                       <Button appearance="primary" onClick={() => navigate(actionPath)}>
                         Review transfer
@@ -1744,7 +1836,10 @@ export const DashboardPage = ({
                       <Text size={200} className={styles.detail}>
                         {need.sourceAccountName
                           ? 'Transfer timing is incomplete; review the planner.'
-                          : 'A transfer cannot safely cover this need.'}
+                          : need.deepestUncoveredAfterReceivablesCents === 0 &&
+                              (need.deepestReceivableReleaseNeededCents ?? 0) > 0
+                            ? 'No safe internal transfer is available, but releasing the dated money owed above would cover this run.'
+                            : 'A transfer and projected money owed cannot fully cover this need.'}
                       </Text>
                     )}
                   </div>
@@ -1753,6 +1848,162 @@ export const DashboardPage = ({
             })}
           </ul>
         )}
+      </section>
+
+      <section className={styles.twoColumn}>
+        <div className={styles.panel}>
+          <div className={styles.sectionHeader}>
+            <div className={styles.heading}>
+              <Text className={styles.eyebrow}>Next on the calendar</Text>
+              <Title2 as="h2">Upcoming cash events</Title2>
+              <Text className={styles.detail}>The next items that change a cash account.</Text>
+            </div>
+            <div className={styles.segmented}>
+              {(snapshot.upcomingEvents ?? []).length > 5 && (
+                <Button
+                  appearance="subtle"
+                  aria-expanded={showAllUpcoming}
+                  onClick={() => setShowAllUpcoming((current) => !current)}
+                >
+                  {showAllUpcoming ? 'Show less' : 'Show more'}
+                </Button>
+              )}
+              <Button appearance="subtle" onClick={() => navigate('/records')}>
+                Edit records
+              </Button>
+            </div>
+          </div>
+          <div
+            className={styles.tableViewport}
+            tabIndex={0}
+            aria-label="Upcoming cash events table"
+          >
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Event</th>
+                  <th>Confidence</th>
+                  <th className={styles.money}>Cash effect</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(snapshot.upcomingEvents ?? [])
+                  .slice(0, showAllUpcoming ? undefined : 5)
+                  .map((event) => (
+                    <tr key={event.id}>
+                      <td>{displayDate(event.date)}</td>
+                      <td>
+                        <strong>{event.label}</strong>
+                        <br />
+                        <Text size={200}>
+                          {event.accountName} · {eventType(event.kind)}
+                        </Text>
+                      </td>
+                      <td>{event.certainty}</td>
+                      <td className={styles.money}>
+                        {formatMoney(
+                          event.direction === 'outflow' ? -event.amountCents : event.amountCents,
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className={styles.stack}>
+          <div className={styles.panel}>
+            <div className={styles.heading}>
+              <Text className={styles.eyebrow}>Cash accounts</Text>
+              <Title2 as="h2">Balances and future lows</Title2>
+            </div>
+            <div className={styles.accountRows}>
+              {(snapshot.cashAccounts ?? []).map((account) => {
+                const nextNeed = fundingNeeds.find((need) => need.accountId === account.id);
+                const low = snapshot.accountTroughs?.find(
+                  (candidate) => candidate.accountId === account.id,
+                );
+                const lowAmount =
+                  mode === 'expected'
+                    ? (low?.expectedBalanceCents ?? account.balanceCents)
+                    : (low?.balanceCents ?? account.balanceCents);
+                const lowDate = mode === 'expected' ? low?.expectedDate : low?.date;
+                const floorMargin = lowAmount - account.hardFloorCents;
+                return (
+                  <div className={styles.accountRow} key={account.id}>
+                    <strong>{account.name}</strong>
+                    <span className={styles.factValue}>{formatMoney(account.balanceCents)}</span>
+                    <span
+                      className={mergeClasses(
+                        styles.accountLow,
+                        nextNeed || floorMargin < 0 ? styles.dangerText : undefined,
+                      )}
+                    >
+                      {nextNeed
+                        ? `Next below minimum ${formatMoney(account.hardFloorCents - nextNeed.shortfallCents)} on ${displayDate(nextNeed.date)}`
+                        : `${mode === 'expected' ? 'Expected' : 'Conservative'} low ${formatMoney(lowAmount)} on ${displayDate(lowDate)}`}
+                    </span>
+                    {nextNeed && (
+                      <span className={mergeClasses(styles.accountLow, styles.dangerText)}>
+                        Deepest in that run{' '}
+                        {formatMoney(
+                          account.hardFloorCents -
+                            (nextNeed.horizonDeepestShortfallCents ?? nextNeed.shortfallCents),
+                        )}{' '}
+                        on {displayDate(nextNeed.horizonDeepestShortfallDate ?? nextNeed.date)}
+                      </span>
+                    )}
+                    <span className={styles.accountLow}>
+                      Minimum {formatMoney(account.hardFloorCents)} {' · '} margin{' '}
+                      {formatMoney(nextNeed ? -nextNeed.shortfallCents : floorMargin)}
+                      {account.preferredFloorCents === undefined
+                        ? ''
+                        : ` · preferred ${formatMoney(account.preferredFloorCents)}`}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <div className={styles.sectionHeader}>
+              <Button appearance="subtle" onClick={() => navigate('/forecast')}>
+                Open daily account ledger
+              </Button>
+              <Button appearance="subtle" onClick={() => navigate('/data')}>
+                Edit account minimums
+              </Button>
+            </div>
+          </div>
+
+          {mode === 'conservative' && (
+            <div className={styles.panel}>
+              <div className={styles.heading}>
+                <Text className={styles.eyebrow}>Low points</Text>
+                <Title2 as="h2">Position versus cash</Title2>
+              </div>
+              <div className={styles.factGrid}>
+                <div className={styles.fact}>
+                  <Text className={styles.metricLabel}>Cash + owed low</Text>
+                  <Text className={styles.factValue}>{formatMoney(positionLow)}</Text>
+                  <Text size={200}>{displayDate(positionLowDate)}</Text>
+                </div>
+                <div className={styles.fact}>
+                  <Text className={styles.metricLabel}>Liquid cash low</Text>
+                  <Text className={styles.factValue}>{formatMoney(cashLow)}</Text>
+                  <Text size={200}>{displayDate(cashLowDate)}</Text>
+                </div>
+              </div>
+              <Text className={styles.detail}>
+                Money owed improves your overall position but cannot fund a payment until it is
+                actually received. Both lows matter, so the app keeps both visible.
+              </Text>
+              <Button appearance="subtle" onClick={() => navigate('/receivables')}>
+                Review money owed
+              </Button>
+            </div>
+          )}
+        </div>
       </section>
 
       <section className={styles.section} aria-labelledby="card-advisor-title">
@@ -1764,16 +2015,16 @@ export const DashboardPage = ({
                 Which card should I use?
               </Title2>
               <Text className={styles.detail}>
-                Test one amount against every current card using the conservative cash forecast.
-                Funding safety ranks first, a later cash-payment date breaks close ties, and rewards
-                rank last. Available credit is never treated as spendable cash.
+                Test one amount against cash and every current card using the selected {mode}{' '}
+                forecast. Funding safety ranks first, a later cash-payment date breaks close ties,
+                and rewards rank last. Available credit is never treated as spendable cash.
               </Text>
             </div>
           </div>
-          {advisorCards.length === 0 ? (
+          {advisorCards.length === 0 && (snapshot.cashAccounts ?? []).length === 0 ? (
             <Card className={styles.empty}>
-              No card currently has a complete full-statement cash model. Add source timing and a
-              current cycle, or keep manual payment cards on their dated cash schedules.
+              Add a checking account or a card with a complete full-statement cash model to compare
+              purchase options.
             </Card>
           ) : (
             <form
@@ -1790,6 +2041,7 @@ export const DashboardPage = ({
                   onChange={(_, data) => {
                     setAdvisorAmount(data.value);
                     setAdvisorResults(null);
+                    setCashAdvisorResults(null);
                     setAdvisorEvaluation(null);
                     setAdvisorError(null);
                   }}
@@ -1805,6 +2057,7 @@ export const DashboardPage = ({
                   onChange={(_, data) => {
                     setAdvisorDate(data.value);
                     setAdvisorResults(null);
+                    setCashAdvisorResults(null);
                     setAdvisorEvaluation(null);
                     setAdvisorError(null);
                   }}
@@ -1814,6 +2067,11 @@ export const DashboardPage = ({
                 {advisorBusy ? 'Comparing cards...' : 'Compare every card'}
               </Button>
             </form>
+          )}
+          {advisorCards.length === 0 && (snapshot.cashAccounts ?? []).length > 0 && (
+            <Text className={styles.warningText}>
+              Cash can still be evaluated. Add current card-cycle timing to compare cards too.
+            </Text>
           )}
           {advisorUnsupportedCount > 0 && (
             <Text className={styles.warningText}>
@@ -1832,6 +2090,98 @@ export const DashboardPage = ({
               {advisorUnavailableCount} card{advisorUnavailableCount === 1 ? '' : 's'} could not be
               evaluated for this date and {advisorUnavailableCount === 1 ? 'was' : 'were'} excluded.
             </Text>
+          )}
+          {cashAdvisorResults && advisorEvaluation && cashAdvisorResults.length > 0 && (
+            <Card className={styles.advisorSummary} aria-label="Cash purchase safety">
+              {(() => {
+                const readyCash = cashAdvisorResults.filter(
+                  (result) =>
+                    result.scenario.purchaseSafety?.safe &&
+                    result.scenario.purchaseSafety.fundingAccountShortfallCents === 0,
+                );
+                const releaseFundedCash = cashAdvisorResults.filter(
+                  (result) =>
+                    result.scenario.purchaseSafety?.safe &&
+                    result.scenario.purchaseSafety.fundingAccountShortfallCents > 0,
+                );
+                const unsafeCash = cashAdvisorResults.filter(
+                  (result) => !result.scenario.purchaseSafety?.safe,
+                );
+                const cashStatusClass =
+                  readyCash.length > 0
+                    ? styles.advisorSafe
+                    : releaseFundedCash.length > 0
+                      ? styles.warningText
+                      : styles.dangerText;
+                return (
+                  <>
+                    <Text className={cashStatusClass}>Cash purchase</Text>
+                    <Title2 as="h3">
+                      {readyCash.length > 0
+                        ? `Cash works from ${readyCash.map((result) => result.accountName).join(' or ')}`
+                        : releaseFundedCash.length > 0
+                          ? 'Cash works only after funding the account'
+                          : 'Do not pay cash from a checking account yet'}
+                    </Title2>
+                    <Text>
+                      {readyCash.length > 0
+                        ? `${formatMoney(advisorEvaluation.amountCents)} leaves ${readyCash.map((result) => result.accountName).join(', ')} above its account threshold without another action.`
+                        : releaseFundedCash.length > 0
+                          ? `${formatMoney(advisorEvaluation.amountCents)} preserves total position, but every usable checking option needs a Money Owed release before its modeled low.`
+                          : `${formatMoney(advisorEvaluation.amountCents)} would leave every modeled checking account below a protected threshold even after available Money Owed is considered.`}
+                      {releaseFundedCash.length > 0
+                        ? ` Fund ${releaseFundedCash.map((result) => result.accountName).join(', ')} by the date shown before treating cash as ready.`
+                        : ''}
+                      {unsafeCash.length > 0
+                        ? ` Do not use cash from ${unsafeCash.map((result) => result.accountName).join(', ')} without another funding action.`
+                        : ''}
+                    </Text>
+                    <div className={styles.advisorFacts}>
+                      {cashAdvisorResults.map((result) => {
+                        const safety = result.scenario.purchaseSafety;
+                        const isReady = safety?.safe && safety.fundingAccountShortfallCents === 0;
+                        const isReleaseFunded =
+                          safety?.safe && safety.fundingAccountShortfallCents > 0;
+                        return (
+                          <div className={styles.fact} key={result.accountId}>
+                            <Text size={200} className={styles.metricLabel}>
+                              {result.accountName}
+                            </Text>
+                            <Text
+                              className={
+                                isReady
+                                  ? styles.advisorSafe
+                                  : isReleaseFunded
+                                    ? styles.warningText
+                                    : styles.dangerText
+                              }
+                            >
+                              {isReady
+                                ? 'Can use cash now'
+                                : isReleaseFunded
+                                  ? 'Can use after funding'
+                                  : 'Do not use cash'}
+                            </Text>
+                            {safety && (
+                              <Text size={200} className={styles.detail}>
+                                Account low {formatMoney(safety.fundingAccountLowCents)} on{' '}
+                                {displayDate(safety.fundingAccountLowDate)}
+                                {safety.receivableReleaseNeededCents > 0
+                                  ? ` · release ${formatMoney(safety.receivableReleaseNeededCents)} of Money Owed by then`
+                                  : ''}
+                                {safety.uncoveredFundingShortfallCents > 0
+                                  ? ` · another ${formatMoney(safety.uncoveredFundingShortfallCents)} remains unfunded`
+                                  : ''}
+                              </Text>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                );
+              })()}
+            </Card>
           )}
           {advisorResults &&
             advisorEvaluation &&
@@ -1854,6 +2204,13 @@ export const DashboardPage = ({
               const hasFundableOption = transferRecommendation !== undefined;
               const hasIncomeDependentOption = incomeDependentRecommendation !== undefined;
               const leadingReward = advisorRewardText(leadingOption);
+              const leadingMargin =
+                leadingOption.scenario.purchaseSafety?.totalPositionMarginCents ??
+                leadingOption.scenario.afterHardFloorMarginCents;
+              const safeCardOptions = advisorResults.filter(advisorResultIsSafe);
+              const unsafeCardOptions = advisorResults.filter(
+                (option) => !advisorResultIsSafe(option) && !advisorResultIsFundable(option),
+              );
               return (
                 <div className={styles.stack} aria-live="polite">
                   <Card
@@ -1876,7 +2233,9 @@ export const DashboardPage = ({
                       }
                     >
                       {hasSafeOption
-                        ? 'Recommended card'
+                        ? safeCardOptions.length === advisorResults.length
+                          ? `All ${advisorResults.length} cards work`
+                          : `${safeCardOptions.length} card${safeCardOptions.length === 1 ? '' : 's'} work`
                         : hasFundableOption
                           ? 'Recommended after a transfer'
                           : hasIncomeDependentOption
@@ -1884,10 +2243,21 @@ export const DashboardPage = ({
                             : 'No safe card for this purchase'}
                     </Text>
                     <Title2 as="h3">
-                      {hasSafeOption || hasFundableOption || hasIncomeDependentOption
-                        ? leadingOption.card.cardName
-                        : 'Change the amount, timing, or funding plan first'}
+                      {hasSafeOption
+                        ? safeCardOptions.length === advisorResults.length
+                          ? 'You can use any card'
+                          : `You can use ${safeCardOptions.map((option) => option.card.cardName).join(', ')}`
+                        : hasFundableOption || hasIncomeDependentOption
+                          ? leadingOption.card.cardName
+                          : 'Change the amount, timing, or funding plan first'}
                     </Title2>
+                    {hasSafeOption && unsafeCardOptions.length > 0 && (
+                      <Text>
+                        Do not use{' '}
+                        {unsafeCardOptions.map((option) => option.card.cardName).join(', ')} for
+                        this purchase without changing the funding plan.
+                      </Text>
+                    )}
                     <Text>
                       {hasSafeOption
                         ? advisorReason(leadingOption)
@@ -1925,17 +2295,15 @@ export const DashboardPage = ({
                       )}
                       <div className={styles.fact}>
                         <Text size={200} className={styles.metricLabel}>
-                          Post-purchase floor margin
+                          Total-position threshold margin
                         </Text>
                         <Text
                           className={mergeClasses(
                             styles.factValue,
-                            leadingOption.scenario.afterHardFloorMarginCents < 0
-                              ? styles.dangerText
-                              : undefined,
+                            leadingMargin < 0 ? styles.dangerText : undefined,
                           )}
                         >
-                          {formatMoney(leadingOption.scenario.afterHardFloorMarginCents)}
+                          {formatMoney(leadingMargin)}
                         </Text>
                       </div>
                       <div className={styles.fact}>
@@ -2021,7 +2389,16 @@ export const DashboardPage = ({
                                   {advisorStatusLabel[status]}
                                 </Text>
                               </div>
-                              <Text>{advisorVerdictLabel[option.scenario.verdict]}</Text>
+                              <Text>
+                                {option.scenario.purchaseSafety
+                                  ? option.scenario.purchaseSafety.safe
+                                    ? option.scenario.purchaseSafety.fundingAccountShortfallCents >
+                                      0
+                                      ? 'Within total threshold; funding action shown'
+                                      : 'Within total and account thresholds'
+                                    : 'Outside a total or account threshold'
+                                  : advisorVerdictLabel[option.scenario.verdict]}
+                              </Text>
                               <Text size={200} className={styles.detail}>
                                 {advisorReason(option)}
                               </Text>
@@ -2046,17 +2423,21 @@ export const DashboardPage = ({
                                 )}
                                 <div className={styles.fact}>
                                   <Text size={200} className={styles.metricLabel}>
-                                    Floor margin after
+                                    Total-position margin
                                   </Text>
                                   <Text
                                     className={mergeClasses(
                                       styles.factValue,
-                                      option.scenario.afterHardFloorMarginCents < 0
+                                      (option.scenario.purchaseSafety?.totalPositionMarginCents ??
+                                        option.scenario.afterHardFloorMarginCents) < 0
                                         ? styles.dangerText
                                         : undefined,
                                     )}
                                   >
-                                    {formatMoney(option.scenario.afterHardFloorMarginCents)}
+                                    {formatMoney(
+                                      option.scenario.purchaseSafety?.totalPositionMarginCents ??
+                                        option.scenario.afterHardFloorMarginCents,
+                                    )}
                                   </Text>
                                 </div>
                                 <div className={styles.fact}>
@@ -2069,10 +2450,14 @@ export const DashboardPage = ({
                                 </div>
                                 <div className={styles.fact}>
                                   <Text size={200} className={styles.metricLabel}>
-                                    Underfunded accounts
+                                    Funding-account low
                                   </Text>
                                   <Text className={styles.factValue}>
-                                    {option.scenario.accountShortfallCount}
+                                    {option.scenario.purchaseSafety
+                                      ? formatMoney(
+                                          option.scenario.purchaseSafety.fundingAccountLowCents,
+                                        )
+                                      : option.scenario.accountShortfallCount}
                                   </Text>
                                 </div>
                                 {rewardText && (
@@ -2096,332 +2481,207 @@ export const DashboardPage = ({
         </div>
       </section>
 
-      <section className={styles.section} aria-labelledby="spending-power-title">
-        <div className={styles.sectionHeader}>
-          <div className={styles.heading}>
-            <Title2 id="spending-power-title" as="h2">
-              How each safe-spend limit is calculated
-            </Title2>
-            <Text className={styles.detail}>
-              Inspect statements, current-cycle activity, payment dates, low points, and estimate
-              headroom behind the plain-language answers above.
-            </Text>
-          </div>
-          <Button appearance="subtle" onClick={() => navigate('/cards')}>
-            Edit cards and statements
-          </Button>
-        </div>
-        {cardPower.length === 0 ? (
-          <Card className={styles.empty}>
-            Add a card and its statement/payment timing to begin.
-          </Card>
-        ) : (
-          <details className={styles.rankedDisclosure}>
-            <summary>Show full calculations for all {cardPower.length} cards</summary>
-            <div className={styles.cardGrid}>
-              {cardPower.map((card) => {
-                const unavailableReason = cardSpendingPowerUnavailableReason(card);
-                const conditionalOnEarlierFunding =
-                  card.spendingPowerStatus === 'conditional-existing-shortfall';
-                const fundingFloor =
-                  (snapshot.cashAccounts ?? []).find(
-                    (account) => account.id === card.fundingAccountId,
-                  )?.hardFloorCents ?? 0;
-                const fundingShortfall = Math.max(0, fundingFloor - card.fundingAccountLowCents);
-                return (
-                  <Card className={styles.powerCard} key={card.cardId}>
-                    <div className={styles.powerTop}>
-                      <div>
-                        <strong>{card.cardName}</strong>
-                        <Text size={200} className={styles.detail} block>
-                          Paid from {card.fundingAccountName}
-                        </Text>
-                      </div>
-                      <Button size="small" appearance="subtle" onClick={() => navigate('/cards')}>
-                        Edit
-                      </Button>
-                    </div>
-                    <div>
-                      <Text className={styles.metricLabel}>
-                        {mode === 'expected' ? 'Expected' : 'Conservative'} available spend
-                      </Text>
-                      <Text className={styles.powerValue}>
-                        {unavailableReason
-                          ? 'Runway unavailable'
-                          : formatMoney(card.spendingPowerCents)}
-                      </Text>
-                      {unavailableReason && (
-                        <Text size={200} className={styles.warningText}>
-                          {unavailableReason}
-                        </Text>
-                      )}
-                      <Text size={200} className={styles.detail}>
-                        Limiting total position {formatMoney(card.futurePositionLowCents)} on{' '}
-                        {displayDate(card.futurePositionLowDate)}
-                      </Text>
-                      {conditionalOnEarlierFunding && (
-                        <Text size={200} className={styles.warningText} block>
-                          Conditional: resolve the {formatMoney(card.prePaymentShortfallCents)}{' '}
-                          earlier funding gap on {displayDate(card.prePaymentShortfallDate)} first.
-                        </Text>
-                      )}
-                    </div>
-                    <div className={styles.factGrid}>
-                      <div className={styles.fact}>
-                        <Text size={200} className={styles.metricLabel}>
-                          Statement {card.statementState === 'paid' ? 'paid' : 'coming due'}
-                        </Text>
-                        <Text className={styles.factValue}>
-                          {card.statementCycleId ? formatMoney(card.statementAmountCents) : 'None'}
-                        </Text>
-                        <Text size={200}>{displayDate(card.statementDueOn)}</Text>
-                      </div>
-                      <div className={styles.fact}>
-                        <Text size={200} className={styles.metricLabel}>
-                          Current cycle projected
-                        </Text>
-                        <Text className={styles.factValue}>
-                          {formatMoney(card.currentCycleAmountCents)}
-                        </Text>
-                        <Text size={200}>
-                          Recorded + planned · closes {displayDate(card.currentCycleClosesOn)}
-                        </Text>
-                      </div>
-                      <div className={styles.fact}>
-                        <Text size={200} className={styles.metricLabel}>
-                          Current cycle payment date
-                        </Text>
-                        <Text className={styles.factValue}>
-                          {displayDate(card.currentCyclePaymentOn)}
-                        </Text>
-                      </div>
-                      <div className={styles.fact}>
-                        <Text size={200} className={styles.metricLabel}>
-                          Future liquid cash low
-                        </Text>
-                        <Text className={styles.factValue}>
-                          {formatMoney(card.futureCashLowCents)}
-                        </Text>
-                        <Text size={200}>{displayDate(card.futureCashLowDate)}</Text>
-                      </div>
-                      <div className={styles.fact}>
-                        <Text size={200} className={styles.metricLabel}>
-                          {card.fundingAccountName} low
-                        </Text>
-                        <Text
-                          className={mergeClasses(
-                            styles.factValue,
-                            fundingShortfall > 0 ? styles.dangerText : undefined,
-                          )}
-                        >
-                          {formatMoney(card.fundingAccountLowCents)}
-                        </Text>
-                        <Text size={200}>{displayDate(card.fundingAccountLowDate)}</Text>
-                      </div>
-                      <div className={styles.fact}>
-                        <Text size={200} className={styles.metricLabel}>
-                          Cash-only capacity
-                        </Text>
-                        <Text className={styles.factValue}>
-                          {formatMoney(card.cashBackedCapacityCents)}
-                        </Text>
-                        <Text size={200}>Separate funding-readiness diagnostic</Text>
-                      </div>
-                    </div>
-                    {!unavailableReason && (
-                      <div className={styles.runwayPanel}>
-                        <Text className={styles.metricLabel}>
-                          Reconciled limiting-date breakdown
-                        </Text>
-                        <div className={styles.runwayBalanceGrid}>
-                          {card.futurePositionLowAccountBalances.map((account) => (
-                            <div className={styles.fact} key={account.accountId}>
-                              <Text size={200} className={styles.detail}>
-                                {account.accountName}
-                              </Text>
-                              <Text
-                                className={mergeClasses(
-                                  styles.factValue,
-                                  account.endingBalanceCents < 0 ? styles.dangerText : undefined,
-                                )}
-                              >
-                                {formatMoney(account.endingBalanceCents)}
-                              </Text>
-                            </div>
-                          ))}
-                          <div className={styles.fact}>
-                            <Text size={200} className={styles.detail}>
-                              Owed to me
-                            </Text>
-                            <Text className={styles.factValue}>
-                              {formatMoney(card.futurePositionLowReceivableCents)}
-                            </Text>
-                          </div>
-                          <div className={styles.fact}>
-                            <Text size={200} className={styles.detail}>
-                              Total
-                            </Text>
-                            <Text className={styles.factValue}>
-                              {formatMoney(card.futurePositionLowCents)}
-                            </Text>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                    {fundingShortfall > 0 && (
-                      <Text className={styles.warningText} size={200}>
-                        {card.fundingAccountName} needs at least {formatMoney(fundingShortfall)} of
-                        funding to remain above its {formatMoney(fundingFloor)} minimum even before
-                        additional card spending.
-                      </Text>
-                    )}
-                    <details className={styles.explain}>
-                      <summary>Explain this card</summary>
-                      <Text size={200}>
-                        For a full-statement card, Spending Power is the lowest {mode} total
-                        position from the modeled payment date forward, less the global protected
-                        threshold. Total position is every liquidity-account closing balance plus
-                        outstanding money owed. It preserves the workbook-style runway answer while
-                        cash-only and individual-account lows remain separate warnings. Revolving
-                        payment policies stay unavailable until a complete paydown rule determines
-                        timing.
-                      </Text>
-                    </details>
-                  </Card>
-                );
-              })}
-            </div>
-          </details>
-        )}
-      </section>
-
-      <section className={styles.twoColumn}>
-        <div className={styles.panel}>
+      {mode === 'conservative' && (
+        <section className={styles.section} aria-labelledby="spending-power-title">
           <div className={styles.sectionHeader}>
             <div className={styles.heading}>
-              <Title2 as="h2">Upcoming cash events</Title2>
-              <Text className={styles.detail}>The next items that change a cash account.</Text>
+              <Title2 id="spending-power-title" as="h2">
+                How each safe-spend limit is calculated
+              </Title2>
+              <Text className={styles.detail}>
+                Inspect statements, current-cycle activity, payment dates, low points, and estimate
+                headroom behind the plain-language answers above.
+              </Text>
             </div>
-            <Button appearance="subtle" onClick={() => navigate('/records')}>
-              Edit records
+            <Button appearance="subtle" onClick={() => navigate('/cards')}>
+              Edit cards and statements
             </Button>
           </div>
-          <div
-            className={styles.tableViewport}
-            tabIndex={0}
-            aria-label="Upcoming cash events table"
-          >
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Event</th>
-                  <th>Confidence</th>
-                  <th className={styles.money}>Cash effect</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(snapshot.upcomingEvents ?? []).slice(0, 10).map((event) => (
-                  <tr key={event.id}>
-                    <td>{displayDate(event.date)}</td>
-                    <td>
-                      <strong>{event.label}</strong>
-                      <br />
-                      <Text size={200}>
-                        {event.accountName} · {eventType(event.kind)}
-                      </Text>
-                    </td>
-                    <td>{event.certainty}</td>
-                    <td className={styles.money}>
-                      {formatMoney(
-                        event.direction === 'outflow' ? -event.amountCents : event.amountCents,
+          {cardPower.length === 0 ? (
+            <Card className={styles.empty}>
+              Add a card and its statement/payment timing to begin.
+            </Card>
+          ) : (
+            <details className={styles.rankedDisclosure}>
+              <summary>Show full calculations for all {cardPower.length} cards</summary>
+              <div className={styles.cardGrid}>
+                {cardPower.map((card) => {
+                  const unavailableReason = cardSpendingPowerUnavailableReason(card);
+                  const conditionalOnEarlierFunding =
+                    card.spendingPowerStatus === 'conditional-existing-shortfall';
+                  const fundingFloor =
+                    (snapshot.cashAccounts ?? []).find(
+                      (account) => account.id === card.fundingAccountId,
+                    )?.hardFloorCents ?? 0;
+                  const fundingShortfall = Math.max(0, fundingFloor - card.fundingAccountLowCents);
+                  return (
+                    <Card className={styles.powerCard} key={card.cardId}>
+                      <div className={styles.powerTop}>
+                        <div>
+                          <strong>{card.cardName}</strong>
+                          <Text size={200} className={styles.detail} block>
+                            Paid from {card.fundingAccountName}
+                          </Text>
+                        </div>
+                        <Button size="small" appearance="subtle" onClick={() => navigate('/cards')}>
+                          Edit
+                        </Button>
+                      </div>
+                      <div>
+                        <Text className={styles.metricLabel}>Conservative available spend</Text>
+                        <Text className={styles.powerValue}>
+                          {unavailableReason
+                            ? 'Runway unavailable'
+                            : formatMoney(card.spendingPowerCents)}
+                        </Text>
+                        {unavailableReason && (
+                          <Text size={200} className={styles.warningText}>
+                            {unavailableReason}
+                          </Text>
+                        )}
+                        <Text size={200} className={styles.detail}>
+                          Limiting total position {formatMoney(card.futurePositionLowCents)} on{' '}
+                          {displayDate(card.futurePositionLowDate)}
+                        </Text>
+                        {conditionalOnEarlierFunding && (
+                          <Text size={200} className={styles.warningText} block>
+                            Conditional: resolve the {formatMoney(card.prePaymentShortfallCents)}{' '}
+                            earlier funding gap on {displayDate(card.prePaymentShortfallDate)}{' '}
+                            first.
+                          </Text>
+                        )}
+                      </div>
+                      <div className={styles.factGrid}>
+                        <div className={styles.fact}>
+                          <Text size={200} className={styles.metricLabel}>
+                            Statement {card.statementState === 'paid' ? 'paid' : 'coming due'}
+                          </Text>
+                          <Text className={styles.factValue}>
+                            {card.statementCycleId
+                              ? formatMoney(card.statementAmountCents)
+                              : 'None'}
+                          </Text>
+                          <Text size={200}>{displayDate(card.statementDueOn)}</Text>
+                        </div>
+                        <div className={styles.fact}>
+                          <Text size={200} className={styles.metricLabel}>
+                            Current cycle projected
+                          </Text>
+                          <Text className={styles.factValue}>
+                            {formatMoney(card.currentCycleAmountCents)}
+                          </Text>
+                          <Text size={200}>
+                            Recorded + planned · closes {displayDate(card.currentCycleClosesOn)}
+                          </Text>
+                        </div>
+                        <div className={styles.fact}>
+                          <Text size={200} className={styles.metricLabel}>
+                            Current cycle payment date
+                          </Text>
+                          <Text className={styles.factValue}>
+                            {displayDate(card.currentCyclePaymentOn)}
+                          </Text>
+                        </div>
+                        <div className={styles.fact}>
+                          <Text size={200} className={styles.metricLabel}>
+                            Future liquid cash low
+                          </Text>
+                          <Text className={styles.factValue}>
+                            {formatMoney(card.futureCashLowCents)}
+                          </Text>
+                          <Text size={200}>{displayDate(card.futureCashLowDate)}</Text>
+                        </div>
+                        <div className={styles.fact}>
+                          <Text size={200} className={styles.metricLabel}>
+                            {card.fundingAccountName} low
+                          </Text>
+                          <Text
+                            className={mergeClasses(
+                              styles.factValue,
+                              fundingShortfall > 0 ? styles.dangerText : undefined,
+                            )}
+                          >
+                            {formatMoney(card.fundingAccountLowCents)}
+                          </Text>
+                          <Text size={200}>{displayDate(card.fundingAccountLowDate)}</Text>
+                        </div>
+                        <div className={styles.fact}>
+                          <Text size={200} className={styles.metricLabel}>
+                            Cash-only capacity
+                          </Text>
+                          <Text className={styles.factValue}>
+                            {formatMoney(card.cashBackedCapacityCents)}
+                          </Text>
+                          <Text size={200}>Separate funding-readiness diagnostic</Text>
+                        </div>
+                      </div>
+                      {!unavailableReason && (
+                        <div className={styles.runwayPanel}>
+                          <Text className={styles.metricLabel}>
+                            Reconciled limiting-date breakdown
+                          </Text>
+                          <div className={styles.runwayBalanceGrid}>
+                            {card.futurePositionLowAccountBalances.map((account) => (
+                              <div className={styles.fact} key={account.accountId}>
+                                <Text size={200} className={styles.detail}>
+                                  {account.accountName}
+                                </Text>
+                                <Text
+                                  className={mergeClasses(
+                                    styles.factValue,
+                                    account.endingBalanceCents < 0 ? styles.dangerText : undefined,
+                                  )}
+                                >
+                                  {formatMoney(account.endingBalanceCents)}
+                                </Text>
+                              </div>
+                            ))}
+                            <div className={styles.fact}>
+                              <Text size={200} className={styles.detail}>
+                                Owed to me
+                              </Text>
+                              <Text className={styles.factValue}>
+                                {formatMoney(card.futurePositionLowReceivableCents)}
+                              </Text>
+                            </div>
+                            <div className={styles.fact}>
+                              <Text size={200} className={styles.detail}>
+                                Total
+                              </Text>
+                              <Text className={styles.factValue}>
+                                {formatMoney(card.futurePositionLowCents)}
+                              </Text>
+                            </div>
+                          </div>
+                        </div>
                       )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className={styles.stack}>
-          <div className={styles.panel}>
-            <div className={styles.heading}>
-              <Text className={styles.eyebrow}>Cash accounts</Text>
-              <Title2 as="h2">Balances and future lows</Title2>
-            </div>
-            <div className={styles.accountRows}>
-              {(snapshot.cashAccounts ?? []).map((account) => {
-                const low = snapshot.accountTroughs?.find(
-                  (candidate) => candidate.accountId === account.id,
-                );
-                const lowAmount =
-                  mode === 'expected'
-                    ? (low?.expectedBalanceCents ?? account.balanceCents)
-                    : (low?.balanceCents ?? account.balanceCents);
-                const lowDate = mode === 'expected' ? low?.expectedDate : low?.date;
-                const floorMargin = lowAmount - account.hardFloorCents;
-                return (
-                  <div className={styles.accountRow} key={account.id}>
-                    <strong>{account.name}</strong>
-                    <span className={styles.factValue}>{formatMoney(account.balanceCents)}</span>
-                    <span
-                      className={mergeClasses(
-                        styles.accountLow,
-                        floorMargin < 0 ? styles.dangerText : undefined,
+                      {fundingShortfall > 0 && (
+                        <Text className={styles.warningText} size={200}>
+                          {card.fundingAccountName} needs at least {formatMoney(fundingShortfall)}{' '}
+                          of funding to remain above its {formatMoney(fundingFloor)} minimum even
+                          before additional card spending.
+                        </Text>
                       )}
-                    >
-                      {mode === 'expected' ? 'Expected' : 'Conservative'} low{' '}
-                      {formatMoney(lowAmount)} on {displayDate(lowDate)}
-                    </span>
-                    <span className={styles.accountLow}>
-                      Minimum {formatMoney(account.hardFloorCents)} {' · '} margin{' '}
-                      {formatMoney(floorMargin)}
-                      {account.preferredFloorCents === undefined
-                        ? ''
-                        : ` · preferred ${formatMoney(account.preferredFloorCents)}`}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-            <div className={styles.sectionHeader}>
-              <Button appearance="subtle" onClick={() => navigate('/forecast')}>
-                Open daily account ledger
-              </Button>
-              <Button appearance="subtle" onClick={() => navigate('/data')}>
-                Edit account minimums
-              </Button>
-            </div>
-          </div>
-
-          <div className={styles.panel}>
-            <div className={styles.heading}>
-              <Text className={styles.eyebrow}>Low points</Text>
-              <Title2 as="h2">Position versus cash</Title2>
-            </div>
-            <div className={styles.factGrid}>
-              <div className={styles.fact}>
-                <Text className={styles.metricLabel}>Cash + owed low</Text>
-                <Text className={styles.factValue}>{formatMoney(positionLow)}</Text>
-                <Text size={200}>{displayDate(positionLowDate)}</Text>
+                      <details className={styles.explain}>
+                        <summary>Explain this card</summary>
+                        <Text size={200}>
+                          For a full-statement card, Spending Power is the lowest {mode} total
+                          position from the current-cycle due date forward, less the global
+                          protected threshold. Total position is every liquidity-account closing
+                          balance plus outstanding money owed. It preserves the workbook-style
+                          runway answer while cash-only and individual-account lows remain separate
+                          warnings. Revolving payment policies stay unavailable until a complete
+                          paydown rule determines timing.
+                        </Text>
+                      </details>
+                    </Card>
+                  );
+                })}
               </div>
-              <div className={styles.fact}>
-                <Text className={styles.metricLabel}>Liquid cash low</Text>
-                <Text className={styles.factValue}>{formatMoney(cashLow)}</Text>
-                <Text size={200}>{displayDate(cashLowDate)}</Text>
-              </div>
-            </div>
-            <Text className={styles.detail}>
-              Money owed improves your overall position but cannot fund a payment until it is
-              actually received. Both lows matter, so the app keeps both visible.
-            </Text>
-            <Button appearance="subtle" onClick={() => navigate('/receivables')}>
-              Review money owed
-            </Button>
-          </div>
-        </div>
-      </section>
+            </details>
+          )}
+        </section>
+      )}
 
       <section className={styles.panel} aria-labelledby="wider-picture-title">
         <div className={styles.sectionHeader}>
@@ -2455,20 +2715,30 @@ export const DashboardPage = ({
             </Text>
             <Text size={200}>Economic view {formatMoney(snapshot.economicNetWorthCents ?? 0)}</Text>
           </div>
-          <div className={styles.fact}>
-            <Text className={styles.metricLabel}>
-              {mode === 'expected' ? 'Expected' : 'Conservative'} liquid-cash margin
-            </Text>
-            <Text className={styles.factValue}>{formatMoney(cashHardFloorMargin)}</Text>
-            <Text size={200}>Preferred-buffer margin {formatMoney(cashPreferredFloorMargin)}</Text>
-            <Text size={200}>
-              Cash-only diagnostic; it does not replace the card runway or total-position low.
-            </Text>
-            <Text size={200}>
-              Account minimums {formatMoney(snapshot.accountHardFloorTotalCents ?? 0)}; global
-              override {formatMoney(snapshot.configuredHardFloorCents ?? 0)}
-            </Text>
-          </div>
+          {mode === 'expected' ? (
+            <div className={styles.fact}>
+              <Text className={styles.metricLabel}>Expected total-position margin</Text>
+              <Text className={styles.factValue}>{formatMoney(positionMargin)}</Text>
+              <Text size={200}>
+                Lowest total position minus the {formatMoney(hardFloor)} protected floor.
+              </Text>
+            </div>
+          ) : (
+            <div className={styles.fact}>
+              <Text className={styles.metricLabel}>Conservative liquid-cash margin</Text>
+              <Text className={styles.factValue}>{formatMoney(cashHardFloorMargin)}</Text>
+              <Text size={200}>
+                Preferred-buffer margin {formatMoney(cashPreferredFloorMargin)}
+              </Text>
+              <Text size={200}>
+                Cash-only diagnostic; it does not replace the card runway or total-position low.
+              </Text>
+              <Text size={200}>
+                Account minimums {formatMoney(snapshot.accountHardFloorTotalCents ?? 0)}; global
+                override {formatMoney(snapshot.configuredHardFloorCents ?? 0)}
+              </Text>
+            </div>
+          )}
           <div className={styles.fact}>
             <Text className={styles.metricLabel}>Last reconciliation</Text>
             <Text className={styles.factValue}>

@@ -9,6 +9,7 @@ import {
   cancelRefinancePlanRequestSchema,
   deleteManagedEntityRequestSchema,
   emptyRequestSchema,
+  forecastRequestSchema,
   forecastSnapshotSchema,
   fileActionResultSchema,
   importReviewSchema,
@@ -57,7 +58,8 @@ const api: BalanceBookApi = {
   login: (input) => invoke('auth:login', loginRequestSchema, sessionSchema, input),
   logout: () => invoke('auth:logout', emptyRequestSchema, successSchema, {}),
   getSession: () => invoke('auth:session', emptyRequestSchema, sessionSchema.nullable(), {}),
-  getForecast: () => invoke('forecast:get', emptyRequestSchema, forecastSnapshotSchema, {}),
+  getForecast: (input = {}) =>
+    invoke('forecast:get', forecastRequestSchema, forecastSnapshotSchema, input),
   saveVerticalSlice: (input) =>
     invoke('setup:save-vertical-slice', verticalSliceInputSchema, forecastSnapshotSchema, input),
   getOnboardingDraft: () =>
