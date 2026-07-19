@@ -19,6 +19,7 @@ const cardPower: CardPower = {
   fundingAccountName: 'Primary checking',
   statementAmountCents: 84_200,
   currentCycleAmountCents: 0,
+  nextDueOn: '2030-03-28',
   spendingPowerCents: 91_234,
   cashBackedCapacityCents: 0,
   spendingPowerStatus: 'conditional-existing-shortfall',
@@ -208,6 +209,9 @@ describe('Overview card runway presentation', () => {
       formatMoney(91_234),
     );
     expect(within(card).getByText('Runway available', { exact: true })).toBeVisible();
+    expect(within(card).getByLabelText('Atlas Card next due date')).toHaveTextContent(
+      `Next due ${formatPlainDate('2030-03-28')}`,
+    );
     expect(card).not.toHaveTextContent(/conditional|funding needed|after funding/i);
 
     const totalLow = within(card).getByLabelText('Atlas Card total position low');
@@ -289,6 +293,89 @@ describe('Overview card runway presentation', () => {
     } finally {
       nowSpy.mockRestore();
     }
+  });
+
+  it.each([
+    ['2026-06-30', `Past due ${formatPlainDate('2026-06-30')}`],
+    ['2026-07-01', `Due today · ${formatPlainDate('2026-07-01')}`],
+    ['2026-07-10', `Next due ${formatPlainDate('2026-07-10')}`],
+    [undefined, 'Due date unavailable'],
+  ] as const)(
+    'labels the contractual due date without substituting payment timing',
+    async (dueOn, copy) => {
+      const nowSpy = vi
+        .spyOn(Temporal.Now, 'plainDateISO')
+        .mockReturnValue(Temporal.PlainDate.from('2026-07-01'));
+      vi.mocked(window.balanceBook.getForecast).mockResolvedValue({
+        ok: true,
+        value: {
+          ...snapshot,
+          cardSpendingPower: [{ ...cardPower, nextDueOn: dueOn }],
+          conservativeCardSpendingPower: [{ ...cardPower, nextDueOn: dueOn }],
+        },
+      });
+
+      try {
+        render(createElement(MemoryRouter, null, createElement(DashboardPage)));
+        const card = await screen.findByLabelText('Atlas Card safe spending summary');
+        expect(within(card).getByLabelText('Atlas Card next due date')).toHaveTextContent(copy);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    },
+  );
+
+  it('does not call a stale statement close date a reset today', async () => {
+    const nowSpy = vi
+      .spyOn(Temporal.Now, 'plainDateISO')
+      .mockReturnValue(Temporal.PlainDate.from('2026-07-01'));
+    const staleResetCard = {
+      ...cardPower,
+      currentCycleClosesOn: '2026-06-30' as const,
+    };
+    vi.mocked(window.balanceBook.getForecast).mockResolvedValue({
+      ok: true,
+      value: {
+        ...snapshot,
+        cardSpendingPower: [staleResetCard],
+        conservativeCardSpendingPower: [staleResetCard],
+      },
+    });
+
+    try {
+      render(createElement(MemoryRouter, null, createElement(DashboardPage)));
+      const card = await screen.findByLabelText('Atlas Card safe spending summary');
+      expect(
+        within(card).getByLabelText(/recorded statement reset date passed/i),
+      ).toHaveTextContent('!');
+      expect(within(card).getByText(/Reset date needs update/)).toBeVisible();
+      expect(within(card).queryByText('Resets today')).toBeNull();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('hides only the selected account card while preserving its funding warning', async () => {
+    vi.mocked(window.balanceBook.getForecast).mockResolvedValue({
+      ok: true,
+      value: {
+        ...snapshot,
+        cashAccounts: snapshot.cashAccounts?.map((account) => ({
+          ...account,
+          showOnOverview: account.id !== 'primary-checking',
+        })),
+      },
+    });
+
+    render(createElement(MemoryRouter, null, createElement(DashboardPage)));
+    const accountPanel = await screen.findByLabelText('Overview cash accounts');
+    expect(within(accountPanel).getByText('Reserve checking')).toBeVisible();
+    expect(within(accountPanel).queryByText('Primary checking')).toBeNull();
+    const fundingSection = screen
+      .getByRole('heading', { name: 'Funding actions' })
+      .closest('section');
+    expect(fundingSection).not.toBeNull();
+    expect(fundingSection).toHaveTextContent('Primary checking');
   });
 
   it('answers cash safety and card safety independently for a $150 purchase', async () => {

@@ -131,10 +131,19 @@ strong {
 }
 
 :where(.fui-Input, .fui-Select, .fui-Textarea) {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 42px;
   border-radius: 14px !important;
   background: color-mix(in srgb, var(--balance-glass-strong) 82%, transparent) !important;
   box-shadow: inset 0 1px 0 var(--balance-glass-highlight);
+}
+
+:where(.fui-Field, .fui-Input__input, .fui-Select__select, .fui-Textarea__textarea) {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .balance-visually-hidden {
@@ -464,12 +473,6 @@ summary {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     background: var(--balance-glass-strong) !important;
-  }
-}
-
-@media (max-width: 900px) {
-  header {
-    flex-wrap: wrap;
   }
 }
 

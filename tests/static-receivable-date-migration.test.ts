@@ -158,7 +158,7 @@ describe('imported static receivable date repair', () => {
       )
       .run();
 
-    database.prepare('DELETE FROM schema_migrations WHERE version = ?').run(latestSchemaVersion);
+    database.prepare('DELETE FROM schema_migrations WHERE version >= 29').run();
     applyMigrations({ database, databasePath, backupDirectory });
 
     expect(

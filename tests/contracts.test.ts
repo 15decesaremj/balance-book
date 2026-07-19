@@ -343,16 +343,25 @@ describe('desktop request contracts', () => {
       futureCashLowDate: '2026-08-11',
       fundingAccountLowCents: -750,
       fundingAccountLowDate: '2026-08-12',
+      nextDueOn: '2026-08-13',
     };
 
-    expect(
-      forecastSnapshotSchema.parse({ setupComplete: true, cardSpendingPower: [cardPower] })
-        .cardSpendingPower?.[0]?.futureAccountLows,
-    ).toEqual(cardPower.futureAccountLows);
+    const parsedCardPower = forecastSnapshotSchema.parse({
+      setupComplete: true,
+      cardSpendingPower: [cardPower],
+    }).cardSpendingPower?.[0];
+    expect(parsedCardPower?.futureAccountLows).toEqual(cardPower.futureAccountLows);
+    expect(parsedCardPower?.nextDueOn).toBe('2026-08-13');
     expect(() =>
       forecastSnapshotSchema.parse({
         setupComplete: true,
         cardSpendingPower: [{ ...cardPower, futureAccountLows: undefined }],
+      }),
+    ).toThrow();
+    expect(() =>
+      forecastSnapshotSchema.parse({
+        setupComplete: true,
+        cardSpendingPower: [{ ...cardPower, nextDueOn: 'August 13, 2026' }],
       }),
     ).toThrow();
   });

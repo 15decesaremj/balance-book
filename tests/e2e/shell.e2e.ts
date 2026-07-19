@@ -69,6 +69,202 @@ const openPrimaryPage = async (
     .click();
 };
 
+const layoutAuditRoutes = [
+  '/',
+  '/forecast',
+  '/income',
+  '/baseline',
+  '/scenario',
+  '/refinance',
+  '/cards',
+  '/loans',
+  '/receivables',
+  '/net-worth',
+  '/charts',
+  '/reconcile',
+  '/setup',
+  '/records',
+  '/data',
+] as const;
+
+const layoutAuditWidths = [1440, 1121, 1120, 900, 520, 430, 360, 320] as const;
+
+const expectStableLayout = async (window: Page, route: string, width: number): Promise<void> => {
+  await window.setViewportSize({ width, height: 1000 });
+  await window.evaluate((nextRoute) => {
+    globalThis.location.hash = `#${nextRoute}`;
+    globalThis.scrollTo({ top: 0, left: 0 });
+  }, route);
+  await expect.poll(() => window.evaluate(() => globalThis.location.hash)).toBe(`#${route}`);
+  await window.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(() => resolve()));
+      }),
+  );
+  await expect.poll(() => window.locator('.balance-skeleton').count()).toBe(0);
+  const audit = await window.evaluate(() => {
+    type PaintedBox = {
+      x: number;
+      y: number;
+      left: number;
+      right: number;
+      top: number;
+      bottom: number;
+      width: number;
+      height: number;
+    };
+    const paintedBox = (element: HTMLElement): PaintedBox => {
+      const raw = element.getBoundingClientRect();
+      let left = raw.left;
+      let right = raw.right;
+      let top = raw.top;
+      let bottom = raw.bottom;
+      let ancestor = element.parentElement;
+      while (ancestor) {
+        const style = globalThis.getComputedStyle(ancestor);
+        const clipX = ['auto', 'clip', 'hidden', 'scroll'].includes(style.overflowX);
+        const clipY = ['auto', 'clip', 'hidden', 'scroll'].includes(style.overflowY);
+        if (clipX || clipY) {
+          const ancestorBox = ancestor.getBoundingClientRect();
+          if (clipX) {
+            left = Math.max(left, ancestorBox.left);
+            right = Math.min(right, ancestorBox.right);
+          }
+          if (clipY) {
+            top = Math.max(top, ancestorBox.top);
+            bottom = Math.min(bottom, ancestorBox.bottom);
+          }
+        }
+        ancestor = ancestor.parentElement;
+      }
+      return {
+        x: left,
+        y: top,
+        left,
+        right,
+        top,
+        bottom,
+        width: Math.max(0, right - left),
+        height: Math.max(0, bottom - top),
+      };
+    };
+    const visible = (element: Element): element is HTMLElement => {
+      if (!(element instanceof HTMLElement)) return false;
+      const closedDetails = element.closest('details:not([open])');
+      if (closedDetails) {
+        const visibleSummary = closedDetails.querySelector(':scope > summary');
+        if (!visibleSummary?.contains(element)) return false;
+      }
+      const style = globalThis.getComputedStyle(element);
+      const box = paintedBox(element);
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number(style.opacity) > 0 &&
+        box.width > 1 &&
+        box.height > 1
+      );
+    };
+    const label = (element: HTMLElement): string =>
+      (
+        element.getAttribute('aria-label') ??
+        element.getAttribute('name') ??
+        element.textContent ??
+        element.tagName
+      )
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 90);
+    const intersection = (
+      left: Pick<PaintedBox, 'left' | 'right' | 'top' | 'bottom'>,
+      right: Pick<PaintedBox, 'left' | 'right' | 'top' | 'bottom'>,
+    ): { width: number; height: number } => ({
+      width: Math.min(left.right, right.right) - Math.max(left.left, right.left),
+      height: Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top),
+    });
+    const boxLabel = (box: PaintedBox): string =>
+      `[x=${box.x.toFixed(1)}, y=${box.y.toFixed(1)}, w=${box.width.toFixed(1)}, h=${box.height.toFixed(1)}]`;
+
+    const controls = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button, input:not([type="hidden"]), select, textarea, summary, a[href]',
+      ),
+    ).filter(visible);
+    const controlOverlaps: string[] = [];
+    for (let firstIndex = 0; firstIndex < controls.length; firstIndex += 1) {
+      const first = controls[firstIndex]!;
+      for (let secondIndex = firstIndex + 1; secondIndex < controls.length; secondIndex += 1) {
+        const second = controls[secondIndex]!;
+        if (first.contains(second) || second.contains(first)) continue;
+        const firstBox = paintedBox(first);
+        const secondBox = paintedBox(second);
+        const overlap = intersection(firstBox, secondBox);
+        if (overlap.width > 1 && overlap.height > 1) {
+          controlOverlaps.push(
+            `${label(first)} ${boxLabel(firstBox)} <> ${label(second)} ${boxLabel(secondBox)}`,
+          );
+        }
+      }
+    }
+
+    const watchedOverlaps: string[] = [];
+    const watchedOverflows: string[] = [];
+    for (const container of Array.from(
+      document.querySelectorAll<HTMLElement>('[data-layout-watch]'),
+    ).filter(visible)) {
+      const children = Array.from(container.children)
+        .filter(visible)
+        .filter((child) => {
+          const position = globalThis.getComputedStyle(child).position;
+          return position !== 'absolute' && position !== 'fixed';
+        });
+      const containerBox = container.getBoundingClientRect();
+      for (const child of children) {
+        const childBox = child.getBoundingClientRect();
+        if (childBox.left < containerBox.left - 1 || childBox.right > containerBox.right + 1) {
+          watchedOverflows.push(
+            `${container.dataset.layoutWatch ?? 'watched layout'}: ${label(child)}`,
+          );
+        }
+      }
+      for (let firstIndex = 0; firstIndex < children.length; firstIndex += 1) {
+        for (let secondIndex = firstIndex + 1; secondIndex < children.length; secondIndex += 1) {
+          const first = children[firstIndex]!;
+          const second = children[secondIndex]!;
+          const overlap = intersection(
+            first.getBoundingClientRect(),
+            second.getBoundingClientRect(),
+          );
+          if (overlap.width > 1 && overlap.height > 1) {
+            watchedOverlaps.push(
+              `${container.dataset.layoutWatch ?? 'watched layout'}: ${label(first)} <> ${label(second)}`,
+            );
+          }
+        }
+      }
+    }
+
+    return {
+      horizontalOverflow: document.documentElement.scrollWidth - globalThis.innerWidth,
+      controlOverlaps,
+      watchedOverlaps,
+      watchedOverflows,
+    };
+  });
+
+  const context = `${route} at ${width}px`;
+  expect(
+    audit.horizontalOverflow,
+    `${context} has page-level horizontal overflow`,
+  ).toBeLessThanOrEqual(1);
+  expect(audit.controlOverlaps, `${context} has overlapping controls`).toEqual([]);
+  expect(audit.watchedOverlaps, `${context} has overlapping watched layout items`).toEqual([]);
+  expect(audit.watchedOverflows, `${context} has watched content outside its container`).toEqual(
+    [],
+  );
+};
+
 test.beforeAll(async () => {
   if (process.env.BALANCE_BOOK_E2E_NATIVE_READY !== 'verified') {
     const pnpmCli = process.env.npm_execpath;
@@ -111,7 +307,7 @@ test.afterAll(async () => {
 });
 
 test('completes the persistent authenticated forecast vertical slice', async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(360_000);
   const window = await app.firstWindow();
   await expect(window).toHaveTitle('Balance Book');
   await expect(window.getByRole('heading', { name: 'Choose a profile' })).toBeVisible();
@@ -327,6 +523,14 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   );
   expect(everydaySafeSpendCents).toBeGreaterThan(0);
   const everydaySummary = window.getByLabel('Everyday card safe spending summary');
+  await expect(everydaySummary.getByLabel('Everyday card next due date')).toHaveText(
+    'Next due Jul 28, 2026',
+  );
+  await expect(
+    window
+      .getByLabel('Rewards card safe spending summary')
+      .getByLabel('Rewards card next due date'),
+  ).toHaveText('Next due Aug 5, 2026');
   await expect(everydaySummary.getByLabel('Everyday card runway lows')).toBeVisible();
   await expect(everydaySummary.getByLabel('Everyday card total position low')).toHaveText(
     /^\$[\d,]+\.\d{2}$/,
@@ -1382,7 +1586,32 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await expect(accountProtection.getByLabel('Account minimum')).toHaveValue('900.00');
   await expect(accountProtection.getByLabel('Preferred buffer')).toHaveValue('1200.00');
   await expect(accountProtection.getByLabel('Transfer lead time (days)')).toHaveValue('3');
+  const overviewVisibility = accountProtection.getByLabel(
+    'Show this account in the Overview cash-account list',
+  );
+  await expect(overviewVisibility).toBeChecked();
+  await overviewVisibility.uncheck();
+  await accountProtection.getByRole('button', { name: 'Save Edited primary checking' }).click();
+  await expectStatusMessage(window, 'Global minimum and funding guidance were recalculated.');
   await openPrimaryPage(window, 'Overview');
+  const overviewCashAccounts = window.getByLabel('Overview cash accounts');
+  await expect(
+    overviewCashAccounts.getByText('Edited primary checking', { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    window.getByLabel('Everyday card Edited primary checking account low'),
+  ).toBeVisible();
+  await openPrimaryPage(window, 'Settings');
+  await expect(overviewVisibility).not.toBeChecked();
+  await overviewVisibility.check();
+  await accountProtection.getByRole('button', { name: 'Save Edited primary checking' }).click();
+  await expectStatusMessage(window, 'Global minimum and funding guidance were recalculated.');
+  await openPrimaryPage(window, 'Overview');
+  await expect(
+    window
+      .getByLabel('Overview cash accounts')
+      .getByText('Edited primary checking', { exact: true }),
+  ).toBeVisible();
   const everydayAfterAccountFloorIncrease = displayedMoneyToCents(
     (await window.getByLabel('Everyday card available spend').textContent()) ?? '',
   );
@@ -1433,7 +1662,17 @@ test('completes the persistent authenticated forecast vertical slice', async () 
     .poll(() => window.evaluate(() => document.documentElement.scrollWidth - globalThis.innerWidth))
     .toBeLessThanOrEqual(1);
   await expectNoSeriousAxeViolations(window);
+  for (const width of layoutAuditWidths) {
+    for (const route of layoutAuditRoutes) {
+      await expectStableLayout(window, route, width);
+    }
+  }
   await window.setViewportSize({ width: 1440, height: 1000 });
+  await window.evaluate(() => {
+    globalThis.location.hash = '#/data';
+    globalThis.scrollTo({ top: 0, left: 0 });
+  });
+  await expect(window.getByRole('heading', { name: 'Settings' })).toBeVisible();
   const createBackupButton = window.getByRole('button', { name: 'Create encrypted backup' });
   const backupPassword = window.getByLabel('Backup password (separate from sign-in)');
   const backupConfirmation = window.getByLabel('Confirm backup password');

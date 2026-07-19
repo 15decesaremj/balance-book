@@ -51,6 +51,7 @@ export const cashAccounts = sqliteTable(
     canFundOtherAccounts: integer('can_fund_other_accounts', { mode: 'boolean' })
       .notNull()
       .default(true),
+    showOnOverview: integer('show_on_overview', { mode: 'boolean' }).notNull().default(true),
     hardFloorCents: integer('hard_floor_cents'),
     preferredFloorCents: integer('preferred_floor_cents'),
     transferDelayDays: integer('transfer_delay_days').notNull().default(0),

@@ -103,9 +103,12 @@ const useCoreStyles = makeStyles({
     gap: tokens.spacingVerticalXS,
     marginBottom: '28px',
     maxWidth: '900px',
-    '& h1': { letterSpacing: '-0.035em' },
+    minWidth: 0,
+    '& h1': { letterSpacing: '-0.035em', overflowWrap: 'anywhere' },
+    '& > *': { minWidth: 0 },
   },
   panel: {
+    minWidth: 0,
     padding: 'clamp(20px, 2.3vw, 28px)',
     marginBottom: '24px',
     border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
@@ -113,18 +116,27 @@ const useCoreStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground1,
     boxShadow: tokens.shadow4,
   },
-  form: { display: 'grid', gap: tokens.spacingVerticalL },
+  form: {
+    display: 'grid',
+    minWidth: 0,
+    gap: tokens.spacingVerticalL,
+    '& > *': { minWidth: 0 },
+  },
   grid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(220px, 100%), 1fr))',
     columnGap: tokens.spacingHorizontalXL,
     rowGap: tokens.spacingVerticalL,
+    '& > *': { minWidth: 0 },
   },
   actions: {
     display: 'flex',
     flexWrap: 'wrap',
     gap: tokens.spacingHorizontalM,
     alignItems: 'center',
+    minWidth: 0,
+    '& > *': { minWidth: 0, maxWidth: '100%' },
+    '& button': { whiteSpace: 'normal' },
   },
   dataActionArea: {
     minWidth: 0,
@@ -142,7 +154,7 @@ const useCoreStyles = makeStyles({
   },
   metrics: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(220px, 100%), 1fr))',
     gap: '18px',
     marginBottom: '24px',
   },
@@ -208,9 +220,17 @@ const useCoreStyles = makeStyles({
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     gap: tokens.spacingHorizontalM,
+    minWidth: 0,
+    '& > *': { minWidth: 0 },
+    '& h2, & strong': { overflowWrap: 'anywhere' },
   },
-  stack: { display: 'grid', gap: tokens.spacingVerticalM },
-  compact: { display: 'grid', gap: tokens.spacingVerticalXS },
+  stack: { display: 'grid', minWidth: 0, gap: tokens.spacingVerticalM },
+  compact: {
+    display: 'grid',
+    minWidth: 0,
+    gap: tokens.spacingVerticalXS,
+    '& > *': { minWidth: 0, overflowWrap: 'anywhere' },
+  },
   sectionIntro: {
     display: 'grid',
     gap: tokens.spacingVerticalS,
@@ -1176,6 +1196,7 @@ export const makeRequest = (type: EditorType, form: FormData): UpsertManagedEnti
           balanceAsOf: date,
           includedInLiquidity: true,
           canFundOtherAccounts: true,
+          showOnOverview: true,
           hardFloorCents: cents(form, 'secondaryAmount'),
           transferDelayDays: number(form, 'delayDays'),
         },
@@ -1431,6 +1452,7 @@ const makeCashAccountEditRequest = (account: CashAccount, form: FormData): CashA
     balanceAsOf: get(form, 'editAccountBalanceAsOf'),
     includedInLiquidity: form.get('editAccountLiquidity') === 'on',
     canFundOtherAccounts: form.get('editAccountFunding') === 'on',
+    showOnOverview: account.showOnOverview,
     hardFloorCents: optionalCents(form, 'editAccountHardFloor'),
     preferredFloorCents: optionalCents(form, 'editAccountPreferredFloor'),
     transferDelayDays: Math.trunc(number(form, 'editAccountTransferDelay')),
@@ -10366,6 +10388,7 @@ export const DataPage = (): React.JSX.Element => {
         transferDelayDays: Math.trunc(number(form, 'accountTransferDelay')),
         includedInLiquidity: form.get('accountIncludedInLiquidity') === 'on',
         canFundOtherAccounts: form.get('accountCanFund') === 'on',
+        showOnOverview: form.get('accountShowOnOverview') === 'on',
       },
     });
     if (result.ok) {
@@ -10569,7 +10592,7 @@ export const DataPage = (): React.JSX.Element => {
             <div className={styles.recordGrid}>
               {records.accounts.map((account) => (
                 <form
-                  key={`${account.id}:${account.hardFloorCents ?? ''}:${account.preferredFloorCents ?? ''}:${account.transferDelayDays}:${account.includedInLiquidity}:${account.canFundOtherAccounts}`}
+                  key={`${account.id}:${account.hardFloorCents ?? ''}:${account.preferredFloorCents ?? ''}:${account.transferDelayDays}:${account.includedInLiquidity}:${account.canFundOtherAccounts}:${account.showOnOverview}`}
                   aria-label={`${account.name} protection settings`}
                   className={styles.formSection}
                   onSubmit={(event) => void updateAccountProtection(account, event)}
@@ -10631,6 +10654,15 @@ export const DataPage = (): React.JSX.Element => {
                       defaultChecked={account.canFundOtherAccounts}
                       label="Allow transfer recommendations to use this account"
                     />
+                    <Checkbox
+                      name="accountShowOnOverview"
+                      defaultChecked={account.showOnOverview}
+                      label="Show this account in the Overview cash-account list"
+                    />
+                    <Text size={200} className={styles.muted}>
+                      Display only. Hidden accounts still affect forecasts, card runway, protected
+                      minimums, and any funding warning that needs your attention.
+                    </Text>
                   </div>
                   <Button appearance="primary" type="submit">
                     Save {account.name}

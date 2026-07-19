@@ -166,6 +166,7 @@ describe('Spending Power parity', () => {
     });
 
     expect(result).toMatchObject({
+      nextDueOn: '2026-08-10',
       currentCyclePaymentOn: '2026-08-12',
       futurePositionLowCents: 70_000,
       futurePositionLowDate: '2026-08-11',

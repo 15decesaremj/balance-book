@@ -119,6 +119,7 @@ const formulaExport = (): UserDataExport => ({
       balanceAsOf: '2026-07-15',
       includedInLiquidity: true,
       canFundOtherAccounts: true,
+      showOnOverview: true,
       transferDelayDays: 0,
     },
   ],
@@ -585,6 +586,38 @@ describe('portable backup adversarial validation', () => {
 });
 
 describe('portable export and profile identity boundaries', () => {
+  it('round-trips hidden Overview accounts and defaults older portable accounts to visible', () => {
+    const source = openStore('balance-book-overview-visibility-source-');
+    source.initializeProfiles([
+      { id: 'source-profile', displayName: 'Source', username: 'source' },
+    ]);
+    source.saveVerticalSlice('source-profile', setup);
+    const sourceAccount = source.getManagedRecords('source-profile').accounts[0]!;
+    source.upsertManagedEntity('source-profile', 'cash-account', {
+      ...sourceAccount,
+      showOnOverview: false,
+    });
+
+    const portable = source.exportPortableProfile('source-profile', '1.1.2-test');
+    expect(portable.accounts[0]!.showOnOverview).toBe(false);
+    expect(parsePortableProfileBackup(portable).accounts[0]!.showOnOverview).toBe(false);
+
+    const destination = openStore('balance-book-overview-visibility-destination-');
+    destination.initializeProfiles([
+      { id: 'destination-profile', displayName: 'Destination', username: 'destination' },
+    ]);
+    destination.replacePortableProfile('destination-profile', portable);
+    expect(destination.getManagedRecords('destination-profile').accounts[0]!.showOnOverview).toBe(
+      false,
+    );
+
+    const legacyPortable = structuredClone(portable) as unknown as {
+      accounts: Array<Record<string, unknown>>;
+    };
+    delete legacyPortable.accounts[0]!.showOnOverview;
+    expect(parsePortableProfileBackup(legacyPortable).accounts[0]!.showOnOverview).toBe(true);
+  });
+
   it('neutralizes spreadsheet formulas without changing negative numeric values', () => {
     const directory = makeTemporaryDirectory('balance-book-formula-export-');
     const files = writeUserExports(directory, formulaExport());

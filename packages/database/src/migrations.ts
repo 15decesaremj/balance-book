@@ -1325,7 +1325,13 @@ export const backfillRefinanceAssetRelinks = (database: Database.Database): void
 
 const addColumnIfMissing = (
   database: Database.Database,
-  table: 'forecast_events' | 'credit_cards' | 'credit_card_cycles' | 'loans' | 'receivables',
+  table:
+    | 'cash_accounts'
+    | 'forecast_events'
+    | 'credit_cards'
+    | 'credit_card_cycles'
+    | 'loans'
+    | 'receivables',
   column: string,
   definition: string,
 ): void => {
@@ -1335,6 +1341,10 @@ const addColumnIfMissing = (
   if (existing.length === 0) return;
   if (existing.some((candidate) => candidate.name === column)) return;
   database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+};
+
+const addCashAccountOverviewVisibility = (database: Database.Database): void => {
+  addColumnIfMissing(database, 'cash_accounts', 'show_on_overview', 'INTEGER NOT NULL DEFAULT 1');
 };
 
 const addDebtTrackingMetadata = (database: Database.Database): void => {
@@ -1919,6 +1929,13 @@ const migrations: Migration[] = [
     name: 'imported-static-receivable-date-repair',
     sql: 'SELECT 1;',
     run: repairImportedStaticReceivableDates,
+  },
+  {
+    version: 30,
+    name: 'cash-account-overview-visibility',
+    reapplyIfMissing: true,
+    sql: 'SELECT 1;',
+    run: addCashAccountOverviewVisibility,
   },
 ];
 

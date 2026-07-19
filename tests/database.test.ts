@@ -98,6 +98,26 @@ describe('local database and authentication', () => {
     expect(store.getCredentialsById('profile-b')?.themePreference).toBe('light');
   });
 
+  it('reapplies the Overview visibility migration safely when its marker is missing', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
+    store.saveVerticalSlice('profile-a', setup);
+    store.raw.prepare('DELETE FROM schema_migrations WHERE version = 30').run();
+
+    expect(() =>
+      applyMigrations({
+        database: store.raw,
+        databasePath: store.raw.name,
+        backupDirectory: path.join(path.dirname(store.raw.name), 'visibility-migration-backups'),
+      }),
+    ).not.toThrow();
+
+    expect(
+      store.raw.prepare('SELECT name FROM schema_migrations WHERE version = 30').get(),
+    ).toMatchObject({ name: 'cash-account-overview-visibility' });
+    expect(store.getManagedRecords('profile-a').accounts[0]!.showOnOverview).toBe(true);
+  });
+
   it('scopes a cash card-payment link to a card owned by the active profile', () => {
     const store = openStore();
     store.initializeProfiles([
@@ -332,6 +352,7 @@ describe('local database and authentication', () => {
         account_id TEXT
       );
       INSERT INTO forecast_events (id) VALUES ('legacy-forecast-event');
+      INSERT INTO cash_accounts (id) VALUES ('legacy-cash-account');
       INSERT INTO saved_scenarios (id, settlement_date, account_id)
       VALUES ('legacy-cash-scenario', '2026-03-01', 'legacy-account');
       CREATE TABLE schema_migrations (
@@ -369,6 +390,18 @@ describe('local database and authentication', () => {
         )
         .get(),
     ).toBeTruthy();
+    expect(
+      database
+        .prepare(
+          "SELECT name FROM pragma_table_info('cash_accounts') WHERE name = 'show_on_overview'",
+        )
+        .get(),
+    ).toBeTruthy();
+    expect(
+      database
+        .prepare('SELECT show_on_overview AS showOnOverview FROM cash_accounts WHERE id = ?')
+        .get('legacy-cash-account'),
+    ).toEqual({ showOnOverview: 1 });
     expect(
       database
         .prepare(

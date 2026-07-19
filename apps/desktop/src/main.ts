@@ -516,6 +516,7 @@ const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): Forec
           ?.endingBalanceCents ?? account.openingBalanceCents,
       hardFloorCents: account.hardFloorCents ?? 0,
       preferredFloorCents: account.preferredFloorCents,
+      showOnOverview: account.showOnOverview,
     })),
     accountTroughs: accounts.flatMap((account) => {
       const conservative = accountDailyLow(

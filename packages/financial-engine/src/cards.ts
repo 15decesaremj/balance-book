@@ -577,6 +577,8 @@ export interface CardSpendingPower {
   currentCycleId?: string;
   currentCycleAmountCents: MoneyCents;
   currentCycleClosesOn?: PlainDateString;
+  /** Earliest unresolved contractual due date. This is not the modeled cash-settlement date. */
+  nextDueOn?: PlainDateString;
   currentCyclePaymentOn?: PlainDateString;
   spendingPowerCents: MoneyCents;
   cashBackedCapacityCents: MoneyCents;
@@ -727,6 +729,7 @@ export const calculateCardSpendingPower = (input: {
         .filter((cycle) => cycle.cardId === card.id)
         .map((cycle) => creditCardCycleSchema.parse(cycle))
         .sort((left, right) => compareDates(left.dueOn, right.dueOn));
+      const nextDueOn = cycles.find((cycle) => cycle.state !== 'paid')?.dueOn;
       const statementCandidates = cycles.filter(
         (cycle) =>
           cycle.state !== 'paid' &&
@@ -786,6 +789,7 @@ export const calculateCardSpendingPower = (input: {
           statementDueOn: statement?.dueOn,
           statementState: statement?.state,
           currentCycleAmountCents: 0,
+          nextDueOn,
           spendingPowerCents: 0,
           cashBackedCapacityCents: 0,
           spendingPowerStatus: overdueStatementWithUnknownTiming
@@ -940,6 +944,7 @@ export const calculateCardSpendingPower = (input: {
         currentCycleId: currentCycle.id,
         currentCycleAmountCents: projectedCycleObligation(card, currentCycle),
         currentCycleClosesOn: currentCycle.closesOn,
+        nextDueOn,
         currentCyclePaymentOn: currentCycle.paymentOn ?? currentCycle.dueOn,
         spendingPowerCents: moneyCentsSchema.parse(spendingPowerCents),
         cashBackedCapacityCents: moneyCentsSchema.parse(cashBackedCapacityCents),

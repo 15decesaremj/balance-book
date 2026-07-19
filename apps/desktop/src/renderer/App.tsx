@@ -83,7 +83,7 @@ const useStyles = makeStyles({
   },
   formGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(240px, 100%), 1fr))',
     gap: tokens.spacingHorizontalL,
   },
   actions: {
@@ -97,9 +97,9 @@ const useStyles = makeStyles({
     minWidth: 0,
     display: 'grid',
     gridTemplateColumns: '256px minmax(0, 1fr)',
-    gridTemplateRows: '72px 1fr',
+    gridTemplateRows: 'auto 1fr',
     backgroundColor: 'transparent',
-    '@media (max-width: 900px)': {
+    '@media (max-width: 1120px)': {
       gridTemplateColumns: '1fr',
       gridTemplateRows: 'auto auto 1fr',
     },
@@ -135,9 +135,45 @@ const useStyles = makeStyles({
     backgroundColor: 'color-mix(in srgb, var(--balance-glass) 82%, transparent)',
     backdropFilter: 'blur(26px) saturate(150%)',
     boxShadow: 'inset 0 -1px 0 var(--balance-glass-highlight)',
-    '@media (max-width: 900px)': { gridColumn: '1', gridRow: '2' },
+    '@media (max-width: 1120px)': {
+      gridColumn: '1',
+      gridRow: '2',
+      alignItems: 'stretch',
+      flexDirection: 'column',
+      paddingBlock: tokens.spacingVerticalM,
+      gap: tokens.spacingVerticalS,
+    },
   },
-  brand: { display: 'grid', gap: '1px' },
+  brand: { display: 'grid', gap: '1px', minWidth: 0, overflowWrap: 'anywhere' },
+  headerActions: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: tokens.spacingHorizontalM,
+    minWidth: 0,
+    marginLeft: 'auto',
+    '& > *': { minWidth: 0 },
+    '@media (max-width: 1120px)': {
+      width: '100%',
+      justifyContent: 'space-between',
+      marginLeft: 0,
+    },
+    '@media (max-width: 520px)': {
+      display: 'grid',
+      gridTemplateColumns: 'minmax(0, 1fr) auto',
+      alignItems: 'end',
+    },
+    '@media (max-width: 360px)': {
+      gridTemplateColumns: '1fr',
+      '& button': { width: '100%' },
+    },
+  },
+  themeField: {
+    minWidth: 0,
+    '& select': { width: 'min(260px, 100%)', minWidth: 0 },
+    '@media (max-width: 360px)': { width: '100%', '& select': { width: '100%' } },
+  },
   authHeading: { display: 'grid', gap: tokens.spacingVerticalXS },
   sidebar: {
     gridColumn: '1',
@@ -157,7 +193,7 @@ const useStyles = makeStyles({
     backgroundColor: 'color-mix(in srgb, var(--balance-glass-strong) 78%, transparent)',
     backdropFilter: 'blur(32px) saturate(155%)',
     boxShadow: 'inset -1px 0 0 var(--balance-glass-highlight), var(--balance-glass-shadow)',
-    '@media (max-width: 900px)': {
+    '@media (max-width: 1120px)': {
       gridColumn: '1',
       gridRow: '1',
       width: '100%',
@@ -189,7 +225,7 @@ const useStyles = makeStyles({
       fontSize: tokens.fontSizeBase600,
       letterSpacing: '-0.025em',
     },
-    '@media (max-width: 900px)': {
+    '@media (max-width: 1120px)': {
       minWidth: 'auto',
       padding: 0,
       '& span': { display: 'none' },
@@ -200,20 +236,20 @@ const useStyles = makeStyles({
     gap: tokens.spacingVerticalS,
     alignItems: 'stretch',
     '& button': { justifyContent: 'flex-start' },
-    '@media (max-width: 900px)': {
+    '@media (max-width: 1120px)': {
       display: 'none',
     },
   },
   mobileNav: {
     display: 'none',
     minWidth: '190px',
-    '@media (max-width: 900px)': { display: 'block', marginLeft: 'auto' },
+    '@media (max-width: 1120px)': { display: 'block', marginLeft: 'auto' },
     '@media (max-width: 520px)': { width: '100%', marginLeft: 0 },
   },
   navGroup: {
     display: 'grid',
     gap: '3px',
-    '@media (max-width: 900px)': { display: 'flex' },
+    '@media (max-width: 1120px)': { display: 'flex' },
   },
   navLabel: {
     padding: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalM}`,
@@ -222,7 +258,7 @@ const useStyles = makeStyles({
     fontWeight: tokens.fontWeightSemibold,
     letterSpacing: '0.08em',
     textTransform: 'uppercase',
-    '@media (max-width: 900px)': { display: 'none' },
+    '@media (max-width: 1120px)': { display: 'none' },
   },
   navButton: {
     minHeight: '42px',
@@ -257,7 +293,7 @@ const useStyles = makeStyles({
     marginTop: 'auto',
     padding: tokens.spacingHorizontalM,
     color: tokens.colorNeutralForeground3,
-    '@media (max-width: 900px)': { display: 'none' },
+    '@media (max-width: 1120px)': { display: 'none' },
   },
   content: {
     gridColumn: '2',
@@ -266,7 +302,7 @@ const useStyles = makeStyles({
     minWidth: 0,
     margin: '0 auto',
     padding: `40px 0 72px`,
-    '@media (max-width: 900px)': {
+    '@media (max-width: 1120px)': {
       gridColumn: '1',
       gridRow: '3',
       width: 'min(100% - 28px, 1500px)',
@@ -279,7 +315,7 @@ const useStyles = makeStyles({
   },
   metrics: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(210px, 100%), 1fr))',
     gap: tokens.spacingHorizontalL,
     marginBottom: tokens.spacingVerticalXL,
   },
@@ -983,8 +1019,8 @@ const AppShell = ({
           <Text size={200}>Local profile</Text>
           <strong>{session.profile.displayName}</strong>
         </div>
-        <div className={styles.actions}>
-          <Field label="Theme" orientation="horizontal">
+        <div className={styles.headerActions} data-layout-watch="shell-header-actions">
+          <Field className={styles.themeField} label="Theme" orientation="horizontal">
             <Select
               aria-label="Theme"
               value={session.themePreference}

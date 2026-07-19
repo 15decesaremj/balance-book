@@ -22,6 +22,7 @@ const cashAccountBaseSchema = z.object({
   balanceAsOf: plainDateSchema,
   includedInLiquidity: z.boolean().default(true),
   canFundOtherAccounts: z.boolean().default(true),
+  showOnOverview: z.boolean().default(true),
   hardFloorCents: moneyCentsSchema.nonnegative().optional(),
   preferredFloorCents: moneyCentsSchema.nonnegative().optional(),
   transferDelayDays: z.number().int().min(0).max(30).default(0),

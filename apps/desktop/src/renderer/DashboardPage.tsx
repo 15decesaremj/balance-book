@@ -67,7 +67,12 @@ const useDashboardStyles = makeStyles({
     gap: tokens.spacingHorizontalXL,
     '@media (max-width: 760px)': { alignItems: 'stretch', flexDirection: 'column' },
   },
-  heading: { display: 'grid', gap: tokens.spacingVerticalXS },
+  heading: {
+    display: 'grid',
+    minWidth: 0,
+    gap: tokens.spacingVerticalXS,
+    '& > *': { minWidth: 0, overflowWrap: 'anywhere' },
+  },
   eyebrow: {
     color: tokens.colorBrandForeground1,
     fontSize: tokens.fontSizeBase200,
@@ -75,7 +80,11 @@ const useDashboardStyles = makeStyles({
     letterSpacing: '0.1em',
     textTransform: 'uppercase',
   },
-  detail: { color: tokens.colorNeutralForeground2, maxWidth: '76ch' },
+  detail: {
+    color: tokens.colorNeutralForeground2,
+    maxWidth: '76ch',
+    overflowWrap: 'anywhere',
+  },
   segmented: {
     display: 'flex',
     flexWrap: 'wrap',
@@ -106,7 +115,7 @@ const useDashboardStyles = makeStyles({
     gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
     gap: tokens.spacingHorizontalL,
     '@media (max-width: 1080px)': { gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' },
-    '@media (max-width: 360px)': { gridTemplateColumns: '1fr' },
+    '@media (max-width: 520px)': { gridTemplateColumns: '1fr' },
   },
   metricCard: {
     minWidth: 0,
@@ -124,6 +133,7 @@ const useDashboardStyles = makeStyles({
     fontWeight: tokens.fontWeightSemibold,
     letterSpacing: '-0.035em',
     fontVariantNumeric: 'tabular-nums',
+    overflowWrap: 'anywhere',
   },
   metricLabel: { color: tokens.colorNeutralForeground2, fontWeight: tokens.fontWeightSemibold },
   section: { display: 'grid', minWidth: 0, gap: tokens.spacingVerticalL },
@@ -187,6 +197,8 @@ const useDashboardStyles = makeStyles({
   },
   insightPill: {
     width: 'fit-content',
+    maxWidth: '100%',
+    flexShrink: 0,
     padding: `${tokens.spacingVerticalXXS} ${tokens.spacingHorizontalM}`,
     borderRadius: tokens.borderRadiusCircular,
     color: tokens.colorPaletteGreenForeground1,
@@ -231,15 +243,27 @@ const useDashboardStyles = makeStyles({
   },
   powerTop: {
     display: 'flex',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     gap: tokens.spacingHorizontalM,
+    '& > *': { minWidth: 0 },
   },
   cardTitleRow: {
     display: 'flex',
     alignItems: 'center',
     gap: tokens.spacingHorizontalS,
     minWidth: 0,
+    flex: '1 1 230px',
+    '& strong': { overflowWrap: 'anywhere' },
+  },
+  cardTimingRow: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    columnGap: tokens.spacingHorizontalS,
+    rowGap: tokens.spacingVerticalXXS,
+    minWidth: 0,
+    '& > *': { overflowWrap: 'anywhere' },
   },
   resetBadge: {
     width: '34px',
@@ -261,6 +285,7 @@ const useDashboardStyles = makeStyles({
     fontSize: tokens.fontSizeBase600,
     fontWeight: tokens.fontWeightSemibold,
     fontVariantNumeric: 'tabular-nums',
+    overflowWrap: 'anywhere',
   },
   warningText: { color: tokens.colorPaletteDarkOrangeForeground2 },
   dangerText: { color: tokens.colorPaletteRedForeground1 },
@@ -268,9 +293,14 @@ const useDashboardStyles = makeStyles({
     display: 'grid',
     gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
     gap: `${tokens.spacingVerticalM} ${tokens.spacingHorizontalL}`,
+    '@media (max-width: 420px)': { gridTemplateColumns: '1fr' },
   },
   fact: { minWidth: 0, display: 'grid', gap: tokens.spacingVerticalXXS },
-  factValue: { fontWeight: tokens.fontWeightSemibold, fontVariantNumeric: 'tabular-nums' },
+  factValue: {
+    fontWeight: tokens.fontWeightSemibold,
+    fontVariantNumeric: 'tabular-nums',
+    overflowWrap: 'anywhere',
+  },
   twoColumn: {
     display: 'grid',
     gridTemplateColumns: 'minmax(0, 1.35fr) minmax(320px, 0.65fr)',
@@ -415,6 +445,8 @@ const useDashboardStyles = makeStyles({
     gap: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalL}`,
     paddingBlock: tokens.spacingVerticalM,
     borderBottom: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    '& > *': { minWidth: 0 },
+    '& strong': { overflowWrap: 'anywhere' },
     '&:last-child': { borderBottom: 'none' },
   },
   accountLow: {
@@ -512,12 +544,16 @@ const useDashboardStyles = makeStyles({
     minWidth: 0,
     padding: tokens.spacingHorizontalL,
     display: 'grid',
-    gridTemplateColumns: 'minmax(180px, 0.8fr) minmax(0, 2fr) auto',
-    alignItems: 'center',
+    gridTemplateColumns: 'minmax(170px, 0.72fr) minmax(0, 1.7fr) minmax(230px, 0.9fr)',
+    alignItems: 'start',
     gap: tokens.spacingHorizontalL,
     border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
     borderRadius: tokens.borderRadiusLarge,
     backgroundColor: tokens.colorNeutralBackground1,
+    '& > *': { minWidth: 0 },
+    '@media (max-width: 1280px)': {
+      gridTemplateColumns: 'minmax(170px, 0.72fr) minmax(0, 1.7fr)',
+    },
     '@media (max-width: 900px)': {
       gridTemplateColumns: '1fr',
       alignItems: 'stretch',
@@ -525,10 +561,19 @@ const useDashboardStyles = makeStyles({
   },
   fundingFacts: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
     gap: tokens.spacingHorizontalM,
-    '@media (max-width: 720px)': { gridTemplateColumns: 'repeat(2, minmax(0, 1fr))' },
     '@media (max-width: 420px)': { gridTemplateColumns: '1fr' },
+  },
+  fundingResolution: {
+    display: 'grid',
+    alignContent: 'start',
+    gap: tokens.spacingVerticalM,
+    minWidth: 0,
+    '& > *': { minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' },
+    '& button': { width: 'fit-content', whiteSpace: 'normal' },
+    '@media (max-width: 1280px)': { gridColumn: '1 / -1' },
+    '@media (max-width: 900px)': { gridColumn: 'auto' },
   },
   explain: {
     color: tokens.colorNeutralForeground2,
@@ -774,6 +819,9 @@ export const DashboardPage = ({
       : snapshot.conservativeIntradaySafetyLowDate;
   const fundingNeeds =
     mode === 'expected' ? (snapshot.expectedTransferNeeds ?? []) : (snapshot.transferNeeds ?? []);
+  const overviewCashAccounts = (snapshot.cashAccounts ?? []).filter(
+    (account) => account.showOnOverview !== false,
+  );
   const nextFundingNeed = fundingNeeds[0];
   const nextFundingFloor = nextFundingNeed
     ? ((snapshot.cashAccounts ?? []).find((account) => account.id === nextFundingNeed.accountId)
@@ -1493,14 +1541,34 @@ export const DashboardPage = ({
           <div className={styles.safeSpendGrid}>
             {cardPower.map((card) => {
               const resetDate = card.currentCycleClosesOn;
-              const daysUntilReset = resetDate
-                ? Math.max(
-                    0,
-                    Temporal.PlainDate.from(today).until(Temporal.PlainDate.from(resetDate), {
-                      largestUnit: 'day',
-                    }).days,
-                  )
+              const resetDayDifference = resetDate
+                ? Temporal.PlainDate.from(today).until(Temporal.PlainDate.from(resetDate), {
+                    largestUnit: 'day',
+                  }).days
                 : undefined;
+              const daysUntilReset =
+                resetDayDifference !== undefined && resetDayDifference >= 0
+                  ? resetDayDifference
+                  : undefined;
+              const resetTimingText = !resetDate
+                ? 'Reset timing unavailable'
+                : resetDayDifference! < 0
+                  ? `Reset date needs update · ${displayDate(resetDate)}`
+                  : daysUntilReset === 0
+                    ? 'Resets today'
+                    : `Resets in ${daysUntilReset} day${daysUntilReset === 1 ? '' : 's'}`;
+              const dueDayDifference = card.nextDueOn
+                ? Temporal.PlainDate.from(today).until(Temporal.PlainDate.from(card.nextDueOn), {
+                    largestUnit: 'day',
+                  }).days
+                : undefined;
+              const dueTimingText = !card.nextDueOn
+                ? 'Due date unavailable'
+                : dueDayDifference! < 0
+                  ? `Past due ${displayDate(card.nextDueOn)}`
+                  : dueDayDifference === 0
+                    ? `Due today · ${displayDate(card.nextDueOn)}`
+                    : `Next due ${displayDate(card.nextDueOn)}`;
               const unavailableReason = cardSpendingPowerUnavailableReason(card);
               const fundingFloor =
                 (snapshot.cashAccounts ?? []).find(
@@ -1548,26 +1616,54 @@ export const DashboardPage = ({
                       <span
                         className={styles.resetBadge}
                         aria-label={
-                          resetDate
+                          resetDate && resetDayDifference! >= 0
                             ? `${daysUntilReset} days until the current statement resets on ${displayDate(resetDate)}`
-                            : 'Statement reset date unavailable'
+                            : resetDate
+                              ? `Recorded statement reset date passed on ${displayDate(resetDate)}`
+                              : 'Statement reset date unavailable'
                         }
                         title={
-                          resetDate
+                          resetDate && resetDayDifference! >= 0
                             ? `${daysUntilReset} days until statement close · ${displayDate(resetDate)}`
-                            : 'Add the current cycle close date'
+                            : resetDate
+                              ? `Update the current cycle · recorded close ${displayDate(resetDate)}`
+                              : 'Add the current cycle close date'
                         }
                       >
-                        {daysUntilReset ?? '–'}
+                        {daysUntilReset ?? (resetDate ? '!' : '–')}
                       </span>
                       <div className={styles.heading}>
                         <strong>{card.cardName}</strong>
-                        <Text size={200} className={styles.detail}>
-                          {resetDate
-                            ? `${daysUntilReset === 0 ? 'Resets today' : `Resets in ${daysUntilReset} day${daysUntilReset === 1 ? '' : 's'}`}`
-                            : 'Reset timing unavailable'}
-                          {mode === 'conservative' ? ` · paid from ${card.fundingAccountName}` : ''}
-                        </Text>
+                        <div className={styles.cardTimingRow}>
+                          <Text
+                            size={200}
+                            className={mergeClasses(
+                              styles.detail,
+                              resetDayDifference !== undefined && resetDayDifference < 0
+                                ? styles.warningText
+                                : undefined,
+                            )}
+                          >
+                            {resetTimingText}
+                          </Text>
+                          <Text
+                            size={200}
+                            aria-label={`${card.cardName} next due date`}
+                            className={mergeClasses(
+                              styles.detail,
+                              dueDayDifference !== undefined && dueDayDifference < 0
+                                ? styles.dangerText
+                                : undefined,
+                            )}
+                          >
+                            {dueTimingText}
+                          </Text>
+                          {mode === 'conservative' && (
+                            <Text size={200} className={styles.detail}>
+                              Paid from {card.fundingAccountName}
+                            </Text>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <Text
@@ -1759,7 +1855,7 @@ export const DashboardPage = ({
                   ?.hardFloorCents ?? 0;
               return (
                 <li key={`${need.accountId}-${need.date}-${index}`}>
-                  <div className={styles.fundingRow}>
+                  <div className={styles.fundingRow} data-layout-watch="funding-action">
                     <div className={styles.heading}>
                       <strong>{need.accountName}</strong>
                       {need.sourceAccountName ? (
@@ -1816,32 +1912,37 @@ export const DashboardPage = ({
                         <Text className={styles.factValue}>{displayDate(need.arrivalDate)}</Text>
                       </div>
                     </div>
-                    {(need.receivableOutstandingCents ?? 0) > 0 ? (
-                      <Text size={200} className={styles.detail}>
-                        {need.uncoveredAfterReceivablesCents === 0 &&
-                        need.deepestUncoveredAfterReceivablesCents === 0
-                          ? `Money owed to you can cover this run if you release ${formatMoney(need.receivableReleaseNeededCents ?? 0)} to ${need.accountName} by ${displayDate(need.date)}${(need.horizonDeepestShortfallDate ?? need.date) === need.date ? '' : ` and ${formatMoney(need.deepestReceivableReleaseNeededCents ?? 0)} total by ${displayDate(need.horizonDeepestShortfallDate)}`}.`
-                          : `Money owed to you can contribute ${formatMoney(need.receivableReleaseNeededCents ?? 0)} by ${displayDate(need.date)} and ${formatMoney(need.deepestReceivableReleaseNeededCents ?? 0)} by ${displayDate(need.horizonDeepestShortfallDate ?? need.date)}, leaving ${formatMoney(need.deepestUncoveredAfterReceivablesCents ?? 0)} still to fund.`}
-                      </Text>
-                    ) : (
-                      <Text size={200} className={styles.detail}>
-                        No projected money owed is available to release by this need.
-                      </Text>
-                    )}
-                    {actionPath ? (
-                      <Button appearance="primary" onClick={() => navigate(actionPath)}>
-                        Review transfer
-                      </Button>
-                    ) : (
-                      <Text size={200} className={styles.detail}>
-                        {need.sourceAccountName
-                          ? 'Transfer timing is incomplete; review the planner.'
-                          : need.deepestUncoveredAfterReceivablesCents === 0 &&
-                              (need.deepestReceivableReleaseNeededCents ?? 0) > 0
-                            ? 'No safe internal transfer is available, but releasing the dated money owed above would cover this run.'
-                            : 'A transfer and projected money owed cannot fully cover this need.'}
-                      </Text>
-                    )}
+                    <div
+                      className={styles.fundingResolution}
+                      data-layout-region="funding-resolution"
+                    >
+                      {(need.receivableOutstandingCents ?? 0) > 0 ? (
+                        <Text size={200} className={styles.detail}>
+                          {need.uncoveredAfterReceivablesCents === 0 &&
+                          need.deepestUncoveredAfterReceivablesCents === 0
+                            ? `Money owed to you can cover this run if you release ${formatMoney(need.receivableReleaseNeededCents ?? 0)} to ${need.accountName} by ${displayDate(need.date)}${(need.horizonDeepestShortfallDate ?? need.date) === need.date ? '' : ` and ${formatMoney(need.deepestReceivableReleaseNeededCents ?? 0)} total by ${displayDate(need.horizonDeepestShortfallDate)}`}.`
+                            : `Money owed to you can contribute ${formatMoney(need.receivableReleaseNeededCents ?? 0)} by ${displayDate(need.date)} and ${formatMoney(need.deepestReceivableReleaseNeededCents ?? 0)} by ${displayDate(need.horizonDeepestShortfallDate ?? need.date)}, leaving ${formatMoney(need.deepestUncoveredAfterReceivablesCents ?? 0)} still to fund.`}
+                        </Text>
+                      ) : (
+                        <Text size={200} className={styles.detail}>
+                          No projected money owed is available to release by this need.
+                        </Text>
+                      )}
+                      {actionPath ? (
+                        <Button appearance="primary" onClick={() => navigate(actionPath)}>
+                          Review transfer
+                        </Button>
+                      ) : (
+                        <Text size={200} className={styles.detail}>
+                          {need.sourceAccountName
+                            ? 'Transfer timing is incomplete; review the planner.'
+                            : need.deepestUncoveredAfterReceivablesCents === 0 &&
+                                (need.deepestReceivableReleaseNeededCents ?? 0) > 0
+                              ? 'No safe internal transfer is available, but releasing the dated money owed above would cover this run.'
+                              : 'A transfer and projected money owed cannot fully cover this need.'}
+                        </Text>
+                      )}
+                    </div>
                   </div>
                 </li>
               );
@@ -1914,13 +2015,13 @@ export const DashboardPage = ({
         </div>
 
         <div className={styles.stack}>
-          <div className={styles.panel}>
+          <div className={styles.panel} aria-label="Overview cash accounts">
             <div className={styles.heading}>
               <Text className={styles.eyebrow}>Cash accounts</Text>
               <Title2 as="h2">Balances and future lows</Title2>
             </div>
             <div className={styles.accountRows}>
-              {(snapshot.cashAccounts ?? []).map((account) => {
+              {overviewCashAccounts.map((account) => {
                 const nextNeed = fundingNeeds.find((need) => need.accountId === account.id);
                 const low = snapshot.accountTroughs?.find(
                   (candidate) => candidate.accountId === account.id,
@@ -1965,6 +2066,14 @@ export const DashboardPage = ({
                   </div>
                 );
               })}
+              {overviewCashAccounts.length === 0 && (
+                <div className={styles.empty}>
+                  <Text>No cash accounts are currently shown on Overview.</Text>
+                  <Button appearance="subtle" onClick={() => navigate('/data')}>
+                    Choose visible accounts
+                  </Button>
+                </div>
+              )}
             </div>
             <div className={styles.sectionHeader}>
               <Button appearance="subtle" onClick={() => navigate('/forecast')}>

@@ -285,6 +285,7 @@ const cardSpendingPowerSchema = z.array(
     currentCycleId: z.string().optional(),
     currentCycleAmountCents: z.number().int().safe(),
     currentCycleClosesOn: plainDateSchema.optional(),
+    nextDueOn: plainDateSchema.optional(),
     currentCyclePaymentOn: plainDateSchema.optional(),
     spendingPowerCents: z.number().int().nonnegative().safe(),
     cashBackedCapacityCents: z.number().int().nonnegative().safe(),
@@ -427,6 +428,7 @@ export const forecastSnapshotSchema = z.object({
         balanceCents: z.number().int().safe(),
         hardFloorCents: z.number().int().nonnegative().safe(),
         preferredFloorCents: z.number().int().nonnegative().safe().optional(),
+        showOnOverview: z.boolean().optional(),
       }),
     )
     .optional(),

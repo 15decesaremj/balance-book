@@ -23,6 +23,7 @@ const records: ManagedRecordsDto = {
       balanceAsOf: '2026-06-15',
       includedInLiquidity: true,
       canFundOtherAccounts: true,
+      showOnOverview: true,
       hardFloorCents: 0,
       transferDelayDays: 0,
     },

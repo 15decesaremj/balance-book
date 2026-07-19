@@ -43,9 +43,9 @@ The local sign-in password is an application privacy boundary. The live database
 
 ## Install
 
-The 1.1.1 V1 feature line targets Windows 11 x64. The installer is self-contained; end users do not need development tools or a separate database server.
+The 1.1.2 V1 feature line targets Windows 11 x64. The installer is self-contained; end users do not need development tools or a separate database server.
 
-No signed public binary is claimed yet. A local unsigned 1.1.1 Squirrel candidate has been built, installed as an upgrade on the owner's Windows profile, and passed the isolated packaged-application smoke and complete Electron journey, but it remains an owner-testing artifact rather than a public release. An unsigned installer may trigger Windows SmartScreen or **Unknown publisher**. Public distribution remains gated on valid Authenticode signing, a sanitized clean-history remote source mirror, fresh-disposable-profile lifecycle testing, and the checklist in [PUBLIC_RELEASE_READINESS.md](docs/PUBLIC_RELEASE_READINESS.md).
+No signed public binary is claimed yet. Local unsigned Squirrel candidates have been built and tested on the owner's Windows profile, but they remain owner-testing artifacts rather than public releases. An unsigned installer may trigger Windows SmartScreen or **Unknown publisher**. Public distribution remains gated on valid Authenticode signing, a sanitized clean-history remote source mirror, fresh-disposable-profile lifecycle testing, and the checklist in [PUBLIC_RELEASE_READINESS.md](docs/PUBLIC_RELEASE_READINESS.md).
 
 Read [INSTALLATION.md](docs/INSTALLATION.md) before installing or upgrading. Read [BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) before moving data to another machine.
 

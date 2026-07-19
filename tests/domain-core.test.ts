@@ -1,6 +1,12 @@
 import Decimal from 'decimal.js';
 import { describe, expect, it } from 'vitest';
-import { addDays, decimalToCents, enumerateDates, receivableSchema } from '@balance-book/domain';
+import {
+  addDays,
+  cashAccountSchema,
+  decimalToCents,
+  enumerateDates,
+  receivableSchema,
+} from '@balance-book/domain';
 import {
   accrueSimpleInterest,
   allocateLoanPayment,
@@ -16,6 +22,22 @@ describe('exact money and financial dates', () => {
   it('keeps leap-day date math timezone-free', () => {
     expect(addDays('2028-02-28', 1)).toBe('2028-02-29');
     expect(enumerateDates('2028-02-28', '2028-03-01')).toHaveLength(3);
+  });
+
+  it('shows cash accounts on Overview by default while preserving an explicit hidden choice', () => {
+    const account = {
+      id: 'cash-a',
+      userId: 'profile-a',
+      name: 'Synthetic checking',
+      type: 'checking' as const,
+      openingBalanceCents: 100_000,
+      balanceAsOf: '2026-07-15',
+    };
+
+    expect(cashAccountSchema.parse(account).showOnOverview).toBe(true);
+    expect(cashAccountSchema.parse({ ...account, showOnOverview: false }).showOnOverview).toBe(
+      false,
+    );
   });
 
   it('constrains monthly recurrences to month end', () => {

@@ -275,6 +275,88 @@ describe('date-driven card lifecycle', () => {
     expect(result.spendingPowerCents).toBe(0);
     expect(result.currentCycleId).toBeUndefined();
     expect(result.currentCyclePaymentOn).toBeUndefined();
+    expect(result.nextDueOn).toBeUndefined();
+  });
+
+  it('reports the earliest unresolved contractual due date and skips an earlier paid cycle', () => {
+    const paidCycle = futureCycle({
+      id: 'cycle-paid-earlier',
+      opensOn: '2026-05-20',
+      closesOn: '2026-06-19',
+      dueOn: '2026-07-13',
+      paymentOn: '2026-07-13',
+      state: 'paid',
+      lockedStatementCents: 12_000,
+      actualPaymentCents: 12_000,
+    });
+    const earliestUnresolved = futureCycle({
+      id: 'cycle-earliest-unresolved',
+      opensOn: '2026-06-20',
+      closesOn: '2026-07-19',
+      dueOn: '2026-08-13',
+      paymentOn: '2026-08-15',
+      state: 'open',
+      actualActivityCents: 20_000,
+    });
+    const laterUnresolved = futureCycle({
+      id: 'cycle-later-unresolved',
+      opensOn: '2026-07-20',
+      closesOn: '2026-08-19',
+      dueOn: '2026-09-13',
+      paymentOn: '2026-09-14',
+    });
+
+    const result = calculateCardSpendingPower({
+      cards: [card()],
+      cardCycles: [laterUnresolved, paidCycle, earliestUnresolved],
+      asOfDate: '2026-07-15',
+      days: [
+        {
+          date: '2026-08-15',
+          consolidatedCashCents: 100_000,
+          totalPositionCents: 100_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 100_000 }],
+        },
+        {
+          date: '2026-09-14',
+          consolidatedCashCents: 100_000,
+          totalPositionCents: 100_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 100_000 }],
+        },
+      ],
+    })[0]!;
+
+    expect(result.nextDueOn).toBe('2026-08-13');
+    expect(result.currentCyclePaymentOn).toBe('2026-08-15');
+  });
+
+  it('falls forward to the next generated due date when every supplied cycle is paid', () => {
+    const paidCycle = futureCycle({
+      id: 'cycle-paid-only',
+      opensOn: '2026-05-20',
+      closesOn: '2026-06-19',
+      dueOn: '2026-07-13',
+      paymentOn: '2026-07-13',
+      state: 'paid',
+      lockedStatementCents: 12_000,
+      actualPaymentCents: 12_000,
+    });
+
+    const result = calculateCardSpendingPower({
+      cards: [card()],
+      cardCycles: [paidCycle],
+      asOfDate: '2026-07-15',
+      days: [
+        {
+          date: '2026-07-15',
+          consolidatedCashCents: 100_000,
+          totalPositionCents: 100_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 100_000 }],
+        },
+      ],
+    })[0]!;
+
+    expect(result.nextDueOn).toBe('2026-08-13');
   });
 
   it('keeps a past-due statement visible when its scheduled payment date is still ahead', () => {
