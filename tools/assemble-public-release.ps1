@@ -157,7 +157,7 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $squirrelSetup).Hash -ne $setup
 }
 $packageFile = Get-Item -LiteralPath $squirrelPackage
 $expectedReleaseLine = '{0} {1} {2}' -f (Get-FileHash -Algorithm SHA1 -LiteralPath $packageFile.FullName).Hash, $packageFile.Name, $packageFile.Length
-$actualReleaseLine = Get-Content -LiteralPath $squirrelReleases | Where-Object { $_.Trim() } | Select-Object -First 1
+$actualReleaseLine = [string] (Get-Content -LiteralPath $squirrelReleases | Where-Object { $_.Trim() } | Select-Object -First 1)
 if ($actualReleaseLine -ne $expectedReleaseLine) {
   throw 'Squirrel RELEASES does not exactly bind the full package hash, name, and length.'
 }

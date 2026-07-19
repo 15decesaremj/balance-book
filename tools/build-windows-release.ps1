@@ -137,7 +137,7 @@ foreach ($artifact in @($setupSource, $packagePath, $releasesPath)) {
 
 $package = Get-Item -LiteralPath $packagePath
 $expectedReleaseLine = '{0} {1} {2}' -f (Get-FileHash -Algorithm SHA1 -LiteralPath $packagePath).Hash, $package.Name, $package.Length
-$actualReleaseLine = Get-Content -LiteralPath $releasesPath | Where-Object { $_.Trim() } | Select-Object -First 1
+$actualReleaseLine = [string] (Get-Content -LiteralPath $releasesPath | Where-Object { $_.Trim() } | Select-Object -First 1)
 if ($actualReleaseLine -ne $expectedReleaseLine) {
   throw 'Squirrel RELEASES does not exactly match the full package hash, name, and length.'
 }

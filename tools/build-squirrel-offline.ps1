@@ -396,7 +396,7 @@ try {
       throw "Squirrel did not create the expected artifact: $artifact"
     }
   }
-  $releaseLine = Get-Content -LiteralPath $releasesPath | Where-Object { $_.Trim() } | Select-Object -First 1
+  $releaseLine = [string] (Get-Content -LiteralPath $releasesPath | Where-Object { $_.Trim() } | Select-Object -First 1)
   $fullPackage = Get-Item -LiteralPath $fullPackagePath
   $expectedReleaseLine = '{0} {1} {2}' -f (Get-FileHash -Algorithm SHA1 -LiteralPath $fullPackagePath).Hash, $fullPackageName, $fullPackage.Length
   if ($releaseLine -ne $expectedReleaseLine) {

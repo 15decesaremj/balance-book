@@ -192,7 +192,7 @@ if ($SquirrelArtifactDirectory) {
       throw "Expected Squirrel artifact was not found: $artifact"
     }
   }
-  $releaseLine = (Get-Content -LiteralPath $releasesPath | Where-Object { $_.Trim() } | Select-Object -First 1)
+  $releaseLine = [string] (Get-Content -LiteralPath $releasesPath | Where-Object { $_.Trim() } | Select-Object -First 1)
   $package = Get-Item -LiteralPath $packagePath
   $expectedReleaseLine = '{0} {1} {2}' -f (Get-FileHash -Algorithm SHA1 -LiteralPath $packagePath).Hash, $package.Name, $package.Length
   if ($releaseLine -ne $expectedReleaseLine) {
