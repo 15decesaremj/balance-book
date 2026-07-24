@@ -779,6 +779,8 @@ export type UpdateChannel = z.infer<typeof updateChannelSchema>;
 export const updateStatusSchema = z
   .object({
     enabled: z.boolean(),
+    delivery: z.enum(['balance-book', 'microsoft-store', 'none']),
+    storeLinkAvailable: z.boolean(),
     state: z.enum([
       'disabled',
       'idle',
@@ -1063,6 +1065,8 @@ export interface BalanceBookApi {
   checkForUpdates(): Promise<IpcResult<UpdateStatusDto>>;
   deferUpdate(): Promise<IpcResult<UpdateStatusDto>>;
   restartForUpdate(): Promise<IpcResult<UpdateStatusDto>>;
+  openMicrosoftStore(): Promise<IpcResult<{ success: true }>>;
+  openPrivacyPolicy(): Promise<IpcResult<{ success: true }>>;
   onUpdateStatus(listener: (status: UpdateStatusDto) => void): () => void;
   getPostUpdateNotice(): Promise<IpcResult<PostUpdateNoticeDto | null>>;
   acknowledgePostUpdateNotice(): Promise<IpcResult<{ success: true }>>;

@@ -139,6 +139,26 @@ const waitForPageReady = async (window: Page): Promise<void> => {
   await window.locator('.balance-skeleton').waitFor({ state: 'hidden', timeout: 60_000 });
 };
 
+const captureStoreScreenshot = async (window: Page, filename: string): Promise<void> => {
+  const outputDirectory = process.env.BALANCE_BOOK_STORE_SCREENSHOT_DIR;
+  if (!outputDirectory) return;
+  const previousViewport = window.viewportSize();
+  await window.setViewportSize({ width: 1366, height: 768 });
+  await window.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        globalThis.scrollTo({ top: 0, left: 0 });
+        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(() => resolve()));
+      }),
+  );
+  fs.mkdirSync(path.resolve(outputDirectory), { recursive: true });
+  await window.screenshot({
+    path: path.join(path.resolve(outputDirectory), filename),
+    fullPage: false,
+  });
+  if (previousViewport) await window.setViewportSize(previousViewport);
+};
+
 const openPrimaryPage = async (
   window: Awaited<ReturnType<ElectronApplication['firstWindow']>>,
   name: string,
@@ -577,6 +597,16 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await expect(skipLink).toHaveCSS('pointer-events', 'none');
   await window.getByRole('button', { name: 'Start guided setup' }).click();
   await expect(window.getByRole('heading', { name: 'First forecast setup' })).toBeVisible();
+  await captureStoreScreenshot(window, '01-welcome-local-data.png');
+  const localDataConsent = window.getByRole('checkbox', {
+    name: /I consent to Balance Book storing the financial information I enter locally/,
+  });
+  await expect(localDataConsent).not.toBeChecked();
+  await window.getByRole('button', { name: 'Continue' }).click();
+  await expect(
+    window.getByText('Confirm how Balance Book stores the information you enter'),
+  ).toBeVisible();
+  await localDataConsent.check();
   await window.getByRole('button', { name: 'Continue' }).click();
   await expect(
     window.getByRole('heading', { name: 'Which parts fit your finances?' }),
@@ -606,6 +636,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await reloadAndWait(window);
   await expect(window.getByRole('heading', { name: 'First forecast setup' })).toBeVisible();
   await expectStatusMessage(window, 'Resumed saved setup');
+  await expect(localDataConsent).toBeChecked();
   await window.getByRole('button', { name: 'Continue' }).click();
   await expect(
     window.getByRole('heading', { name: 'Which parts fit your finances?' }),
@@ -1013,6 +1044,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
     path: 'local-screenshots/daily-driver-overview-dark.png',
     fullPage: true,
   });
+  await captureStoreScreenshot(window, '02-overview.png');
 
   await openPrimaryPage(window, 'Cash forecast');
   await expect(window.getByRole('heading', { name: 'Cash forecast', exact: true })).toBeVisible();
@@ -1050,6 +1082,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await expect(
     window.getByLabel('Everyday card statement payment on 2026-07-28 event state'),
   ).toHaveText('Locked');
+  await captureStoreScreenshot(window, '03-cash-forecast.png');
   expect(
     await window.evaluate(() => document.documentElement.scrollWidth - globalThis.innerWidth),
   ).toBeLessThanOrEqual(1);
@@ -1181,6 +1214,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
 
   await openPrimaryPage(window, 'Credit cards');
   await expectNoSeriousAxeViolations(window);
+  await captureStoreScreenshot(window, '04-credit-cards.png');
   await window.screenshot({ path: 'local-screenshots/daily-driver-cards.png', fullPage: true });
 
   await openPrimaryPage(window, 'Charts');
@@ -1199,6 +1233,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await expect(futureToggle).toHaveAttribute('aria-pressed', 'true');
   await expect(window.getByText('Average monthly carry')).toBeVisible();
   await expectNoSeriousAxeViolations(window);
+  await captureStoreScreenshot(window, '06-trends.png');
   await window.setViewportSize({ width: 430, height: 900 });
   await expect
     .poll(() => window.evaluate(() => document.documentElement.scrollWidth - globalThis.innerWidth))
@@ -1376,6 +1411,7 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await window.getByLabel('Payment frequency (optional)').selectOption('biweekly');
   await window.getByRole('button', { name: 'Calculate and save loan' }).click();
   await expectStatusMessage(window, 'Loan added');
+  await captureStoreScreenshot(window, '05-loans.png');
   const autoLoanCard = window
     .getByRole('heading', { name: 'Synthetic auto loan' })
     .locator('xpath=ancestor::*[contains(@class, "fui-Card")][1]');
@@ -2986,6 +3022,11 @@ test('completes the persistent authenticated forecast vertical slice', async () 
   await openPrimaryPage(window, 'Overview');
   await expect(window.getByRole('heading', { name: 'Build your first forecast' })).toBeVisible();
   await window.getByRole('button', { name: 'Start guided setup' }).click();
+  await window
+    .getByRole('checkbox', {
+      name: /I consent to Balance Book storing the financial information I enter locally/,
+    })
+    .check();
   await window.getByRole('button', { name: 'Continue' }).click();
   await expect(
     window.getByRole('heading', { name: 'Which parts fit your finances?' }),

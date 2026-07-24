@@ -156,6 +156,9 @@ const api: BalanceBookApi = {
   checkForUpdates: () => invoke('updates:check', emptyRequestSchema, updateStatusSchema, {}),
   deferUpdate: () => invoke('updates:defer', emptyRequestSchema, updateStatusSchema, {}),
   restartForUpdate: () => invoke('updates:restart', emptyRequestSchema, updateStatusSchema, {}),
+  openMicrosoftStore: () =>
+    invoke('updates:open-microsoft-store', emptyRequestSchema, successSchema, {}),
+  openPrivacyPolicy: () => invoke('app:open-privacy-policy', emptyRequestSchema, successSchema, {}),
   onUpdateStatus: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => {
       const parsed = updateStatusSchema.safeParse(value);

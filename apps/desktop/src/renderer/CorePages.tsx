@@ -12772,7 +12772,11 @@ export const DataPage = ({
             <Title2 id="application-updates-title" as="h2">
               Application updates
             </Title2>
-            <Text>Choose which releases you receive and check whenever you want.</Text>
+            <Text>
+              {updateStatus?.delivery === 'microsoft-store'
+                ? 'Microsoft Store installs trusted updates automatically.'
+                : 'Choose which releases you receive and check whenever you want.'}
+            </Text>
           </div>
           {updateError && (
             <div role="alert" className={styles.error}>
@@ -12796,44 +12800,66 @@ export const DataPage = ({
                   )}
                   {updateStatus.releaseNotes && <Text size={200}>{updateStatus.releaseNotes}</Text>}
                 </div>
-                <form
-                  className={styles.preferenceGroup}
-                  onSubmit={(event) => void updateChannel(event)}
-                >
-                  <Field
-                    label="Release channel"
-                    hint="Beta receives tested previews first. Stable waits for the broadly recommended release."
+                {updateStatus.delivery !== 'microsoft-store' && (
+                  <form
+                    className={styles.preferenceGroup}
+                    onSubmit={(event) => void updateChannel(event)}
                   >
-                    <Select
-                      name="updateChannel"
-                      defaultValue={session.preferences.updateChannel}
-                      disabled={updateBusy}
+                    <Field
+                      label="Release channel"
+                      hint="Beta receives tested previews first. Stable waits for the broadly recommended release."
                     >
-                      <option value="beta">Beta</option>
-                      <option value="stable">Stable</option>
-                    </Select>
-                  </Field>
-                  <Button type="submit" disabled={updateBusy}>
-                    Save channel
-                  </Button>
-                </form>
+                      <Select
+                        name="updateChannel"
+                        defaultValue={session.preferences.updateChannel}
+                        disabled={updateBusy}
+                      >
+                        <option value="beta">Beta</option>
+                        <option value="stable">Stable</option>
+                      </Select>
+                    </Field>
+                    <Button type="submit" disabled={updateBusy}>
+                      Save channel
+                    </Button>
+                  </form>
+                )}
               </div>
               <div className={styles.actions}>
-                <Button
-                  appearance="primary"
-                  disabled={
-                    updateBusy ||
-                    !updateStatus.enabled ||
-                    ['checking', 'downloading', 'installing'].includes(updateStatus.state)
-                  }
-                  onClick={() => void runUpdateAction('check')}
-                >
-                  {updateStatus.state === 'checking'
-                    ? 'Checking…'
-                    : updateStatus.state === 'downloading'
-                      ? 'Downloading…'
-                      : 'Check for updates'}
-                </Button>
+                {updateStatus.delivery === 'microsoft-store' && (
+                  <Button
+                    appearance="primary"
+                    disabled={updateBusy || !updateStatus.storeLinkAvailable}
+                    onClick={() => {
+                      setUpdateError(null);
+                      setUpdateBusy(true);
+                      void window.balanceBook
+                        .openMicrosoftStore()
+                        .then((response) => {
+                          if (!response.ok) setUpdateError(response.error);
+                        })
+                        .finally(() => setUpdateBusy(false));
+                    }}
+                  >
+                    Open Microsoft Store
+                  </Button>
+                )}
+                {updateStatus.delivery !== 'microsoft-store' && (
+                  <Button
+                    appearance="primary"
+                    disabled={
+                      updateBusy ||
+                      !updateStatus.enabled ||
+                      ['checking', 'downloading', 'installing'].includes(updateStatus.state)
+                    }
+                    onClick={() => void runUpdateAction('check')}
+                  >
+                    {updateStatus.state === 'checking'
+                      ? 'Checking…'
+                      : updateStatus.state === 'downloading'
+                        ? 'Downloading…'
+                        : 'Check for updates'}
+                  </Button>
+                )}
                 {['ready', 'deferred'].includes(updateStatus.state) && (
                   <Button
                     appearance="primary"
@@ -12849,7 +12875,7 @@ export const DataPage = ({
                   </Button>
                 )}
               </div>
-              {!updateStatus.enabled && (
+              {!updateStatus.enabled && updateStatus.delivery === 'none' && (
                 <Text size={200} className={styles.muted}>
                   This owner-testing build does not contact an update server. Automatic updates are
                   enabled only in a signed public build.

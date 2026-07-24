@@ -26,6 +26,8 @@ const makeService = ({
   const statuses: UpdateStatusDto[] = [];
   const service = new BalanceBookUpdateService(updater, {
     enabled,
+    delivery: enabled ? 'balance-book' : 'none',
+    storeLinkAvailable: false,
     currentVersion: '2.0.6',
     initialChannel: 'beta',
     firstRun,
@@ -56,6 +58,33 @@ describe('Balance Book updater', () => {
     const { updater, service } = makeService({ enabled: false });
     await service.check();
     expect(service.getStatus()).toMatchObject({ enabled: false, state: 'disabled' });
+    expect(updater.setFeedURL).not.toHaveBeenCalled();
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+  it('describes Store-managed delivery without contacting the GitHub update feed', async () => {
+    const updater = new FakeUpdater();
+    const service = new BalanceBookUpdateService(updater, {
+      enabled: false,
+      delivery: 'microsoft-store',
+      storeLinkAvailable: true,
+      currentVersion: '2.0.7',
+      initialChannel: 'stable',
+      firstRun: false,
+      onStatus: () => undefined,
+      prepareInstall: async () => undefined,
+    });
+    services.push(service);
+
+    await service.check();
+
+    expect(service.getStatus()).toMatchObject({
+      enabled: false,
+      delivery: 'microsoft-store',
+      storeLinkAvailable: true,
+      state: 'disabled',
+      message: 'Updates are managed automatically by Microsoft Store.',
+    });
     expect(updater.setFeedURL).not.toHaveBeenCalled();
     expect(updater.checkForUpdates).not.toHaveBeenCalled();
   });

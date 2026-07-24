@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 2.0.8 - 2026-07-24
+
+- Added a separate Microsoft Store MSIX channel with exact Partner Center identity inputs,
+  deterministic `X.Y.Z.0` package versions, Store-managed updates, and no competing GitHub updater.
+- Added a copy-first, hash-verified, recovery-journaled migration from the direct profile into
+  package-private Store data while preserving the original profile and recovery backups.
+- Added explicit local-financial-data consent before onboarding collects financial information,
+  plus a public privacy policy and Store-aware update controls.
+- Added Store listing/compliance materials, local package validation, and a protected manually
+  dispatched Microsoft Store workflow using pinned official Microsoft tooling.
+
 ## 2.0.7 - 2026-07-23
 
 - Corrected **Net monthly free cash flow** to scan a clean future year and use its weakest rolling three-month average. This preserves known scheduled card payments while preventing extra-paycheck months and later loan payoffs from inflating the current recurring budget margin.

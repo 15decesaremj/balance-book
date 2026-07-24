@@ -1,6 +1,6 @@
 {
   "name": "balance-book-mvp",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "productName": "Balance Book",
   "author": "Balance Book contributors",
   "license": "MIT",
@@ -40,6 +40,8 @@
     "package": "pnpm build:icon && electron-forge package",
     "make": "pnpm build:icon && electron-forge make",
     "release:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows-release.ps1",
+    "store:package": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-store-package.ps1",
+    "store:package:test": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-store-package.ps1 -IdentityPath store/identity.local-test.json -Configuration LocalTest -AllowDirty",
     "verify": "node tools/verify.mjs"
   },
   "dependencies": {

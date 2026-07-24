@@ -1,12 +1,12 @@
 # Project state
 
-Updated: 2026-07-23
+Updated: 2026-07-24
 
 ## Current milestone
 
-Balance Book is on the 2.0.7 feature-release candidate line. The application is a local-first Windows x64 financial control center organized around current truth, actionable financial check-in, and safe decisions while retaining editable daily forecasting, per-card spending power, revolving and installment debt tracking, account-level funding guidance, portable encrypted backup/restore, and repeatable Windows packaging.
+Balance Book is on the 2.0.8 Microsoft Store release-candidate line. The application is a local-first Windows x64 financial control center organized around current truth, actionable financial check-in, and safe decisions while retaining editable daily forecasting, per-card spending power, revolving and installment debt tracking, account-level funding guidance, portable encrypted backup/restore, and repeatable Windows packaging.
 
-No signed public binary is claimed. Version 2.0.7 is the installed verified unsigned owner candidate. A trusted Windows Authenticode certificate and fresh-disposable-profile lifecycle remain mandatory before a public beta installer or automatic-update feed may be published.
+No Microsoft Store approval, production signature, public Store binary, or Store installation link is claimed. Version 2.0.7 remains the installed verified unsigned direct-channel owner candidate while the Store bootstrap is incomplete. The 2.0.8 source adds a separate MSIX channel that delegates production signing and updates to Microsoft without removing or changing the direct channel.
 
 ## Implemented product foundation
 
@@ -63,7 +63,18 @@ No signed public binary is claimed. Version 2.0.7 is the installed verified unsi
 - GitHub Actions use least-privilege read access and reviewed immutable action revisions; Dependabot retains npm and Actions update coverage.
 - Public governance, installation, backup, threat-model, support, release, and supported-version documents are present.
 
-## Current 2.0.7 validation status
+## Current 2.0.8 Microsoft Store validation status
+
+- The complete 2.0.8 source gate passed on 2026-07-24: formatting, lint, strict type checking, the native SQLite rebuild, 743 tests across 83 files, child-process backup verification, the 238-file privacy scan, production packaging, and the isolated 12.4-minute packaged Electron journey. The journey generated six 1366-by-768 synthetic Store screenshots and covered onboarding local-data consent, every existing financial control, accessibility, restart persistence, and the route/viewport matrix without touching the owner profile.
+- The Store channel produces an x64 MSIX and `.msixupload` with deterministic `2.0.8.0` package version, `runFullTrust` as its only capability, Windows 10 version 1809 as its minimum, Store-managed updates, and the GitHub updater compiled out. The direct package remains functional and retains its intended updater behavior.
+- An isolated same-identity local package upgraded from 2.0.7.0 to 2.0.8.0 while preserving a 20-table, 38-row synthetic profile with SQLite integrity `ok` and matching database/recovery SHA-256 `FE8810120054F885F764924CFAD61151A30F88E7054628769966A7ACB09F968A`. Repeated launch retained one primary process. Uninstall removed only package-private Store data, left the synthetic legacy profile intact, and a fresh 2.0.8 launch recreated the exact verified Store copy.
+- Store first launch uses a copy-first SQLite backup, integrity and hash verification, an interruption journal, idempotent recovery, and separate data directories. The direct source database is never moved or modified, an existing Store database is never replaced, and migration and update-recovery directories are retained under Store recovery storage.
+- Onboarding requires explicit consent to local financial-data storage before financial input. The public privacy policy accurately records local SQLite storage, local password-verifier behavior, encrypted portable backups, plaintext exports, network boundaries, Store update behavior, and Store-uninstall data removal.
+- The local Windows App Certification Kit invocation reached a Windows privilege prompt and was canceled, so local WACK completion is not claimed. The structurally validated package, manifest, launch, and lifecycle checks passed; privileged WACK and Partner Center package validation remain part of the production bootstrap.
+- Microsoft currently charges no new Partner Center enrollment fee, but Store policies 10.8.3 and 10.14 require a Company account for this financial-information application. No Partner Center enrollment, name reservation, production identity, submission, certification, Microsoft signature, Store installation, or direct Store link is claimed yet.
+- The protected `Publish Balance Book to Microsoft Store` workflow is manual only, requires the repository default branch and protected Partner Center identity, runs the complete release gate, refuses version reuse or downgrade, builds the exact Store channel, and uses the official Store publisher action and CLI pinned to reviewed immutable revisions. The first submission remains a manual Partner Center bootstrap; later releases can use the documented single workflow action.
+
+## Prior 2.0.7 validation status
 
 - The final complete 2.0.7 source gate passed on 2026-07-24 after the public-history correction: formatting, lint, strict type checking, native SQLite rebuild, 732 tests across 81 files, child-process backup verification, the 238-file privacy scan, production packaging, and the isolated 13.7-minute packaged Electron journey.
 - Focused engine, Forecast renderer, and owner-profile native checks pass. The private owner snapshot matches the private free-cash-flow check after explicit scheduled card payments, with no owner value entering committed fixtures or documentation.
@@ -100,22 +111,26 @@ The current 1.1 evidence is sufficient for continued local owner testing, not fo
 - An ignored private oracle validation used application-native mechanics against an isolated populated profile and confirmed declining active installment balances, zero modeled contractual balloons for fully amortizing loans, zero revolving carry under paid-in-full evidence, preserved statement history, and exact native fixture parity. Current tracked fixtures use unrelated synthetic institutions, account identifiers, and amounts; the private database and workbook remain ignored.
 - A read-only extraction of the oracle's separate lower loan block identified eight user-editable original-principal facts. After a guarded staging run, the live owner profile was reconciled through the native audited loan-record path: five active loans used the installment solver for missing historical schedule metadata, while three paid-off loans retained amount-only history rather than invented dates or terms. Independent pre/post copies confirmed schema-30 integrity, exactly eight scoped audit events, repeat-run idempotence, unchanged non-loan records, unchanged current liabilities and net worth, an identical current forecast, and an unchanged loan-payment cadence across the model's full supported term. A verified pre-change safety backup was retained; all workbook values, database copies, and private validation artifacts remain ignored.
 - The 196-file intended release tree passed the generic scanner and the separately protected private-pattern review. The disposable-Git and child-process regressions covering exact file-list paths, shallow refusal, Unicode paths, protected and generic commit/tag/ref metadata, and missing pattern lists also passed. Tracked fixtures use unrelated synthetic institutions, identifiers, and amounts. The private development history remains unsuitable for direct publication; only the sanitized clean-history mirror may be public.
-- Versions 1.1.10 and 2.0.0 through 2.0.6 remain documented as prior upgrade evidence. Version 2.0.7 is the current installed owner candidate. A complete three-file private handoff remains gated on the owner creating a fresh encrypted backup; no older backup was relabeled or reused.
+- Versions 1.1.10 and 2.0.0 through 2.0.7 remain documented as prior direct-channel upgrade evidence. Version 2.0.7 is still the current installed owner candidate while 2.0.8 awaits its Store bootstrap. A complete three-file private handoff remains gated on the owner creating a fresh encrypted backup; no older backup was relabeled or reused.
 
 ## Release validation still required before public distribution
 
-- Run the complete 2.0.7 source pipeline after any source change; retain the synthetic-test, privacy, package, accessibility, route/viewport matrix, responsive screenshot, and complete Playwright journey results as local pre-release evidence.
+- Complete compliant Company enrollment, Microsoft login/MFA and business verification, reserve the product name, and copy the exact Partner Center package and publisher identity. Do not use the older Individual-account plan because it conflicts with the Store policy for financial-account information.
+- Run privileged WACK validation or obtain equivalent successful Partner Center package validation, then build the production MSIX from an exact clean committed source and record its package hash and submission ID.
+- Complete the first Partner Center listing and legal declarations, submit the free application, and wait for Microsoft certification. Do not describe the local self-signed package as publicly trusted.
+- After certification, install the actual Store-delivered build, verify the migrated owner profile and direct Store link, then prove an actual Store or flight update to a newer harmless version while preserving the profile, password, preferences, backup behavior, and financial records.
+- Run the complete 2.0.8 source pipeline after any source change; retain the synthetic-test, privacy, package, accessibility, route/viewport matrix, Store screenshots, and complete Playwright journey results as local pre-release evidence.
 - Preserve the 2026-07-21 advisory and production-license results for the exact current lock file; rerun both if the lock file changes or publication is deferred.
-- Sign and timestamp the installer, installed executable, and uninstaller with a real publisher certificate, then verify `Valid` Authenticode status. The local candidate is intentionally and visibly unsigned.
+- For any future direct-channel public binary, sign and timestamp the installer, installed executable, and uninstaller with a real publisher certificate, then verify `Valid` Authenticode status. The current direct owner candidate is intentionally and visibly unsigned.
 - Perform fresh-user install, first-run, restart, uninstall, preserved-data reinstall, clean-data restore, every advertised historical upgrade path, shortcut, taskbar, packaged-notice, and post-install debt/forecast/net-worth functional tests from the exact produced files on a disposable Windows profile.
 - Independently inspect and publish only the sanitized clean-history public mirror. Do not change the existing development repository to public.
 - Enable a private vulnerability-reporting channel and publish only reviewed, signed, user-data-free artifacts.
-- Keep the private default branch and `15decesaremj/balance-book` public source mirror synchronized and reverify all live refs after each source update. Publish no binary until the signed beta gates pass; the public source URL is not yet a verified install source.
+- Keep the private default branch and `15decesaremj/balance-book` public source mirror synchronized and reverify all live refs after each source update. Publish no direct binary until its signed beta gates pass, and publish no Store binary until Partner Center accepts the exact package.
 
 ## Known limits
 
 - The local sign-in password is an application privacy boundary; the live database is not encrypted at rest.
-- Balance Book has no telemetry, bank sync, cloud service, remote access, password recovery, or automatic money movement. Signed public builds may contact only the fixed GitHub-hosted software-update feed and immutable package; unsigned owner-test builds keep that path disabled.
+- Balance Book has no telemetry, bank sync, cloud service, remote access, password recovery, or automatic money movement. A signed direct build may contact only the fixed GitHub-hosted update feed and immutable package; a Store build delegates installation and updates to Microsoft Store and offers only fixed user-triggered Store and privacy-policy links. Unsigned direct owner-test builds keep update networking disabled.
 - Plaintext exports require the user to provide storage protection.
 - A backup cannot be recovered without its backup password, and two independently active profiles are not merged automatically.
 - Windows 11 x64 is the supported V2 desktop target; other operating systems and architectures are not claimed.

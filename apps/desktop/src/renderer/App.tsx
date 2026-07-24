@@ -6,6 +6,7 @@ import Decimal from 'decimal.js';
 import {
   Button,
   Card,
+  Checkbox,
   Field,
   FluentProvider,
   Input,
@@ -758,7 +759,9 @@ const optionalCardPaymentPolicy = z.union([
   z.enum(['full-statement', 'minimum', 'fixed', 'manual']),
 ]);
 const applicabilityAnswerSchema = z.enum(['', 'yes', 'no']);
+const localDataConsentSchema = z.enum(['', 'accepted']);
 const setupBaseSchema = z.object({
+  localDataConsent: localDataConsentSchema,
   usesIncome: applicabilityAnswerSchema,
   usesBills: applicabilityAnswerSchema,
   usesCreditCards: applicabilityAnswerSchema,
@@ -890,6 +893,13 @@ const addFloorIssue = (
 };
 
 const setupSchema = setupBaseSchema.superRefine((values, context) => {
+  if (values.localDataConsent !== 'accepted') {
+    context.addIssue({
+      code: 'custom',
+      path: ['localDataConsent'],
+      message: 'Confirm how Balance Book stores the information you enter',
+    });
+  }
   for (const field of [
     'usesIncome',
     'usesBills',
@@ -978,7 +988,11 @@ export const activeSetupStepIds = (values: Partial<SetupValues>): SetupStepId[] 
 ];
 
 const setupStepSchemas: Record<SetupStepId, z.ZodTypeAny> = {
-  welcome: z.object({}),
+  welcome: z.object({
+    localDataConsent: z.literal('accepted', {
+      message: 'Confirm how Balance Book stores the information you enter',
+    }),
+  }),
   fit: z.object({
     usesIncome: z.enum(['yes', 'no'], { message: 'Choose Yes or No' }),
     usesBills: z.enum(['yes', 'no'], { message: 'Choose Yes or No' }),
@@ -1928,6 +1942,7 @@ export const SetupPage = ({
   const form = useForm<SetupValues>({
     resolver: zodResolver(setupSchema),
     defaultValues: {
+      localDataConsent: '',
       usesIncome: '',
       usesBills: '',
       usesCreditCards: '',
@@ -2253,7 +2268,7 @@ export const SetupPage = ({
     );
   };
   const fieldsByStep: Record<SetupStepId, Array<keyof SetupValues>> = {
-    welcome: [],
+    welcome: ['localDataConsent'],
     fit: ['usesIncome', 'usesBills', 'usesCreditCards', 'usesLoans', 'usesMoneyOwed', 'usesAssets'],
     cash: ['balanceAsOf', 'accountName', 'openingBalance'],
     income: ['incomeLabel', 'incomeDate', 'incomeAmount'],
@@ -2946,6 +2961,32 @@ export const SetupPage = ({
                 forecast measured against your global protected minimum; it is a model rather than a
                 guarantee. You can add more accounts and detailed records afterward.
               </Text>
+              <Field validationMessage={form.formState.errors.localDataConsent?.message}>
+                <Checkbox
+                  checked={watchedSetupValues.localDataConsent === 'accepted'}
+                  label="I consent to Balance Book storing the financial information I enter locally on this Windows device."
+                  onChange={(_event, data) =>
+                    form.setValue('localDataConsent', data.checked === true ? 'accepted' : '', {
+                      shouldDirty: true,
+                      shouldValidate: true,
+                    })
+                  }
+                />
+              </Field>
+              <Text size={200}>
+                Balance Book has no bank connection, advertising, analytics, telemetry, or cloud
+                account. Data leaves the app only when you choose an export, encrypted backup, or
+                external link. The app password is not a substitute for Windows device security.
+              </Text>
+              <div className={styles.actions}>
+                <Button
+                  type="button"
+                  appearance="subtle"
+                  onClick={() => void window.balanceBook.openPrivacyPolicy()}
+                >
+                  Read privacy policy
+                </Button>
+              </div>
             </>
           )}
           {currentSetupStep === 'fit' && (

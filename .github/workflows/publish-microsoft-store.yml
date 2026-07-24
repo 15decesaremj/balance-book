@@ -1,0 +1,280 @@
+name: Publish Balance Book to Microsoft Store
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Three-part version already committed on the default branch
+        required: true
+        type: string
+      release_notes:
+        description: Reviewed customer-facing release notes
+        required: true
+        type: string
+      destination:
+        description: Publish to production or an existing private package flight
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - private-flight
+      flight_id:
+        description: Existing Partner Center flight ID (required only for private-flight)
+        required: false
+        type: string
+      rollout_percentage:
+        description: Production rollout percentage from 1 through 100
+        required: true
+        default: '100'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: microsoft-store-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    environment: microsoft-store
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_NOTES: ${{ inputs.release_notes }}
+      STORE_DESTINATION: ${{ inputs.destination }}
+      STORE_FLIGHT_ID: ${{ inputs.flight_id }}
+      STORE_ROLLOUT_PERCENTAGE: ${{ inputs.rollout_percentage }}
+      STORE_TENANT_ID: ${{ secrets.STORE_TENANT_ID }}
+      STORE_SELLER_ID: ${{ secrets.STORE_SELLER_ID }}
+      STORE_CLIENT_ID: ${{ secrets.STORE_CLIENT_ID }}
+      STORE_CLIENT_SECRET: ${{ secrets.STORE_CLIENT_SECRET }}
+      STORE_PRODUCT_ID: ${{ secrets.STORE_PRODUCT_ID }}
+      STORE_PACKAGE_NAME: ${{ vars.STORE_PACKAGE_NAME }}
+      STORE_PUBLISHER: ${{ vars.STORE_PUBLISHER }}
+      STORE_PUBLISHER_DISPLAY_NAME: ${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}
+      STORE_APPLICATION_ID: ${{ vars.STORE_APPLICATION_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Verify authoritative source and release inputs
+        shell: pwsh
+        run: |
+          if ('${{ github.ref_name }}' -ne '${{ github.event.repository.default_branch }}') {
+            throw 'Microsoft Store releases must run from the repository default branch.'
+          }
+          if ($env:RELEASE_VERSION -notmatch '^[1-9]\d{0,4}\.\d{1,5}\.\d{1,5}$') {
+            throw 'Version must be a three-part numeric SemVer that maps to MSIX.'
+          }
+          if ([string]::IsNullOrWhiteSpace($env:RELEASE_NOTES)) {
+            throw 'Reviewed release notes are required.'
+          }
+          if ($env:STORE_DESTINATION -eq 'private-flight') {
+            if ([string]::IsNullOrWhiteSpace($env:STORE_FLIGHT_ID)) {
+              throw 'A Partner Center flight ID is required for private-flight publication.'
+            }
+          } elseif ($env:STORE_FLIGHT_ID) {
+            throw 'Flight ID must be blank for a production publication.'
+          }
+          $rollout = 0
+          if (
+            -not [int]::TryParse($env:STORE_ROLLOUT_PERCENTAGE, [ref] $rollout) -or
+            $rollout -lt 1 -or
+            $rollout -gt 100
+          ) {
+            throw 'Production rollout percentage must be an integer from 1 through 100.'
+          }
+          if ($env:STORE_DESTINATION -eq 'private-flight' -and $rollout -ne 100) {
+            throw 'Package flights use their own rollout controls; leave this input at 100.'
+          }
+          $packageVersion = (Get-Content -Raw package.json | ConvertFrom-Json).version
+          $desktopVersion = (Get-Content -Raw apps/desktop/package.json | ConvertFrom-Json).version
+          if ($packageVersion -ne $env:RELEASE_VERSION -or $desktopVersion -ne $env:RELEASE_VERSION) {
+            throw 'Input version does not match both package manifests.'
+          }
+          if (git status --porcelain) { throw 'Release checkout is not clean.' }
+          if ((git rev-parse HEAD).Trim() -ne '${{ github.sha }}') {
+            throw 'Checked-out source does not match the dispatched commit.'
+          }
+          foreach ($name in @(
+            'STORE_TENANT_ID',
+            'STORE_SELLER_ID',
+            'STORE_CLIENT_ID',
+            'STORE_CLIENT_SECRET',
+            'STORE_PRODUCT_ID',
+            'STORE_PACKAGE_NAME',
+            'STORE_PUBLISHER',
+            'STORE_PUBLISHER_DISPLAY_NAME',
+            'STORE_APPLICATION_ID'
+          )) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Protected Microsoft Store setting '$name' is missing."
+            }
+          }
+
+      - name: Restore exact dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run authoritative release gate
+        run: pnpm verify
+
+      - name: Create protected Store identity
+        id: identity
+        shell: pwsh
+        run: |
+          $identityPath = Join-Path $env:RUNNER_TEMP 'balance-book-store-identity.json'
+          $identity = [ordered]@{
+            packageName = $env:STORE_PACKAGE_NAME
+            publisher = $env:STORE_PUBLISHER
+            publisherDisplayName = $env:STORE_PUBLISHER_DISPLAY_NAME
+            applicationId = $env:STORE_APPLICATION_ID
+            displayName = 'Balance Book'
+            description = 'Local-first financial operations desktop application for Windows'
+            productId = $env:STORE_PRODUCT_ID
+          }
+          [IO.File]::WriteAllText(
+            $identityPath,
+            (($identity | ConvertTo-Json) + "`n"),
+            [Text.UTF8Encoding]::new($false)
+          )
+          "path=$identityPath" >> $env:GITHUB_OUTPUT
+
+      - name: Build exact Store package
+        shell: pwsh
+        run: |
+          ./tools/build-store-package.ps1 `
+            -IdentityPath '${{ steps.identity.outputs.path }}' `
+            -Configuration Store
+          $metadataPath = "out/store/$env:RELEASE_VERSION/Store/STORE-PACKAGE-METADATA.json"
+          $metadata = Get-Content -Raw $metadataPath | ConvertFrom-Json
+          if (
+            $metadata.semanticVersion -ne $env:RELEASE_VERSION -or
+            $metadata.msixVersion -ne "$env:RELEASE_VERSION.0" -or
+            $metadata.sourceCommit -ne '${{ github.sha }}' -or
+            $metadata.workingTreeDirty -ne $false -or
+            $metadata.productId -ne $env:STORE_PRODUCT_ID -or
+            $metadata.packageName -ne $env:STORE_PACKAGE_NAME -or
+            $metadata.architecture -ne 'x64' -or
+            $metadata.storeManagedUpdates -ne $true -or
+            $metadata.githubUpdaterEnabled -ne $false
+          ) {
+            throw 'Store package evidence does not match the dispatched source and identity.'
+          }
+
+      - name: Set up Microsoft Store Developer CLI
+        id: storecli
+        uses: microsoft/microsoft-store-apppublisher@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.3.9
+
+      - name: Configure minimum Partner Center access
+        shell: pwsh
+        run: |
+          msstore settings --enableTelemetry false
+          if ($LASTEXITCODE -ne 0) { throw 'Could not disable CLI telemetry.' }
+          msstore reconfigure `
+            --tenantId $env:STORE_TENANT_ID `
+            --sellerId $env:STORE_SELLER_ID `
+            --clientId $env:STORE_CLIENT_ID `
+            --clientSecret $env:STORE_CLIENT_SECRET
+          if ($LASTEXITCODE -ne 0) { throw 'Partner Center authentication failed.' }
+
+      - name: Refuse package-version reuse or downgrade
+        shell: pwsh
+        run: |
+          $submissionPath = Join-Path $env:RUNNER_TEMP 'current-store-submission.json'
+          msstore submission get $env:STORE_PRODUCT_ID | Out-File -Encoding utf8 $submissionPath
+          if ($LASTEXITCODE -ne 0) {
+            throw 'The existing production submission could not be read; refusing publication.'
+          }
+          $submission = Get-Content -Raw $submissionPath | ConvertFrom-Json
+          $existingVersions = @(
+            $submission.ApplicationPackages |
+              Where-Object { $_.Version } |
+              ForEach-Object { [version] $_.Version }
+          )
+          if ($existingVersions.Count -eq 0) {
+            throw 'No existing packaged Store version was found; the first submission must be completed in Partner Center.'
+          }
+          $requested = [version] "$env:RELEASE_VERSION.0"
+          $highest = $existingVersions | Sort-Object -Descending | Select-Object -First 1
+          if ($requested -le $highest) {
+            throw "Requested MSIX version $requested must be newer than published version $highest."
+          }
+
+      - name: Record release evidence before submission
+        id: evidence
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'balance-book-store-evidence'
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          Copy-Item `
+            "out/store/$env:RELEASE_VERSION/Store/STORE-PACKAGE-METADATA.json" `
+            (Join-Path $evidence 'STORE-PACKAGE-METADATA.json')
+          [IO.File]::WriteAllText(
+            (Join-Path $evidence 'RELEASE-NOTES.txt'),
+            "$env:RELEASE_NOTES`n",
+            [Text.UTF8Encoding]::new($false)
+          )
+          [IO.File]::WriteAllText(
+            (Join-Path $evidence 'SOURCE.txt'),
+            "commit=${{ github.sha }}`nversion=$env:RELEASE_VERSION`ndestination=$env:STORE_DESTINATION`n",
+            [Text.UTF8Encoding]::new($false)
+          )
+          "EVIDENCE_PATH=$evidence" >> $env:GITHUB_ENV
+
+      - name: Publish validated package
+        shell: pwsh
+        run: |
+          $upload = Get-ChildItem `
+            "out/store/$env:RELEASE_VERSION/Store" `
+            -Filter '*.msixupload' `
+            -File
+          if ($upload.Count -ne 1) { throw 'Expected exactly one Store upload package.' }
+          $arguments = @(
+            'publish',
+            $upload[0].FullName,
+            '--appId',
+            $env:STORE_PRODUCT_ID
+          )
+          if ($env:STORE_DESTINATION -eq 'private-flight') {
+            $arguments += @('--flightId', $env:STORE_FLIGHT_ID)
+          } else {
+            $arguments += @('--packageRolloutPercentage', $env:STORE_ROLLOUT_PERCENTAGE)
+          }
+          & msstore @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Microsoft Store publication failed.' }
+
+      - name: Capture Partner Center status
+        if: always() && steps.evidence.outcome == 'success' && steps.storecli.outcome == 'success'
+        shell: pwsh
+        run: |
+          $statusPath = Join-Path $env:EVIDENCE_PATH 'PARTNER-CENTER-STATUS.txt'
+          if ($env:STORE_DESTINATION -eq 'private-flight') {
+            msstore flights submission status $env:STORE_PRODUCT_ID $env:STORE_FLIGHT_ID |
+              Out-File -Encoding utf8 $statusPath
+          } else {
+            msstore submission status $env:STORE_PRODUCT_ID |
+              Out-File -Encoding utf8 $statusPath
+          }
+
+      - name: Upload nonsecret release evidence
+        if: always() && steps.evidence.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: microsoft-store-evidence-${{ inputs.version }}-${{ github.sha }}
+          path: ${{ env.EVIDENCE_PATH }}
+          if-no-files-found: error
+          retention-days: 90

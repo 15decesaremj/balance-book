@@ -10,6 +10,7 @@ import {
   net,
   protocol,
   session,
+  shell,
   type IpcMainInvokeEvent,
   type OpenDialogOptions,
   type SaveDialogOptions,
@@ -113,6 +114,13 @@ import { buildReceivableAccrualDailyEvents } from './receivable-accrual-events';
 import { BalanceBookUpdateService } from './update-service';
 import { pendingUpdateMetadataSchema, postUpdateNoticeFromMetadata } from './update-metadata';
 import { createVerifiedUpdateRecoverySnapshot } from './update-recovery';
+import {
+  isMicrosoftStoreBuild,
+  legacyDataDirectoryName,
+  microsoftStoreUri,
+  storeDataDirectoryName,
+} from './build-channel';
+import { migrateLegacyProfileToStore } from './store-data-migration';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -121,13 +129,20 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 app.setName('Balance Book');
-app.setAppUserModelId('com.squirrel.balance_book_mvp.BalanceBook');
+if (!isMicrosoftStoreBuild) {
+  app.setAppUserModelId('com.squirrel.balance_book_mvp.BalanceBook');
+}
+if (isMicrosoftStoreBuild) {
+  app.setPath('userData', path.join(app.getPath('appData'), storeDataDirectoryName));
+}
 
 let store: BalanceBookStore;
 let auth: LocalAuthService;
 let activeUserId: string | null = null;
 let updateService: BalanceBookUpdateService;
 let postUpdateNotice: PostUpdateNoticeDto | null = null;
+
+const privacyPolicyUrl = 'https://github.com/15decesaremj/balance-book/blob/main/PRIVACY.md';
 
 const pendingUpdateMetadataPath = (): string =>
   path.join(app.getPath('userData'), 'pending-update.json');
@@ -1424,6 +1439,17 @@ const registerIpc = (): void => {
   handle('updates:restart', emptyRequestSchema, updateStatusSchema, () =>
     updateService.restartAndInstall(),
   );
+  handle('updates:open-microsoft-store', emptyRequestSchema, successSchema, async () => {
+    if (!isMicrosoftStoreBuild || !microsoftStoreUri) {
+      throw new Error('A Microsoft Store product link is not available in this build.');
+    }
+    await shell.openExternal(microsoftStoreUri);
+    return { success: true as const };
+  });
+  handle('app:open-privacy-policy', emptyRequestSchema, successSchema, async () => {
+    await shell.openExternal(privacyPolicyUrl);
+    return { success: true as const };
+  });
   handle(
     'updates:post-update-notice',
     emptyRequestSchema,
@@ -1657,6 +1683,12 @@ if (!squirrelStartupHandled) {
       .whenReady()
       .then(async () => {
         const dataDirectory = process.env.BALANCE_BOOK_DATA_DIR ?? app.getPath('userData');
+        if (isMicrosoftStoreBuild && !process.env.BALANCE_BOOK_DATA_DIR) {
+          await migrateLegacyProfileToStore({
+            legacyDataDirectory: path.join(app.getPath('appData'), legacyDataDirectoryName),
+            storeDataDirectory: dataDirectory,
+          });
+        }
         store = new BalanceBookStore({
           databasePath: path.join(dataDirectory, 'balance-book.sqlite'),
           backupDirectory: path.join(dataDirectory, 'migration-backups'),
@@ -1666,10 +1698,17 @@ if (!squirrelStartupHandled) {
         postUpdateNotice = loadPostUpdateNotice();
         updateService = new BalanceBookUpdateService(autoUpdater, {
           enabled:
+            !isMicrosoftStoreBuild &&
             __BALANCE_BOOK_UPDATES_ENABLED__ &&
             app.isPackaged &&
             process.platform === 'win32' &&
             !process.env.BALANCE_BOOK_DATA_DIR,
+          delivery: isMicrosoftStoreBuild
+            ? 'microsoft-store'
+            : __BALANCE_BOOK_UPDATES_ENABLED__
+              ? 'balance-book'
+              : 'none',
+          storeLinkAvailable: Boolean(microsoftStoreUri),
           currentVersion: app.getVersion(),
           initialChannel: 'beta',
           firstRun: process.argv.includes('--squirrel-firstrun'),

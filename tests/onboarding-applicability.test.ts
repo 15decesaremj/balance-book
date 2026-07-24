@@ -83,6 +83,15 @@ describe('first-run applicability questions', () => {
 
     await screen.findByRole('heading', { name: 'First forecast setup' });
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(
+      await screen.findByText('Confirm how Balance Book stores the information you enter'),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole('checkbox', {
+        name: /I consent to Balance Book storing the financial information I enter locally/,
+      }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
     await screen.findByRole('heading', { name: 'Which parts fit your finances?' });
 
     for (const question of [

@@ -1,0 +1,9 @@
+{
+  "packageName": "BalanceBook.LocalTest",
+  "publisher": "CN=Balance Book Local Test",
+  "publisherDisplayName": "Balance Book Local Test",
+  "applicationId": "BalanceBook",
+  "displayName": "Balance Book Store Test",
+  "description": "Local-first financial operations desktop application for Windows",
+  "productId": ""
+}

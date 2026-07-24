@@ -138,6 +138,13 @@ const render = (size) => {
 };
 
 const images = sizes.map((size) => ({ size, buffer: render(size) }));
+const pngOutputDirectory = process.env.BALANCE_BOOK_ICON_PNG_OUTPUT;
+if (pngOutputDirectory) {
+  fs.mkdirSync(pngOutputDirectory, { recursive: true });
+  for (const image of images) {
+    fs.writeFileSync(path.join(pngOutputDirectory, `balance-book-${image.size}.png`), image.buffer);
+  }
+}
 const header = Buffer.alloc(6 + images.length * 16);
 header.writeUInt16LE(0, 0);
 header.writeUInt16LE(1, 2);

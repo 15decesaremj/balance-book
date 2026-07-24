@@ -13,6 +13,8 @@ type AutoUpdaterAdapter = {
 
 type UpdateServiceOptions = {
   enabled: boolean;
+  delivery: 'balance-book' | 'microsoft-store' | 'none';
+  storeLinkAvailable: boolean;
   currentVersion: string;
   initialChannel: UpdateChannel;
   firstRun: boolean;
@@ -93,12 +95,17 @@ export class BalanceBookUpdateService {
   ) {
     this.status = {
       enabled: options.enabled,
+      delivery: options.delivery,
+      storeLinkAvailable: options.storeLinkAvailable,
       state: options.enabled ? 'idle' : 'disabled',
       channel: options.initialChannel,
       currentVersion: options.currentVersion,
-      message: options.enabled
-        ? 'Updates are ready to check.'
-        : 'Automatic updates are disabled in this local test build.',
+      message:
+        options.delivery === 'microsoft-store'
+          ? 'Updates are managed automatically by Microsoft Store.'
+          : options.enabled
+            ? 'Updates are ready to check.'
+            : 'Automatic updates are disabled in this local test build.',
     };
     updater.on('error', this.onError);
     updater.on('checking-for-update', this.onChecking);

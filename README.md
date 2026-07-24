@@ -16,6 +16,11 @@ Balance Book is planning software, not a bank, lender, credit decision, or subst
 
 The reviewed public source is published at [github.com/15decesaremj/balance-book](https://github.com/15decesaremj/balance-book). The signed Windows beta download will appear on the [Releases page](https://github.com/15decesaremj/balance-book/releases) only after the trusted publisher certificate and fresh-install gates pass. Until then, there is no endorsed public installer; do not download an unsigned copy from another location.
 
+Microsoft Store packaging and the future Store-managed update lane are documented in
+[Microsoft Store release channel](docs/MICROSOFT_STORE.md). The existing direct-download channel
+remains separate and supported until the Store listing is approved and its data transition is
+proven.
+
 ## Local-first by design
 
 - Data is stored in a local SQLite database.
@@ -51,7 +56,9 @@ The local sign-in password is an application privacy boundary. The live database
 
 ## Install
 
-The 2.0.7 feature line targets Windows 11 x64. The installer is self-contained; end users do not need development tools or a separate database server.
+The 2.0.8 feature line targets Windows 11 x64 and supports Windows 10 version 1809 or later. The
+installer is self-contained; end users do not need development tools or a separate database
+server.
 
 No signed public binary is claimed yet. Local unsigned Squirrel candidates have been built and tested on the owner's Windows profile, but they remain owner-testing artifacts rather than public releases. An unsigned installer may trigger Windows SmartScreen or **Unknown publisher**. Public distribution remains gated on valid Authenticode signing, fresh-disposable-profile lifecycle testing, and the checklist in [PUBLIC_RELEASE_READINESS.md](docs/PUBLIC_RELEASE_READINESS.md).
 
