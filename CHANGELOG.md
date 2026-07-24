@@ -7,6 +7,7 @@
 - Corrected **Net monthly free cash flow** to scan a clean future year and use its weakest rolling three-month average. This preserves known scheduled card payments while preventing extra-paycheck months and later loan payoffs from inflating the current recurring budget margin.
 - Classified explicit scheduled card-payment records in the selected run, so Cash Forecast separately shows the included monthly payment effect and the recurring margin before those payments.
 - Verified the corrected native owner-profile result against the private reference check without adding any owner values to committed fixtures or documentation.
+- Corrected the public-history audit to accept normal divergent automation and pull-request refs only after they pass the same isolated one-root, complete-history privacy, and private-commit-intersection checks. The required main branch remains the exact reviewed source, and public tags must remain inside its history. Exact public GitHub automation identities are recognized only in commit/tag metadata; arbitrary emails remain blocked.
 
 ## 2.0.6 - 2026-07-23
 

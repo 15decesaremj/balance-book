@@ -208,6 +208,46 @@ describeWithGit('privacy history scanner', { timeout: 15_000 }, () => {
     expect(result.stderr).toContain('possible email address');
   });
 
+  it.each([
+    ['49699333+dependabot[bot]', 'users.noreply.github.com'].join('@'),
+    ['41898282+github-actions[bot]', 'users.noreply.github.com'].join('@'),
+    ['noreply', 'github.com'].join('@'),
+    ['support', 'github.com'].join('@'),
+  ])('allows the exact public GitHub automation identity %s in commit metadata', (email) => {
+    const { root, patternFile } = createRepository();
+    runGit(root, [
+      '-c',
+      `user.email=${email}`,
+      'commit',
+      '--allow-empty',
+      '-m',
+      'Create synthetic automation provenance fixture',
+    ]);
+
+    const result = runHistoryCheck(root, patternFile);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('Privacy check passed');
+  });
+
+  it('does not trust an arbitrary GitHub no-reply identity in commit metadata', () => {
+    const { root, patternFile } = createRepository();
+    runGit(root, [
+      '-c',
+      `user.email=${['12345678+synthetic-user', 'users.noreply.github.com'].join('@')}`,
+      'commit',
+      '--allow-empty',
+      '-m',
+      'Create synthetic untrusted provenance fixture',
+    ]);
+
+    const result = runHistoryCheck(root, patternFile);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Git commit');
+    expect(result.stderr).toContain('possible email address');
+  });
+
   it('finds protected fingerprints in annotated-tag metadata', () => {
     const { root, patternFile } = createRepository();
     const fingerprint = 'SYNTHETIC_TAG_METADATA_FINGERPRINT_51C8';

@@ -164,8 +164,8 @@ function Invoke-PublicRemoteHistoryAudit {
 
     $expectedHeadRef = "refs/heads/$ExpectedBranch"
     $headRefs = @($remoteRefs.Keys | Where-Object { $_.StartsWith('refs/heads/', [System.StringComparison]::Ordinal) })
-    if ($headRefs.Count -ne 1 -or $headRefs[0] -cne $expectedHeadRef) {
-      throw "The live public repository must expose only '$expectedHeadRef'."
+    if ($expectedHeadRef -cnotin $headRefs) {
+      throw "The live public repository does not expose required branch '$expectedHeadRef'."
     }
     $tagRefs = @($remoteRefs.Keys | Where-Object { $_.StartsWith('refs/tags/', [System.StringComparison]::Ordinal) })
     $pullRefs = @($remoteRefs.Keys | Where-Object { $_.StartsWith('refs/pull/', [System.StringComparison]::Ordinal) })
@@ -233,14 +233,10 @@ function Invoke-PublicRemoteHistoryAudit {
         '-C', $auditPath, 'rev-list', '--all'
       ) -WorkingDirectory $temporaryRoot -FailureMessage 'The complete live public commit set could not be enumerated.'
     )
-    $mainCommits = @(
-      Invoke-BalanceBookNativeCommand -FilePath $GitExecutable -Arguments @(
-        '-C', $auditPath, 'rev-list', $auditMainRef
-      ) -WorkingDirectory $temporaryRoot -FailureMessage 'The live public main history could not be enumerated.'
-    )
-    if ((($allCommits | Sort-Object) -join "`n") -cne (($mainCommits | Sort-Object) -join "`n")) {
-      throw 'Live public refs expose commits that are not contained in the reviewed main history.'
-    }
+    # Public pull-request refs are expected to diverge from main. They remain fail-closed through
+    # the one-sanitized-root check above, exact advertised-object fetch, complete history privacy
+    # scan, and private-commit intersection check below. The required main branch remains the exact
+    # reviewed source, and tags must still be ancestors of that branch.
 
     foreach ($tagRef in $tagRefs) {
       $auditTagRef = $tagRef -replace '^refs/', 'refs/audit/original/'

@@ -94,4 +94,28 @@ describe('Windows release metadata', () => {
     expect(rollback).not.toMatch(/gh release (?:create|edit|delete)/u);
     expect(rollback).toContain('Deploy last known-good feed');
   });
+
+  it('audits divergent automation and pull-request refs without weakening main or tag rules', () => {
+    const helpers = toolSource('publication-helpers.ps1');
+
+    expect(helpers).toContain("Where-Object { $_ -notmatch '^refs\\/(?:heads|tags|pull)\\/.+$' }");
+    expect(helpers).toContain(
+      "The live public repository does not expose required branch '$expectedHeadRef'.",
+    );
+    expect(helpers).toContain(
+      "Live public tag '$tagRef' is not contained in the reviewed main history.",
+    );
+    expect(helpers).toContain(
+      'The exact live public ref set failed complete protected history privacy review.',
+    );
+    expect(helpers).toContain(
+      'The live public ref set shares commit objects with private development history.',
+    );
+    expect(helpers).not.toContain(
+      'Live public refs expose commits that are not contained in the reviewed main history.',
+    );
+    expect(helpers).not.toContain(
+      "The live public repository must expose only '$expectedHeadRef'.",
+    );
+  });
 });
