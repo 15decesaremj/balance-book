@@ -2,6 +2,13 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { TextDecoder } from 'node:util';
 import { isProhibitedSourceFile, normalizeSourcePath } from './rules.mjs';
+const emailAddressPattern = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
+const trustedGitHubAutomationMetadataEmails = new Set([
+  ['49699333+dependabot[bot]', 'users.noreply.github.com'].join('@'),
+  ['41898282+github-actions[bot]', 'users.noreply.github.com'].join('@'),
+  ['noreply', 'github.com'].join('@'),
+  ['support', 'github.com'].join('@'),
+]);
 const secretPatterns = [
   {
     label: 'token or private key',
@@ -19,7 +26,7 @@ const secretPatterns = [
   },
   {
     label: 'email address',
-    pattern: /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i,
+    pattern: emailAddressPattern,
     // Package-manager deprecation metadata can include upstream maintainer addresses.
     allow: (file) => file === 'pnpm-lock.yaml',
   },
@@ -230,7 +237,13 @@ const failures = [];
 const scanContent = (file, content) => {
   const normalized = normalizeSourcePath(file);
   for (const { label, pattern, allow } of secretPatterns) {
-    if (!allow?.(normalized) && pattern.test(content)) {
+    const trustedAutomationMetadata =
+      label === 'email address' &&
+      /^(?:Git commit|Git tag) /u.test(normalized) &&
+      (content.match(new RegExp(emailAddressPattern.source, 'gi')) ?? []).every((email) =>
+        trustedGitHubAutomationMetadataEmails.has(email.toLowerCase()),
+      );
+    if (!allow?.(normalized) && !trustedAutomationMetadata && pattern.test(content)) {
       failures.push(`${file}: possible ${label}`);
     }
   }
