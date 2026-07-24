@@ -54,7 +54,7 @@ These steps become active only after the complete Published Status workflow repo
 Run:
 
 ```powershell
-pnpm published:status -- `
+pnpm published:status `
   -PrivateRepositoryPath "C:\AI-Projects\balance-book-mvp" `
   -ReleaseDirectory "C:\AI-Projects\Balance Book - fresh public download" `
   -ExpectedPublisher "<exact certificate subject>" `

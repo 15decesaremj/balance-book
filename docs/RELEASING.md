@@ -33,7 +33,7 @@ The first public source release must be created as a sanitized, clean-history pu
 After the first private source commit is clean and reviewed, create the local one-root mirror without copying development history:
 
 ```powershell
-pnpm public:mirror -- -Destination "C:\AI-Projects\balance-book-public"
+pnpm public:mirror -Destination "C:\AI-Projects\balance-book-public"
 ```
 
 The command refuses an existing destination, exports only tracked files, rejects prohibited private/generated paths, initializes only `main`, compares the exact Git tree, confirms one commit and zero inherited tags, runs the protected source and generic mirror privacy checks, and configures the intended public remote. It does not create the GitHub repository or publish anything by itself. Its upstream comparison is cached local evidence; the final checker queries GitHub live.
@@ -41,7 +41,7 @@ The command refuses an existing destination, exports only tracked files, rejects
 For every later version, update the existing clean-history public mirror without importing private Git objects:
 
 ```powershell
-pnpm public:sync -- -Destination "C:\AI-Projects\balance-book-public"
+pnpm public:sync -Destination "C:\AI-Projects\balance-book-public"
 ```
 
 The sync command requires clean private and public branches, one sanitized public root, expected remotes, protected source privacy, and generic export privacy. Outside the explicitly non-publishable local-candidate mode, it also enumerates every live public branch, tag, and pull-request ref, fetches their exact advertised objects into an isolated temporary repository, scans their complete metadata and file history, checks for private-commit intersection, and requires live private/public branch parity. It replaces only version-controlled public worktree files, creates a normal public commit when the reviewed tree changed, and verifies the resulting tree is byte-for-byte the reviewed private tree. If it stops after staging an update, inspect the public mirror and use Git to recover it before retrying; never copy private history into that repository.
@@ -120,7 +120,7 @@ A public GitHub release contains exactly the signed installer, signed uninstall 
 After building and signing from the public mirror, assemble that exact nine-file set outside both repositories:
 
 ```powershell
-pnpm public:release -- `
+pnpm public:release `
   -SetupPath "<signed Squirrel Setup.exe>" `
   -UninstallerPath "<signed uninstall helper.exe>" `
   -PackagedExecutablePath "<signed packaged Balance Book.exe>" `
@@ -156,7 +156,7 @@ After all gates pass:
 7. Run the following against the clean public checkout, using a new empty download path. Treat any failure as a publication blocker:
 
    ```powershell
-   pnpm published:status -- `
+   pnpm published:status `
      -PrivateRepositoryPath "C:\AI-Projects\balance-book-mvp" `
      -ReleaseDirectory "C:\AI-Projects\Balance Book - fresh public download" `
      -ExpectedPublisher "<exact certificate subject>" `
