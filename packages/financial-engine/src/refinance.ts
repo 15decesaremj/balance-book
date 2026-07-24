@@ -31,6 +31,7 @@ export interface RefinanceForecastInput {
   loans: Loan[];
   receivables: Receivable[];
   policy: CashFloorPolicy;
+  includeCardInterest?: boolean;
   requestedStartDate: PlainDateString;
   loanId: string;
   fundingAccountId: string;
@@ -100,6 +101,7 @@ export const evaluateRefinanceForecast = (
     loans: input.loans,
     receivables: input.receivables,
     policy,
+    includeCardInterest: input.includeCardInterest,
     requestedStartDate: input.requestedStartDate,
     requiredEndDate: firstPaymentDate,
   });
@@ -163,6 +165,7 @@ export const evaluateRefinanceForecast = (
     cards: input.cards,
     cardCycles: input.cardCycles,
     receivables: input.receivables,
+    includeCardInterest: input.includeCardInterest,
     startDate: context.startDate,
     endDate: context.endDate,
   };

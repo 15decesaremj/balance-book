@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { cashAccountSchema, creditCardCycleSchema, creditCardSchema } from '@balance-book/domain';
+import {
+  cashAccountSchema,
+  creditCardCycleSchema,
+  creditCardSchema,
+  forecastEventSchema,
+} from '@balance-book/domain';
 import {
   assertCashBackedCardPurchaseEligibility,
   calculateCardSpendingPower,
@@ -121,6 +126,60 @@ describe('date-driven card lifecycle', () => {
     expect(spendingPower.statementAmountCents).toBe(54_321);
     expect(spendingPower.statementDueOn).toBe('2026-08-13');
     expect(spendingPower.statementState).toBe('future-estimated');
+  });
+
+  it('peeks past the purchase-bearing cycle instead of anchoring to an earlier statement due', () => {
+    const priorStatement = futureCycle({
+      id: 'prior-statement',
+      opensOn: '2026-06-20',
+      closesOn: '2026-07-19',
+      dueOn: '2026-08-13',
+      paymentOn: '2026-08-13',
+      state: 'closed-statement',
+      lockedStatementCents: 40_000,
+      defaultEstimateCents: 0,
+    });
+    const purchaseBearingCycle = futureCycle({
+      id: 'purchase-bearing-cycle',
+      state: 'open',
+    });
+    const result = calculateCardSpendingPower({
+      cards: [card()],
+      cardCycles: [priorStatement, purchaseBearingCycle],
+      asOfDate: '2026-07-20',
+      days: [
+        {
+          date: '2026-08-13',
+          consolidatedCashCents: 140_000,
+          totalPositionCents: 140_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 140_000 }],
+        },
+        {
+          date: '2026-09-13',
+          consolidatedCashCents: 100_000,
+          totalPositionCents: 100_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 100_000 }],
+        },
+        {
+          date: '2026-10-13',
+          consolidatedCashCents: 250_000,
+          totalPositionCents: 250_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 250_000 }],
+        },
+        {
+          date: '2026-10-20',
+          consolidatedCashCents: 200_000,
+          totalPositionCents: 200_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 200_000 }],
+        },
+      ],
+    })[0]!;
+
+    expect(result.nextDueOn).toBe('2026-08-13');
+    expect(result.currentCyclePaymentOn).toBe('2026-09-14');
+    expect(result.futurePositionLowCents).toBe(100_000);
+    expect(result.nextStatementDueOn).toBe('2026-10-13');
+    expect(result.nextStatementPositionCents).toBe(200_000);
   });
 
   it('surfaces a past-close open cycle as an unresolved statement coming due', () => {
@@ -328,6 +387,181 @@ describe('date-driven card lifecycle', () => {
 
     expect(result.nextDueOn).toBe('2026-08-13');
     expect(result.currentCyclePaymentOn).toBe('2026-08-15');
+  });
+
+  it('uses an explicit manual paydown and reports the lowest total position from the due date after next forward', () => {
+    const statement = futureCycle({
+      id: 'manual-statement',
+      opensOn: '2026-05-20',
+      closesOn: '2026-06-19',
+      dueOn: '2026-07-12',
+      paymentOn: '2026-07-12',
+      state: 'paid',
+      lockedStatementCents: 72_000,
+      actualPaymentCents: 18_000,
+    });
+    const openCycle = futureCycle({
+      id: 'manual-open-cycle',
+      opensOn: '2026-06-20',
+      closesOn: '2026-07-19',
+      dueOn: '2026-08-12',
+      paymentOn: '2026-08-12',
+      state: 'open',
+      defaultEstimateCents: 0,
+      actualActivityCents: 96_500,
+    });
+    const scheduledPaydown = forecastEventSchema.parse({
+      id: 'manual-scheduled-payment',
+      userId: 'user-a',
+      accountId: 'checking',
+      cardId: 'card-a',
+      date: '2026-08-12',
+      kind: 'card-payment',
+      direction: 'outflow',
+      amountCents: 15_500,
+      certainty: 'confirmed',
+      status: 'scheduled',
+      paymentMethod: 'cash-account',
+      label: 'Scheduled installment payment',
+    });
+    const result = calculateCardSpendingPower({
+      cards: [
+        card({
+          paymentPolicy: 'manual',
+          defaultFutureStatementCents: 0,
+          paymentDayOfMonth: 12,
+          statementCloseDayOfMonth: 19,
+        }),
+      ],
+      cardCycles: [statement, openCycle],
+      cardActivities: [scheduledPaydown],
+      asOfDate: '2026-07-14',
+      days: [
+        {
+          date: '2026-07-14',
+          consolidatedCashCents: 200_000,
+          totalPositionCents: 225_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 200_000 }],
+        },
+        {
+          date: '2026-08-12',
+          consolidatedCashCents: 184_500,
+          totalPositionCents: 209_500,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 184_500 }],
+        },
+        {
+          date: '2026-09-12',
+          consolidatedCashCents: 170_000,
+          totalPositionCents: 195_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 170_000 }],
+        },
+        {
+          date: '2026-10-01',
+          consolidatedCashCents: 165_000,
+          totalPositionCents: 190_961,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 165_000 }],
+        },
+      ],
+    })[0]!;
+
+    expect(result.spendingPowerStatus).toBe('determinate');
+    expect(result.purchaseAdvisorEligible).toBe(false);
+    expect(result.nextDueOn).toBe('2026-08-12');
+    expect(result.nextStatementDueOn).toBe('2026-09-12');
+    expect(result.nextStatementPositionCents).toBe(190_961);
+  });
+
+  it('keeps a manual card unavailable when no future paydown is scheduled', () => {
+    const result = calculateCardSpendingPower({
+      cards: [card({ paymentPolicy: 'manual' })],
+      cardCycles: [futureCycle({ state: 'open' })],
+      cardActivities: [],
+      asOfDate: '2026-07-20',
+      days: [
+        {
+          date: '2026-09-13',
+          consolidatedCashCents: 100_000,
+          totalPositionCents: 100_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 100_000 }],
+        },
+      ],
+    })[0]!;
+
+    expect(result.spendingPowerStatus).toBe('indeterminate-payment-policy');
+    expect(result.purchaseAdvisorEligible).toBe(false);
+    expect(result.spendingPowerCents).toBe(0);
+  });
+
+  it('does not let a prior-statement payment unlock a manual current-cycle runway', () => {
+    const prior = futureCycle({
+      id: 'prior-statement-cycle',
+      opensOn: '2026-05-20',
+      closesOn: '2026-06-19',
+      dueOn: '2026-07-12',
+      paymentOn: '2026-07-12',
+      state: 'scheduled-payment',
+      lockedStatementCents: 40_000,
+    });
+    const current = futureCycle({
+      id: 'manual-current-cycle',
+      opensOn: '2026-06-20',
+      closesOn: '2026-07-19',
+      dueOn: '2026-08-12',
+      paymentOn: '2026-08-12',
+      state: 'open',
+      actualActivityCents: 60_000,
+    });
+    const payment = (input: { id: string; date: string; sourceRecordId?: string }) =>
+      forecastEventSchema.parse({
+        ...input,
+        userId: 'user-a',
+        accountId: 'checking',
+        cardId: 'card-a',
+        kind: 'card-payment',
+        direction: 'outflow',
+        amountCents: 20_000,
+        certainty: 'confirmed',
+        status: 'scheduled',
+        paymentMethod: 'cash-account',
+        label: 'Scheduled card payment',
+      });
+    const common = {
+      cards: [card({ paymentPolicy: 'manual' })],
+      cardCycles: [prior, current],
+      asOfDate: '2026-07-01' as const,
+      days: [
+        {
+          date: '2026-08-12' as const,
+          consolidatedCashCents: 100_000,
+          totalPositionCents: 100_000,
+          accountBalances: [{ accountId: 'checking', endingBalanceCents: 100_000 }],
+        },
+      ],
+    };
+
+    const [priorOnly] = calculateCardSpendingPower({
+      ...common,
+      cardActivities: [
+        payment({
+          id: 'prior-statement-payment',
+          date: '2026-07-12',
+          sourceRecordId: prior.id,
+        }),
+      ],
+    });
+    expect(priorOnly?.spendingPowerStatus).toBe('indeterminate-payment-policy');
+
+    const [currentLinked] = calculateCardSpendingPower({
+      ...common,
+      cardActivities: [
+        payment({
+          id: 'current-cycle-payment',
+          date: '2026-08-12',
+          sourceRecordId: current.id,
+        }),
+      ],
+    });
+    expect(currentLinked?.spendingPowerStatus).toBe('determinate');
   });
 
   it('falls forward to the next generated due date when every supplied cycle is paid', () => {

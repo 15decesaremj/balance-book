@@ -38,6 +38,32 @@ export const roundInterestToCents = (interest: Decimal): MoneyCents =>
   moneyCentsSchema.parse(interest.mul(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber());
 
 /**
+ * Returns whether a persisted loan-payment instruction is still allowed to move cash for this
+ * loan. The loan record is authoritative for lifecycle and funding-account changes; historical
+ * event rows remain available for audit, but an inactive/excluded loan or an obsolete account link
+ * must not leak a future cash outflow into the forecast.
+ */
+export const isLoanPaymentEventCashEligible = (
+  loanInput: Loan,
+  eventInput: ForecastEvent,
+): boolean => {
+  const loan = loanSchema.parse(loanInput);
+  const event = forecastEventSchema.parse(eventInput);
+  return (
+    event.kind === 'loan-payment' &&
+    event.sourceRecordId === loan.id &&
+    event.direction === 'outflow' &&
+    event.paymentMethod === 'cash-account' &&
+    event.accountId === loan.fundingAccountId &&
+    (loan.status ?? 'active') === 'active' &&
+    loan.includeInCashForecast !== false &&
+    event.status !== 'cancelled' &&
+    event.status !== 'skipped' &&
+    (!event.hypothetical || event.accepted)
+  );
+};
+
+/**
  * Preserves a contractual 29th/30th/31st anchor when the next payment was constrained into a
  * shorter month. Original and maturity dates are used only when the next payment itself is at
  * month-end; otherwise the explicit next-payment day remains authoritative.

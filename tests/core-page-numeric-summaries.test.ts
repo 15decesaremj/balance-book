@@ -481,6 +481,51 @@ describe('core page numeric summaries', () => {
     expect(payload.userId).toBeUndefined();
   });
 
+  it('preserves status and recurring-series lineage when a scheduled card payment is edited', () => {
+    const existing = forecastEventSchema.parse({
+      id: 'recurring-card-payment',
+      userId: 'profile-a',
+      accountId: 'cash-a',
+      date: '2026-08-15',
+      kind: 'card-payment',
+      direction: 'outflow',
+      amountCents: 10_000,
+      certainty: 'expected',
+      status: 'planned',
+      label: 'Original recurring payment',
+      recurrenceRule: { frequency: 'monthly', dayOfMonth: 15, interval: 1 },
+      recurrenceEndDate: '2027-08-15',
+      hypothetical: true,
+      accepted: true,
+      paymentMethod: 'cash-account',
+      cardId: 'card-a',
+      notes: 'Series lineage must survive the edit.',
+    });
+
+    const request = scheduledCardPaymentRequest({
+      existing,
+      newId: 'unused-id',
+      accountId: 'cash-b',
+      date: '2026-09-15',
+      amountCents: 12_500,
+      label: 'Revised recurring payment',
+      cardId: 'card-a',
+    });
+
+    expect(request.payload).toEqual(
+      expect.objectContaining({
+        id: existing.id,
+        status: 'planned',
+        certainty: 'expected',
+        recurrenceRule: existing.recurrenceRule,
+        recurrenceEndDate: existing.recurrenceEndDate,
+        hypothetical: true,
+        accepted: true,
+        notes: 'Series lineage must survive the edit.',
+      }),
+    );
+  });
+
   it('uses the modeled latest closed statement and falls back to stored history', () => {
     const stored = creditCardCycleSchema.parse({
       id: 'stored-statement',

@@ -6,7 +6,7 @@
   --balance-glass-strong: rgba(14, 23, 35, 0.9);
   --balance-glass-border: rgba(196, 222, 255, 0.14);
   --balance-glass-highlight: rgba(255, 255, 255, 0.08);
-  --balance-glass-shadow: 0 22px 52px rgba(0, 0, 0, 0.22);
+  --balance-glass-shadow: 0 14px 34px rgba(0, 0, 0, 0.16);
   --balance-nav-foreground: #c0cad7;
   --balance-nav-active-foreground: #f7fbff;
   --balance-nav-active-background: transparent;
@@ -19,6 +19,9 @@
   --balance-skeleton-highlight: rgba(190, 214, 247, 0.24);
   --balance-skeleton-panel: rgba(21, 31, 44, 0.72);
   --balance-skeleton-border: rgba(146, 177, 220, 0.15);
+  --balance-texture-line: rgba(130, 181, 255, 0.025);
+  --balance-orb-one: rgba(43, 143, 255, 0.2);
+  --balance-orb-two: rgba(112, 74, 255, 0.16);
   font-family:
     -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Segoe UI Variable Text',
     'Segoe UI', system-ui, sans-serif;
@@ -43,9 +46,17 @@ body,
 body {
   color: #f4f7fb;
   background:
+    linear-gradient(var(--balance-texture-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--balance-texture-line) 1px, transparent 1px),
     radial-gradient(circle at 10% -5%, rgba(83, 118, 255, 0.2), transparent 32rem),
     radial-gradient(circle at 88% 8%, rgba(45, 191, 255, 0.14), transparent 34rem),
     radial-gradient(circle at 62% 92%, rgba(123, 72, 255, 0.09), transparent 42rem), #08101a;
+  background-size:
+    38px 38px,
+    38px 38px,
+    auto,
+    auto,
+    auto;
   background-attachment: fixed;
 }
 
@@ -57,7 +68,7 @@ html[data-theme='light'] {
   --balance-glass-strong: rgba(249, 252, 255, 0.9);
   --balance-glass-border: rgba(56, 91, 130, 0.14);
   --balance-glass-highlight: rgba(255, 255, 255, 0.72);
-  --balance-glass-shadow: 0 22px 52px rgba(45, 67, 94, 0.12);
+  --balance-glass-shadow: 0 14px 34px rgba(45, 67, 94, 0.1);
   --balance-nav-foreground: #445268;
   --balance-nav-active-foreground: #ffffff;
   --balance-nav-active-background: #0f5fca;
@@ -66,14 +77,24 @@ html[data-theme='light'] {
   --balance-skeleton-highlight: rgba(83, 130, 196, 0.2);
   --balance-skeleton-panel: rgba(255, 255, 255, 0.8);
   --balance-skeleton-border: rgba(40, 78, 126, 0.13);
+  --balance-texture-line: rgba(26, 81, 151, 0.025);
+  --balance-orb-one: rgba(55, 135, 255, 0.14);
+  --balance-orb-two: rgba(112, 74, 255, 0.1);
   background: #f3f6fa;
 }
 
 html[data-theme='light'] body {
   color: #17202b;
   background:
+    linear-gradient(var(--balance-texture-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--balance-texture-line) 1px, transparent 1px),
     radial-gradient(circle at 8% -8%, rgba(65, 112, 255, 0.14), transparent 34rem),
     radial-gradient(circle at 92% 5%, rgba(36, 186, 235, 0.12), transparent 34rem), #eef3f9;
+  background-size:
+    38px 38px,
+    38px 38px,
+    auto,
+    auto;
 }
 
 html[data-theme='light'] .balance-nav-button {
@@ -92,9 +113,12 @@ html[data-theme='dark'] {
 }
 
 button,
-input,
-select,
 summary {
+  min-height: 36px;
+}
+
+input,
+select {
   min-height: 40px;
 }
 
@@ -107,27 +131,154 @@ strong {
 
 :where(.fui-Card) {
   border: 1px solid var(--balance-glass-border);
-  border-radius: 24px !important;
+  border-radius: 20px !important;
   background:
+    radial-gradient(circle at 96% 0%, rgba(80, 165, 255, 0.09), transparent 38%),
+    repeating-linear-gradient(
+      118deg,
+      transparent 0,
+      transparent 18px,
+      var(--balance-texture-line) 19px
+    ),
     linear-gradient(145deg, var(--balance-glass-highlight), transparent 38%), var(--balance-glass) !important;
   box-shadow:
-    inset 0 1px 0 var(--balance-glass-highlight),
+    inset 0 1px 0 color-mix(in srgb, var(--balance-glass-highlight) 72%, transparent),
     var(--balance-glass-shadow) !important;
-  backdrop-filter: blur(24px) saturate(145%);
-  -webkit-backdrop-filter: blur(24px) saturate(145%);
+  backdrop-filter: blur(16px) saturate(125%);
+  -webkit-backdrop-filter: blur(16px) saturate(125%);
 }
 
 :where(.fui-Button) {
-  min-height: 40px;
-  padding-inline: 17px !important;
+  min-height: 36px;
+  padding-inline: 14px !important;
   border-radius: 999px !important;
   font-weight: 600;
   letter-spacing: -0.01em;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 7px 20px rgba(0, 0, 0, 0.09);
-  backdrop-filter: blur(18px) saturate(150%);
-  -webkit-backdrop-filter: blur(18px) saturate(150%);
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 4px 12px rgba(0, 0, 0, 0.07);
+  backdrop-filter: blur(12px) saturate(125%);
+  -webkit-backdrop-filter: blur(12px) saturate(125%);
+}
+
+:where(.fui-Button:not(:disabled):hover) {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 7px 18px rgba(0, 0, 0, 0.1);
+}
+
+.balance-brand-mark {
+  width: 48px;
+  height: 48px;
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  line-height: 0;
+  border-radius: 16px;
+  filter: drop-shadow(0 10px 18px rgba(35, 104, 245, 0.22));
+}
+
+.balance-brand-mark--compact {
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+}
+
+.balance-brand-mark img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  margin: auto;
+  object-fit: contain;
+  object-position: 50% 50%;
+}
+
+.balance-ambient {
+  position: fixed;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0.78;
+}
+
+.balance-ambient__orb {
+  position: absolute;
+  display: block;
+  border-radius: 999px;
+  filter: blur(4px);
+  will-change: transform;
+}
+
+.balance-ambient__orb--one {
+  top: 12%;
+  right: 5%;
+  width: min(36vw, 520px);
+  aspect-ratio: 1;
+  background: radial-gradient(circle, var(--balance-orb-one), transparent 68%);
+  animation: balance-orb-drift-one 22s ease-in-out infinite alternate;
+}
+
+.balance-ambient__orb--two {
+  bottom: -18%;
+  left: 20%;
+  width: min(42vw, 650px);
+  aspect-ratio: 1;
+  background: radial-gradient(circle, var(--balance-orb-two), transparent 70%);
+  animation: balance-orb-drift-two 28s ease-in-out infinite alternate;
+}
+
+.balance-ambient__trace {
+  position: absolute;
+  right: -4%;
+  bottom: 0;
+  width: min(74vw, 1120px);
+  height: min(44vh, 460px);
+  opacity: 0.2;
+}
+
+.balance-ambient__trace-shadow,
+.balance-ambient__trace-line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.balance-ambient__trace-shadow {
+  stroke: rgba(33, 121, 255, 0.18);
+  stroke-width: 12;
+  filter: blur(8px);
+}
+
+.balance-ambient__trace-line {
+  stroke: rgba(116, 184, 255, 0.5);
+  stroke-width: 1.4;
+  stroke-dasharray: 12 16;
+  animation: balance-trace-flow 18s linear infinite;
+}
+
+@keyframes balance-orb-drift-one {
+  from {
+    transform: translate3d(0, 0, 0) scale(0.96);
+  }
+  to {
+    transform: translate3d(-8vw, 7vh, 0) scale(1.08);
+  }
+}
+
+@keyframes balance-orb-drift-two {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(7vw, -5vh, 0) scale(1.12);
+  }
+}
+
+@keyframes balance-trace-flow {
+  to {
+    stroke-dashoffset: -224;
+  }
 }
 
 :where(.fui-Input, .fui-Select, .fui-Textarea) {
@@ -138,6 +289,12 @@ strong {
   border-radius: 14px !important;
   background: color-mix(in srgb, var(--balance-glass-strong) 82%, transparent) !important;
   box-shadow: inset 0 1px 0 var(--balance-glass-highlight);
+}
+
+@media (max-width: 540px) {
+  :where(.fui-Button) {
+    min-height: 40px;
+  }
 }
 
 :where(.fui-Field, .fui-Input__input, .fui-Select__select, .fui-Textarea__textarea) {
@@ -453,6 +610,40 @@ summary {
   cursor: pointer;
   padding-block: 8px;
   border-radius: 14px;
+}
+
+html[data-density='compact'] main#main-content {
+  padding-block: 24px 48px;
+}
+
+html[data-density='compact'] :where(.fui-Card) {
+  padding: 16px !important;
+  border-radius: 18px !important;
+}
+
+html[data-density='compact'] :where(.fui-Button) {
+  min-height: 36px;
+  padding-inline: 14px !important;
+}
+
+html[data-density='compact'] :where(.fui-Input, .fui-Select, .fui-Textarea) {
+  min-height: 38px;
+}
+
+html[data-reduce-motion='true'] *,
+html[data-reduce-motion='true'] *::before,
+html[data-reduce-motion='true'] *::after {
+  scroll-behavior: auto !important;
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+}
+
+html[data-reduce-motion='true'] .balance-skeleton__bar,
+html[data-reduce-motion='true'] .balance-skeleton__mark,
+html[data-reduce-motion='true'] .balance-skeleton__chart-line {
+  animation: none !important;
+  background: var(--balance-skeleton-base);
 }
 
 @supports not (backdrop-filter: blur(1px)) {

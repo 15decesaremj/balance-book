@@ -487,7 +487,7 @@ describe('debt metadata financial effects', () => {
     expect(withCardDebt.liquidNetPositionCents).toBe(withoutCardDebt.liquidNetPositionCents);
   });
 
-  it('keeps net worth invariant when a same-day payment settles a statement while posted card activity remains debt', () => {
+  it('keeps snapshot net worth invariant for a scheduled same-day payment while Overview debt remains actually owed', () => {
     const card = creditCardSchema.parse({
       id: 'same-day-net-worth-card',
       userId: 'user-a',
@@ -558,7 +558,7 @@ describe('debt metadata financial effects', () => {
       loans: [],
       revolvingDebtCents: 50_000,
     });
-    const debtAfterPayment = summarizeRevolvingDebt({
+    const actualDebtForOverview = summarizeRevolvingDebt({
       card,
       cycles: [cycle, openCycle],
       // Mirrors the dashboard debt input: raw posted activity plus a materialized
@@ -566,17 +566,27 @@ describe('debt metadata financial effects', () => {
       events: [postedPurchase, payment],
       asOfDate: '2026-07-15',
     });
+    const debtForExpectedCashClose = summarizeRevolvingDebt({
+      card,
+      cycles: [cycle, openCycle],
+      events: [postedPurchase, payment],
+      asOfDate: '2026-07-15',
+      paymentEvidenceMode: 'include-projected-payments',
+    });
     const closing = calculateNetWorth({
       cashAccounts: [account],
       assets: [],
       receivables: [],
       loans: [],
-      revolvingDebtCents: debtAfterPayment.currentBalanceCents,
+      revolvingDebtCents: debtForExpectedCashClose.currentBalanceCents,
       liquidCashCentsOverride: account.openingBalanceCents - payment.amountCents,
       allCashCentsOverride: account.openingBalanceCents - payment.amountCents,
     });
 
-    expect(debtAfterPayment.currentBalanceCents).toBe(10_000);
+    expect(actualDebtForOverview.amountCurrentlyDueCents).toBe(40_000);
+    expect(actualDebtForOverview.currentBalanceCents).toBe(50_000);
+    expect(debtForExpectedCashClose.amountCurrentlyDueCents).toBe(0);
+    expect(debtForExpectedCashClose.currentBalanceCents).toBe(10_000);
     expect(closing.contractualNetWorthCents).toBe(opening.contractualNetWorthCents);
     expect(closing.economicNetWorthCents).toBe(opening.economicNetWorthCents);
   });

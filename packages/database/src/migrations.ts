@@ -1326,12 +1326,14 @@ export const backfillRefinanceAssetRelinks = (database: Database.Database): void
 const addColumnIfMissing = (
   database: Database.Database,
   table:
+    | 'profiles'
     | 'cash_accounts'
     | 'forecast_events'
     | 'credit_cards'
     | 'credit_card_cycles'
     | 'loans'
-    | 'receivables',
+    | 'receivables'
+    | 'assets',
   column: string,
   definition: string,
 ): void => {
@@ -1345,6 +1347,75 @@ const addColumnIfMissing = (
 
 const addCashAccountOverviewVisibility = (database: Database.Database): void => {
   addColumnIfMissing(database, 'cash_accounts', 'show_on_overview', 'INTEGER NOT NULL DEFAULT 1');
+};
+
+const addProfilePreferences = (database: Database.Database): void => {
+  addColumnIfMissing(database, 'profiles', 'preferences_json', "TEXT NOT NULL DEFAULT '{}'");
+};
+
+const addRecordedCardPaymentAccount = (database: Database.Database): void => {
+  addColumnIfMissing(database, 'credit_card_cycles', 'actual_payment_account_id', 'TEXT');
+};
+
+const addSameDayBalanceBoundaryTreatment = (database: Database.Database): void => {
+  addColumnIfMissing(
+    database,
+    'forecast_events',
+    'applies_after_balance_snapshot',
+    'INTEGER NOT NULL DEFAULT 0',
+  );
+};
+
+const addNotificationPresentationMetadata = (database: Database.Database): void => {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS notification_presentations (
+      id TEXT PRIMARY KEY NOT NULL,
+      user_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+      notification_id TEXT NOT NULL,
+      condition_fingerprint TEXT NOT NULL,
+      read_at TEXT,
+      snoozed_until TEXT,
+      dismissed_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  const columns = database
+    .prepare("PRAGMA table_info('notification_presentations')")
+    .all() as Array<{
+    name: string;
+  }>;
+  if (!columns.some((column) => column.name === 'condition_fingerprint')) {
+    database.exec(
+      "ALTER TABLE notification_presentations ADD COLUMN condition_fingerprint TEXT NOT NULL DEFAULT 'legacy'",
+    );
+  }
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS notification_presentations_user_notification_unique
+      ON notification_presentations(user_id, notification_id);
+    CREATE INDEX IF NOT EXISTS notification_presentations_user_updated_idx
+      ON notification_presentations(user_id, updated_at);
+  `);
+};
+
+const addInvestmentForecastAssumptions = (database: Database.Database): void => {
+  addColumnIfMissing(database, 'assets', 'annual_growth_rate_basis_points', 'INTEGER');
+  addColumnIfMissing(database, 'assets', 'contribution_gross_annual_income_cents', 'INTEGER');
+};
+
+const addCardInterestForecastControls = (database: Database.Database): void => {
+  addColumnIfMissing(
+    database,
+    'credit_cards',
+    'interest_forecast_enabled',
+    'INTEGER NOT NULL DEFAULT 0',
+  );
+  addColumnIfMissing(
+    database,
+    'credit_cards',
+    'promotional_carrying_balance',
+    'INTEGER NOT NULL DEFAULT 0',
+  );
+  addColumnIfMissing(database, 'credit_cards', 'promotional_apr_basis_points', 'INTEGER');
 };
 
 const addDebtTrackingMetadata = (database: Database.Database): void => {
@@ -1937,6 +2008,48 @@ const migrations: Migration[] = [
     sql: 'SELECT 1;',
     run: addCashAccountOverviewVisibility,
   },
+  {
+    version: 31,
+    name: 'profile-experience-preferences',
+    reapplyIfMissing: true,
+    sql: 'SELECT 1;',
+    run: addProfilePreferences,
+  },
+  {
+    version: 32,
+    name: 'recorded-card-payment-account',
+    reapplyIfMissing: true,
+    sql: 'SELECT 1;',
+    run: addRecordedCardPaymentAccount,
+  },
+  {
+    version: 33,
+    name: 'same-day-balance-boundary-treatment',
+    reapplyIfMissing: true,
+    sql: 'SELECT 1;',
+    run: addSameDayBalanceBoundaryTreatment,
+  },
+  {
+    version: 34,
+    name: 'notification-presentation-metadata',
+    reapplyIfMissing: true,
+    sql: 'SELECT 1;',
+    run: addNotificationPresentationMetadata,
+  },
+  {
+    version: 35,
+    name: 'investment-forecast-assumptions',
+    reapplyIfMissing: true,
+    sql: 'SELECT 1;',
+    run: addInvestmentForecastAssumptions,
+  },
+  {
+    version: 36,
+    name: 'card-interest-forecast-controls',
+    reapplyIfMissing: true,
+    sql: 'SELECT 1;',
+    run: addCardInterestForecastControls,
+  },
 ];
 
 const currentVersion = (database: Database.Database): number => {
@@ -1949,11 +2062,29 @@ const currentVersion = (database: Database.Database): number => {
   return row.version ?? 0;
 };
 
+export const assertSupportedSchemaVersion = (database: Database.Database): void => {
+  const migrationTable = database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'")
+    .get();
+  if (!migrationTable) return;
+  const row = database.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as {
+    version: number | null;
+  };
+  const version = row.version ?? 0;
+  const supportedVersion = migrations.at(-1)?.version ?? 0;
+  if (version > supportedVersion) {
+    throw new Error(
+      `This profile uses database schema ${version}, but this Balance Book version supports only schema ${supportedVersion}. Install a newer Balance Book version; the database was not changed.`,
+    );
+  }
+};
+
 export const applyMigrations = (input: {
   database: Database.Database;
   databasePath: string;
   backupDirectory: string;
 }): void => {
+  assertSupportedSchemaVersion(input.database);
   const version = currentVersion(input.database);
   const appliedVersions = new Set(
     (

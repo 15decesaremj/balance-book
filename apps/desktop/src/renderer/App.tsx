@@ -20,17 +20,19 @@ import {
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { activeLoansForDate, hasRecurringReceivableSchedule } from '@balance-book/financial-engine';
+import { defaultProfilePreferences, type ProfilePreferences } from '@balance-book/domain';
 import type {
   ManagedRecordsDto,
+  PostUpdateNoticeDto,
   ProfileSummaryDto,
   ScenarioResponseDto,
   SessionDto,
-  ThemePreference,
 } from '../shared/contracts';
 import { dollarsToCents, errorMessage, formatMoney } from './utils';
 import {
   DataPage,
   BaselinePage,
+  BillsPage,
   CardsPage,
   IncomePage,
   LoansPage,
@@ -48,10 +50,27 @@ import {
 } from './setup-checklist';
 import { balanceBookDarkTheme, balanceBookLightTheme } from './theme';
 import { LoadingSkeleton } from './LoadingSkeleton';
+import { createImmediateActionLock } from './useEditorReveal';
+import { NotificationCenter } from './NotificationCenter';
+import {
+  AmbientBackdrop,
+  BalanceBookMark,
+  NavigationIcon,
+  type NavigationIconName,
+} from './VisualSystem';
+import {
+  featureSettingsPath,
+  financialFeatureLabels,
+  isFinancialFeatureVisible,
+  type FinancialFeature,
+} from './feature-visibility';
+import type { SettingsSection } from './settings-search';
 
 const useStyles = makeStyles({
   authPage: {
     minHeight: '100vh',
+    position: 'relative',
+    isolation: 'isolate',
     display: 'grid',
     placeItems: 'center',
     padding: tokens.spacingHorizontalXXL,
@@ -59,6 +78,8 @@ const useStyles = makeStyles({
     backgroundImage: `radial-gradient(circle at 20% 10%, ${tokens.colorBrandBackground2} 0, transparent 34%)`,
   },
   authPanel: {
+    position: 'relative',
+    zIndex: 1,
     width: 'min(100%, 560px)',
     padding: tokens.spacingHorizontalXXL,
     display: 'grid',
@@ -95,6 +116,8 @@ const useStyles = makeStyles({
   shell: {
     minHeight: '100vh',
     minWidth: 0,
+    position: 'relative',
+    isolation: 'isolate',
     display: 'grid',
     gridTemplateColumns: '256px minmax(0, 1fr)',
     gridTemplateRows: 'auto 1fr',
@@ -103,6 +126,21 @@ const useStyles = makeStyles({
       gridTemplateColumns: '1fr',
       gridTemplateRows: 'auto auto 1fr',
     },
+  },
+  shellCollapsed: {
+    gridTemplateColumns: '82px minmax(0, 1fr)',
+    '@media (max-width: 1120px)': {
+      gridTemplateColumns: '1fr',
+    },
+  },
+  menuRevealEdge: {
+    position: 'fixed',
+    zIndex: 2_147_483_647,
+    top: 0,
+    right: 0,
+    left: 0,
+    height: '6px',
+    backgroundColor: 'transparent',
   },
   skipLink: {
     position: 'fixed',
@@ -122,6 +160,8 @@ const useStyles = makeStyles({
     '&:focus': { opacity: 1, pointerEvents: 'auto', transform: 'translateY(0)' },
   },
   header: {
+    position: 'relative',
+    zIndex: 2,
     gridColumn: '2',
     gridRow: '1',
     minHeight: '72px',
@@ -156,23 +196,16 @@ const useStyles = makeStyles({
     '& > *': { minWidth: 0 },
     '@media (max-width: 1120px)': {
       width: '100%',
-      justifyContent: 'space-between',
+      justifyContent: 'flex-end',
       marginLeft: 0,
     },
-    '@media (max-width: 520px)': {
-      display: 'grid',
-      gridTemplateColumns: 'minmax(0, 1fr) auto',
-      alignItems: 'end',
-    },
     '@media (max-width: 360px)': {
-      gridTemplateColumns: '1fr',
       '& button': { width: '100%' },
     },
   },
-  themeField: {
-    minWidth: 0,
-    '& select': { width: 'min(260px, 100%)', minWidth: 0 },
-    '@media (max-width: 360px)': { width: '100%', '& select': { width: '100%' } },
+  logoutButton: {
+    height: '36px',
+    minHeight: '36px',
   },
   authHeading: { display: 'grid', gap: tokens.spacingVerticalXS },
   sidebar: {
@@ -183,11 +216,13 @@ const useStyles = makeStyles({
     boxSizing: 'border-box',
     height: '100vh',
     position: 'sticky',
+    zIndex: 2,
     top: 0,
-    padding: '18px 16px',
+    padding: '18px 10px',
     display: 'flex',
     flexDirection: 'column',
-    gap: tokens.spacingVerticalL,
+    gap: 0,
+    overflowX: 'hidden',
     overflowY: 'auto',
     borderRight: '1px solid var(--balance-glass-border)',
     backgroundColor: 'color-mix(in srgb, var(--balance-glass-strong) 78%, transparent)',
@@ -212,15 +247,40 @@ const useStyles = makeStyles({
       flexDirection: 'column',
     },
   },
+  sidebarCollapsed: {
+    alignItems: 'stretch',
+    '@media (max-width: 1120px)': {
+      padding: `${tokens.spacingVerticalM} ${tokens.spacingHorizontalL}`,
+      alignItems: 'center',
+    },
+    '@media (max-width: 520px)': {
+      alignItems: 'stretch',
+    },
+  },
   sidebarBrand: {
+    width: '100%',
+    minHeight: 'auto',
+    boxSizing: 'border-box',
     display: 'grid',
-    gap: '1px',
-    padding: `${tokens.spacingVerticalL} ${tokens.spacingHorizontalL}`,
-    minWidth: '190px',
-    border: '1px solid var(--balance-glass-border)',
-    borderRadius: '22px',
-    backgroundColor: 'color-mix(in srgb, var(--balance-glass-highlight) 34%, transparent)',
-    boxShadow: 'inset 0 1px 0 var(--balance-glass-highlight)',
+    gridTemplateColumns: '40px minmax(0, 1fr)',
+    alignItems: 'start',
+    justifyContent: 'stretch',
+    justifyItems: 'stretch',
+    gap: tokens.spacingHorizontalM,
+    padding: `14px 10px 16px`,
+    color: 'inherit',
+    border: 0,
+    borderBottom: '1px solid color-mix(in srgb, var(--balance-glass-border) 74%, transparent)',
+    borderRadius: 0,
+    backgroundColor: 'transparent',
+    boxShadow: 'none',
+    textAlign: 'left',
+    cursor: 'pointer',
+    transitionProperty: 'background-color',
+    transitionDuration: tokens.durationNormal,
+    '&:hover': {
+      backgroundColor: 'color-mix(in srgb, var(--balance-glass-highlight) 30%, transparent)',
+    },
     '& strong': {
       fontSize: tokens.fontSizeBase600,
       letterSpacing: '-0.025em',
@@ -228,16 +288,64 @@ const useStyles = makeStyles({
     '@media (max-width: 1120px)': {
       minWidth: 'auto',
       padding: 0,
-      '& span': { display: 'none' },
+      borderBottom: 0,
     },
+  },
+  sidebarBrandCopy: {
+    minWidth: 0,
+    display: 'grid',
+    gap: '1px',
+  },
+  sidebarBrandMark: {
+    width: '40px',
+    minWidth: '40px',
+    display: 'grid',
+    placeItems: 'center',
+  },
+  sidebarBrandCollapsed: {
+    gridTemplateColumns: '40px',
+    minWidth: '0 !important',
+    maxWidth: '100%',
+    padding: `14px 10px 16px`,
+    justifyItems: 'stretch',
+    '@media (max-width: 1120px)': {
+      gridTemplateColumns: '40px minmax(0, 1fr)',
+      padding: 0,
+      justifyItems: 'stretch',
+    },
+  },
+  sidebarBrandCopyCollapsed: {
+    display: 'none',
+    '@media (max-width: 1120px)': {
+      display: 'grid',
+    },
+  },
+  sidebarTagline: {
+    '@media (max-width: 1120px)': { display: 'none' },
+  },
+  authBrand: {
+    display: 'grid',
+    gridTemplateColumns: '48px minmax(0, 1fr)',
+    alignItems: 'center',
+    gap: tokens.spacingHorizontalM,
   },
   nav: {
     display: 'grid',
     gap: tokens.spacingVerticalS,
     alignItems: 'stretch',
+    paddingTop: tokens.spacingVerticalL,
     '& button': { justifyContent: 'flex-start' },
     '@media (max-width: 1120px)': {
       display: 'none',
+    },
+  },
+  navCollapsed: {
+    '& button': {
+      width: '100%',
+      minWidth: 0,
+      maxWidth: '100%',
+      justifyContent: 'center',
+      paddingInline: 0,
     },
   },
   mobileNav: {
@@ -286,8 +394,46 @@ const useStyles = makeStyles({
     marginRight: tokens.spacingHorizontalS,
     borderRadius: tokens.borderRadiusCircular,
     color: 'inherit',
-    fontSize: tokens.fontSizeBase300,
     backgroundColor: 'color-mix(in srgb, var(--balance-glass-highlight) 54%, transparent)',
+    '& svg': { width: '17px', height: '17px' },
+  },
+  navIconCollapsed: {
+    marginRight: 0,
+  },
+  sidebarCollapseControl: {
+    display: 'flex',
+    justifyContent: 'flex-start',
+    padding: `0 12px 14px`,
+    borderBottom: '1px solid color-mix(in srgb, var(--balance-glass-border) 74%, transparent)',
+    '@media (max-width: 1120px)': {
+      display: 'none',
+    },
+  },
+  sidebarCollapseControlCollapsed: {
+    justifyContent: 'flex-start',
+  },
+  sidebarCollapseButton: {
+    width: '36px',
+    minWidth: '36px',
+    height: '36px',
+    minHeight: '36px',
+    boxSizing: 'border-box',
+    padding: '0 !important',
+    display: 'grid',
+    placeItems: 'center',
+    border: '1px solid var(--balance-glass-border)',
+    borderRadius: tokens.borderRadiusCircular,
+    color: tokens.colorNeutralForeground2,
+    backgroundColor: 'color-mix(in srgb, var(--balance-glass) 78%, transparent)',
+    boxShadow: 'inset 0 1px 0 var(--balance-glass-highlight)',
+    fontSize: '20px',
+    lineHeight: 1,
+    transitionProperty: 'transform, border-color, background-color, box-shadow',
+    transitionDuration: tokens.durationNormal,
+    '& svg': {
+      width: '20px',
+      height: '20px',
+    },
   },
   sidebarFooter: {
     marginTop: 'auto',
@@ -302,16 +448,66 @@ const useStyles = makeStyles({
     minWidth: 0,
     margin: '0 auto',
     padding: `40px 0 72px`,
+    position: 'relative',
+    zIndex: 1,
     '@media (max-width: 1120px)': {
       gridColumn: '1',
       gridRow: '3',
       width: 'min(100% - 28px, 1500px)',
     },
   },
+  secondaryNav: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: tokens.spacingHorizontalS,
+    marginBottom: tokens.spacingVerticalXL,
+    padding: tokens.spacingHorizontalXS,
+    '& button': { minHeight: '34px', paddingInline: tokens.spacingHorizontalM },
+  },
+  postUpdateNotice: {
+    marginBottom: tokens.spacingVerticalXL,
+    padding: tokens.spacingHorizontalXL,
+    display: 'grid',
+    gap: tokens.spacingVerticalS,
+    boxShadow: `inset 0 0 0 1px ${tokens.colorBrandStroke1}`,
+    backgroundColor: 'color-mix(in srgb, var(--balance-glass-strong) 88%, transparent)',
+  },
+  hubGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(240px, 100%), 1fr))',
+    gap: tokens.spacingHorizontalL,
+  },
+  hubCard: {
+    minHeight: '168px',
+    padding: tokens.spacingHorizontalXL,
+    display: 'grid',
+    alignContent: 'space-between',
+    gap: tokens.spacingVerticalM,
+  },
+  hubCopy: {
+    display: 'grid',
+    alignContent: 'start',
+    gap: tokens.spacingVerticalS,
+    minWidth: 0,
+    '& > *': {
+      display: 'block',
+      minWidth: 0,
+      margin: 0,
+      overflowWrap: 'anywhere',
+    },
+  },
+  hubAction: { justifySelf: 'start' },
   pageHeader: {
     display: 'grid',
     gap: tokens.spacingVerticalXS,
     marginBottom: tokens.spacingVerticalXL,
+  },
+  eyebrow: {
+    color: tokens.colorBrandForeground1,
+    fontSize: tokens.fontSizeBase200,
+    fontWeight: tokens.fontWeightSemibold,
+    letterSpacing: '0.06em',
+    textTransform: 'uppercase',
   },
   metrics: {
     display: 'grid',
@@ -350,6 +546,20 @@ const useStyles = makeStyles({
     justifyContent: 'space-between',
     alignItems: 'flex-end',
     gap: tokens.spacingHorizontalL,
+    minWidth: 0,
+    '& > div': {
+      minWidth: 0,
+      display: 'grid',
+      gap: tokens.spacingVerticalXS,
+    },
+    '& h2, & p, & span': {
+      margin: 0,
+      overflowWrap: 'anywhere',
+    },
+    '& > span': {
+      flexShrink: 0,
+      paddingBottom: '2px',
+    },
     '@media (max-width: 640px)': { alignItems: 'stretch', flexDirection: 'column' },
   },
   setupGroupGrid: {
@@ -390,6 +600,40 @@ const useStyles = makeStyles({
     display: 'grid',
     gap: tokens.spacingVerticalXS,
   },
+  applicabilityGrid: {
+    display: 'grid',
+    gap: tokens.spacingVerticalS,
+  },
+  applicabilityRow: {
+    minWidth: 0,
+    padding: `${tokens.spacingVerticalM} ${tokens.spacingHorizontalL}`,
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto',
+    alignItems: 'center',
+    gap: tokens.spacingHorizontalL,
+    border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusXLarge,
+    backgroundColor: 'color-mix(in srgb, var(--balance-glass) 78%, transparent)',
+    '& > div:first-child': {
+      minWidth: 0,
+      display: 'grid',
+      gap: tokens.spacingVerticalXXS,
+    },
+    '@media (max-width: 520px)': {
+      gridTemplateColumns: '1fr',
+      alignItems: 'stretch',
+    },
+  },
+  applicabilityChoices: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(74px, 1fr))',
+    gap: tokens.spacingHorizontalXS,
+  },
+  applicabilityChoiceSelected: {
+    color: `${tokens.colorNeutralForegroundOnBrand} !important`,
+    backgroundColor: `${tokens.colorBrandBackground} !important`,
+    boxShadow: `inset 0 0 0 1px ${tokens.colorBrandStroke1}`,
+  },
   setupCollapsible: {
     padding: `${tokens.spacingVerticalM} ${tokens.spacingHorizontalXL}`,
     marginBottom: tokens.spacingVerticalXL,
@@ -426,7 +670,6 @@ const useStyles = makeStyles({
   },
   setupProgress: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
     gap: tokens.spacingHorizontalXS,
     marginBlock: tokens.spacingVerticalS,
   },
@@ -486,10 +729,13 @@ const signedMoneyText = z
       return false;
     }
   }, 'Enter a valid amount');
-const moneyText = signedMoneyText.refine(
-  (value) => dollarsToCents(value) >= 0,
-  'Amount cannot be negative',
-);
+const moneyText = signedMoneyText.refine((value) => {
+  try {
+    return dollarsToCents(value) >= 0;
+  } catch {
+    return false;
+  }
+}, 'Amount cannot be negative');
 
 const optionalMoneyText = z.union([z.literal(''), moneyText]);
 const optionalDateText = z.union([
@@ -511,7 +757,14 @@ const optionalCardPaymentPolicy = z.union([
   z.literal(''),
   z.enum(['full-statement', 'minimum', 'fixed', 'manual']),
 ]);
+const applicabilityAnswerSchema = z.enum(['', 'yes', 'no']);
 const setupBaseSchema = z.object({
+  usesIncome: applicabilityAnswerSchema,
+  usesBills: applicabilityAnswerSchema,
+  usesCreditCards: applicabilityAnswerSchema,
+  usesLoans: applicabilityAnswerSchema,
+  usesMoneyOwed: applicabilityAnswerSchema,
+  usesAssets: applicabilityAnswerSchema,
   balanceAsOf: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter a date'),
   accountName: z.string().trim().min(1, 'Enter an account name'),
   openingBalance: signedMoneyText,
@@ -637,6 +890,22 @@ const addFloorIssue = (
 };
 
 const setupSchema = setupBaseSchema.superRefine((values, context) => {
+  for (const field of [
+    'usesIncome',
+    'usesBills',
+    'usesCreditCards',
+    'usesLoans',
+    'usesMoneyOwed',
+    'usesAssets',
+  ] as const) {
+    if (values[field] === '') {
+      context.addIssue({
+        code: 'custom',
+        path: [field],
+        message: 'Choose Yes or No',
+      });
+    }
+  }
   const groups = [
     {
       path: 'incomeLabel',
@@ -650,28 +919,76 @@ const setupSchema = setupBaseSchema.superRefine((values, context) => {
     },
   ] as const;
   for (const group of groups) {
+    if (group.path === 'incomeLabel' && values.usesIncome !== 'yes') continue;
+    if (group.path === 'commitmentLabel' && values.usesBills !== 'yes') continue;
     addOptionalGroupIssue(group.values, group.label, group.path, context);
   }
-  addOptionalCardIssue(values, context);
+  if (values.usesCreditCards === 'yes') addOptionalCardIssue(values, context);
   addFloorIssue(values, context);
 });
 type SetupValues = z.infer<typeof setupSchema>;
 
-const setupStepNames = ['Welcome', 'Cash', 'Deposit', 'Bill', 'Cards', 'Minimums', 'Review'];
-const setupStepPromises = [
-  'A private forecast you can understand and edit.',
-  'A trustworthy starting balance for daily projections.',
-  'One upcoming deposit timed to the account where it actually arrives.',
-  'One upcoming bill included before anything is called safe to spend.',
-  'Card purchases mapped to their real future cash-payment dates.',
-  'A global protected minimum and preferred buffer that every safe-spend answer can explain.',
-  'A first forecast you can verify before using it day to day.',
+type SetupStepId = 'welcome' | 'fit' | 'cash' | 'income' | 'bill' | 'cards' | 'minimums' | 'review';
+
+const setupStepDefinitions: Record<SetupStepId, { name: string; promise: string }> = {
+  welcome: {
+    name: 'Welcome',
+    promise: 'A private forecast you can understand and edit.',
+  },
+  fit: {
+    name: 'Make it yours',
+    promise: 'A workspace that shows only the money tools you use.',
+  },
+  cash: {
+    name: 'Cash',
+    promise: 'A trustworthy starting balance for daily projections.',
+  },
+  income: {
+    name: 'Deposit',
+    promise: 'One upcoming deposit timed to the account where it actually arrives.',
+  },
+  bill: {
+    name: 'Bill',
+    promise: 'One upcoming bill included before anything is called safe to spend.',
+  },
+  cards: {
+    name: 'Cards',
+    promise: 'Card purchases mapped to their real future cash-payment dates.',
+  },
+  minimums: {
+    name: 'Minimums',
+    promise:
+      'A global protected minimum and preferred buffer that every safe-spend answer can explain.',
+  },
+  review: {
+    name: 'Review',
+    promise: 'A first forecast you can verify before using it day to day.',
+  },
+};
+
+export const activeSetupStepIds = (values: Partial<SetupValues>): SetupStepId[] => [
+  'welcome',
+  'fit',
+  'cash',
+  ...(values.usesIncome === 'yes' ? (['income'] as const) : []),
+  ...(values.usesBills === 'yes' ? (['bill'] as const) : []),
+  ...(values.usesCreditCards === 'yes' ? (['cards'] as const) : []),
+  'minimums',
+  'review',
 ];
 
-const setupStepSchemas: z.ZodTypeAny[] = [
-  z.object({}),
-  setupBaseSchema.pick({ balanceAsOf: true, accountName: true, openingBalance: true }),
-  setupBaseSchema
+const setupStepSchemas: Record<SetupStepId, z.ZodTypeAny> = {
+  welcome: z.object({}),
+  fit: z.object({
+    usesIncome: z.enum(['yes', 'no'], { message: 'Choose Yes or No' }),
+    usesBills: z.enum(['yes', 'no'], { message: 'Choose Yes or No' }),
+    usesCreditCards: z.enum(['yes', 'no'], { message: 'Choose Yes or No' }),
+    usesLoans: z.enum(['yes', 'no'], { message: 'Choose Yes or No' }),
+    usesMoneyOwed: z.enum(['yes', 'no'], { message: 'Choose Yes or No' }),
+    usesAssets: z.enum(['yes', 'no'], { message: 'Choose Yes or No' }),
+  }),
+  cash: setupBaseSchema.pick({ balanceAsOf: true, accountName: true, openingBalance: true }),
+  income: setupBaseSchema
     .pick({ incomeLabel: true, incomeDate: true, incomeAmount: true })
     .superRefine((values, context) =>
       addOptionalGroupIssue(
@@ -681,7 +998,7 @@ const setupStepSchemas: z.ZodTypeAny[] = [
         context,
       ),
     ),
-  setupBaseSchema
+  bill: setupBaseSchema
     .pick({ commitmentLabel: true, commitmentDate: true, commitmentAmount: true })
     .superRefine((values, context) =>
       addOptionalGroupIssue(
@@ -691,7 +1008,7 @@ const setupStepSchemas: z.ZodTypeAny[] = [
         context,
       ),
     ),
-  setupBaseSchema
+  cards: setupBaseSchema
     .pick({
       cardName: true,
       cardEstimate: true,
@@ -703,9 +1020,11 @@ const setupStepSchemas: z.ZodTypeAny[] = [
       cardFixedPayment: true,
     })
     .superRefine(addOptionalCardIssue),
-  setupBaseSchema.pick({ hardFloor: true, preferredFloor: true }).superRefine(addFloorIssue),
-  z.object({}),
-];
+  minimums: setupBaseSchema
+    .pick({ hardFloor: true, preferredFloor: true })
+    .superRefine(addFloorIssue),
+  review: z.object({}),
+};
 
 const scenarioSchema = z.object({
   description: z.string().trim().min(1, 'Describe the purchase'),
@@ -717,7 +1036,18 @@ const scenarioSchema = z.object({
 });
 type ScenarioValues = z.infer<typeof scenarioSchema>;
 
-type SetupReviewStatus = 'reviewed' | 'not-applicable';
+export type SetupReviewStatus = 'reviewed' | 'not-applicable';
+
+export const updateSetupReviewSections = (
+  current: Readonly<Record<string, SetupReviewStatus>>,
+  topicId: string,
+  status?: SetupReviewStatus,
+): Record<string, SetupReviewStatus> => {
+  const next = { ...current };
+  if (status === undefined) delete next[topicId];
+  else next[topicId] = status;
+  return next;
+};
 
 export const setupDraftPayloadValues = (
   values: Partial<SetupValues>,
@@ -816,10 +1146,14 @@ const ProfileAccess = ({
 
   return (
     <div className={styles.authPage}>
+      <AmbientBackdrop />
       <Card className={styles.authPanel}>
-        <div className={styles.brand}>
-          <Title1>Balance Book</Title1>
-          <Subtitle1>Private financial operations on this computer</Subtitle1>
+        <div className={styles.authBrand}>
+          <BalanceBookMark />
+          <div className={styles.brand}>
+            <Title1>Balance Book</Title1>
+            <Subtitle1>Private financial operations on this computer</Subtitle1>
+          </div>
         </div>
         {!selected ? (
           <>
@@ -938,14 +1272,208 @@ const ProfileAccess = ({
   );
 };
 
+export const primaryPathForLocation = (path: string): string => {
+  if (['/forecast', '/income', '/baseline'].includes(path)) return '/forecast';
+  if (['/accounts', '/bills', '/cards', '/loans', '/receivables', '/net-worth'].includes(path)) {
+    return '/accounts';
+  }
+  if (['/planning', '/scenario', '/refinance', '/charts'].includes(path)) return '/planning';
+  if (['/settings', '/data', '/reconcile', '/setup', '/records'].includes(path)) return '/settings';
+  return '/';
+};
+
+export const secondaryDestinationsFor = (
+  path: string,
+  preferences: ProfilePreferences = defaultProfilePreferences,
+) => {
+  const primary = primaryPathForLocation(path);
+  if (primary === '/forecast') {
+    return [
+      ['Cash forecast', '/forecast'],
+      ...(isFinancialFeatureVisible(preferences, 'income')
+        ? ([['Income and raises', '/income']] as const)
+        : []),
+      ['Recurring plan', '/baseline'],
+    ] as const;
+  }
+  if (primary === '/accounts') {
+    return [
+      ['Accounts home', '/accounts'],
+      ...(isFinancialFeatureVisible(preferences, 'bills')
+        ? ([['Bills & subscriptions', '/bills']] as const)
+        : []),
+      ...(isFinancialFeatureVisible(preferences, 'credit-cards')
+        ? ([['Credit cards', '/cards']] as const)
+        : []),
+      ...(isFinancialFeatureVisible(preferences, 'loans') ? ([['Loans', '/loans']] as const) : []),
+      ...(isFinancialFeatureVisible(preferences, 'money-owed')
+        ? ([['Money owed', '/receivables']] as const)
+        : []),
+      ...(isFinancialFeatureVisible(preferences, 'assets')
+        ? ([['Assets and net worth', '/net-worth']] as const)
+        : []),
+    ] as const;
+  }
+  if (primary === '/planning') {
+    return [
+      ['Planning home', '/planning'],
+      ['Scenarios', '/scenario'],
+      ...(isFinancialFeatureVisible(preferences, 'loans')
+        ? ([['Refinance', '/refinance']] as const)
+        : []),
+      ['Trends', '/charts'],
+    ] as const;
+  }
+  if (primary === '/settings') {
+    return [
+      ['Settings', '/settings'],
+      ['Financial check-in', '/reconcile'],
+      ['Setup status', '/setup'],
+      ['Advanced records', '/records'],
+    ] as const;
+  }
+  return [] as const;
+};
+
+export const settingsSectionForLocation = (path: string, search: string): SettingsSection => {
+  if (path === '/data') return 'data';
+  const requested = new URLSearchParams(search).get('section');
+  return requested === 'features' ||
+    requested === 'forecast' ||
+    requested === 'accounts' ||
+    requested === 'updates' ||
+    requested === 'data' ||
+    requested === 'security'
+    ? requested
+    : 'appearance';
+};
+
+const HubPage = ({
+  title,
+  description,
+  items,
+  preferences = defaultProfilePreferences,
+}: {
+  title: string;
+  description: string;
+  items: ReadonlyArray<{
+    title: string;
+    description: string;
+    path: string;
+    feature?: FinancialFeature;
+  }>;
+  preferences?: ProfilePreferences;
+}): React.JSX.Element => {
+  const styles = useStyles();
+  const navigate = useNavigate();
+  const visibleItems = items.filter(
+    (item) => item.feature === undefined || isFinancialFeatureVisible(preferences, item.feature),
+  );
+  return (
+    <div>
+      <header className={styles.pageHeader}>
+        <Title1 as="h1">{title}</Title1>
+        <Text>{description}</Text>
+      </header>
+      <div className={styles.hubGrid}>
+        {visibleItems.map((item) => (
+          <Card className={styles.hubCard} key={item.path}>
+            <div className={styles.hubCopy} data-layout-watch="hub-card-copy">
+              <Title2 as="h2">{item.title}</Title2>
+              <Text as="p">{item.description}</Text>
+            </div>
+            <Button
+              className={styles.hubAction}
+              appearance="subtle"
+              onClick={() => navigate(item.path)}
+            >
+              Open
+            </Button>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const HiddenFeaturePage = ({ feature }: { feature: FinancialFeature }): React.JSX.Element => {
+  const styles = useStyles();
+  const navigate = useNavigate();
+  return (
+    <Card className={styles.panel}>
+      <Text className={styles.eyebrow}>Hidden from your workspace</Text>
+      <Title1 as="h1">{financialFeatureLabels[feature]}</Title1>
+      <Text>
+        This section is turned off for this profile. Its saved records still remain in forecasts and
+        history.
+      </Text>
+      <div className={styles.actions}>
+        <Button appearance="primary" onClick={() => navigate(featureSettingsPath(feature))}>
+          Turn this section on
+        </Button>
+        <Button onClick={() => navigate('/')}>Back to Overview</Button>
+      </div>
+    </Card>
+  );
+};
+
+const NativeMenuHoverEdge = (): React.JSX.Element | null => {
+  const styles = useStyles();
+  const [menuVisible, setMenuVisible] = useState(false);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const setNativeMenuVisibility = useCallback(async (visible: boolean): Promise<void> => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+    const setVisibility = window.balanceBook.setMenuBarVisibility;
+    if (typeof setVisibility !== 'function') return;
+    setMenuVisible(visible);
+    const result = await setVisibility({ visible });
+    if (!result.ok && visible) setMenuVisible(false);
+  }, []);
+
+  useEffect(() => {
+    if (!menuVisible) return;
+    const scheduleHide = (event: PointerEvent): void => {
+      if (event.clientY <= 12) return;
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = setTimeout(() => {
+        void setNativeMenuVisibility(false);
+      }, 500);
+    };
+    document.addEventListener('pointermove', scheduleHide);
+    return () => {
+      document.removeEventListener('pointermove', scheduleHide);
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    };
+  }, [menuVisible, setNativeMenuVisibility]);
+
+  if (menuVisible) return null;
+  return (
+    <div
+      className={styles.menuRevealEdge}
+      data-testid="native-menu-reveal-edge"
+      aria-hidden="true"
+      onPointerEnter={() => void setNativeMenuVisibility(true)}
+    />
+  );
+};
+
 const AppShell = ({
   session,
   systemDark,
+  darkMode,
   onSession,
   onLogout,
 }: {
   session: SessionDto;
   systemDark: boolean;
+  darkMode: boolean;
   onSession: (session: SessionDto) => void;
   onLogout: () => void;
 }): React.JSX.Element => {
@@ -953,47 +1481,35 @@ const AppShell = ({
   const navigate = useNavigate();
   const location = useLocation();
   const mainRef = useRef<HTMLElement>(null);
+  const [postUpdateNotice, setPostUpdateNotice] = useState<PostUpdateNoticeDto | null>(null);
+  const [sidebarPreferenceBusy, setSidebarPreferenceBusy] = useState(false);
+  const [sidebarPreferenceError, setSidebarPreferenceError] = useState<string | null>(null);
   const previousLocationRef = useRef(`${location.pathname}${location.search}`);
-  const [themeBusy, setThemeBusy] = useState(false);
-  const navGroups = [
-    { label: 'Today', items: [['Overview', '/', '⌂']] },
+  const sidebarCollapsed = session.preferences.sidebarCollapsed;
+  const navGroups: ReadonlyArray<{
+    label: string;
+    items: ReadonlyArray<readonly [string, string, NavigationIconName]>;
+  }> = [
     {
-      label: 'Plan',
+      label: 'Balance Book',
       items: [
-        ['Cash forecast', '/forecast', '⌁'],
-        ['Income and raises', '/income', '↗'],
-        ['Baseline plan', '/baseline', '◫'],
-        ['Scenarios', '/scenario', '◇'],
-        ['Refinance planner', '/refinance', '⇄'],
+        ['Overview', '/', 'overview'],
+        ['Forecast', '/forecast', 'forecast'],
+        ['Accounts', '/accounts', 'accounts'],
+        ['Planning', '/planning', 'planning'],
+        ['Settings', '/settings', 'settings'],
       ],
     },
-    {
-      label: 'Track',
-      items: [
-        ['Credit cards', '/cards', '▰'],
-        ['Loans', '/loans', '◉'],
-        ['Money owed to you', '/receivables', '↙'],
-        ['Assets and net worth', '/net-worth', '◆'],
-        ['Charts', '/charts', '⌇'],
-      ],
-    },
-    {
-      label: 'Maintain',
-      items: [
-        ['Reconciliation', '/reconcile', '✓'],
-        ['Setup checklist', '/setup', '☑'],
-        ['All financial records', '/records', '≡'],
-        ['Settings', '/data', '⚙'],
-      ],
-    },
-  ] as const;
-
-  const changeTheme = async (theme: ThemePreference) => {
-    setThemeBusy(true);
-    const result = await window.balanceBook.setTheme({ theme });
-    if (result.ok) onSession(result.value);
-    setThemeBusy(false);
-  };
+  ];
+  const currentPrimaryPath = primaryPathForLocation(location.pathname);
+  const secondaryDestinations = secondaryDestinationsFor(location.pathname, session.preferences);
+  const settingsInitialSection = settingsSectionForLocation(location.pathname, location.search);
+  const featurePage = (feature: FinancialFeature, page: React.JSX.Element): React.JSX.Element =>
+    isFinancialFeatureVisible(session.preferences, feature) ? (
+      page
+    ) : (
+      <HiddenFeaturePage feature={feature} />
+    );
 
   useEffect(() => {
     const currentLocation = `${location.pathname}${location.search}`;
@@ -1001,9 +1517,43 @@ const AppShell = ({
     previousLocationRef.current = currentLocation;
     mainRef.current?.focus();
   }, [location.pathname, location.search]);
+  useEffect(() => {
+    if (typeof window.balanceBook.getPostUpdateNotice !== 'function') return;
+    let active = true;
+    void window.balanceBook.getPostUpdateNotice().then((result) => {
+      if (active && result.ok) setPostUpdateNotice(result.value);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const toggleSidebar = async (): Promise<void> => {
+    if (sidebarPreferenceBusy) return;
+    setSidebarPreferenceBusy(true);
+    setSidebarPreferenceError(null);
+    try {
+      const result = await window.balanceBook.setPreferences({
+        ...session.preferences,
+        sidebarCollapsed: !sidebarCollapsed,
+      });
+      if (!result.ok) throw new Error(result.error);
+      onSession(result.value);
+    } catch (caught) {
+      setSidebarPreferenceError(
+        caught instanceof Error ? caught.message : 'Navigation preference could not be saved.',
+      );
+    } finally {
+      setSidebarPreferenceBusy(false);
+    }
+  };
 
   return (
-    <div className={styles.shell}>
+    <div
+      className={`${styles.shell} ${sidebarCollapsed ? styles.shellCollapsed : ''}`}
+      data-sidebar-collapsed={sidebarCollapsed ? 'true' : 'false'}
+    >
+      <AmbientBackdrop />
       <a
         className={styles.skipLink}
         href="#main-content"
@@ -1020,32 +1570,81 @@ const AppShell = ({
           <strong>{session.profile.displayName}</strong>
         </div>
         <div className={styles.headerActions} data-layout-watch="shell-header-actions">
-          <Field className={styles.themeField} label="Theme" orientation="horizontal">
-            <Select
-              aria-label="Theme"
-              value={session.themePreference}
-              disabled={themeBusy}
-              onChange={(_, data) => void changeTheme(data.value as ThemePreference)}
-            >
-              <option value="system">System (currently {systemDark ? 'Dark' : 'Light'})</option>
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-            </Select>
-          </Field>
-          <Button appearance="subtle" onClick={onLogout}>
+          <NotificationCenter
+            refreshKey={`${location.pathname}${location.search}`}
+            darkMode={darkMode}
+          />
+          <Button className={styles.logoutButton} appearance="subtle" onClick={onLogout}>
             Log out
           </Button>
         </div>
       </header>
-      <aside className={styles.sidebar}>
-        <div className={styles.sidebarBrand}>
-          <Title2>Balance Book</Title2>
-          <Text size={200}>Private financial planner</Text>
+      <aside
+        id="primary-sidebar"
+        className={`${styles.sidebar} ${sidebarCollapsed ? styles.sidebarCollapsed : ''}`}
+      >
+        <div
+          className={`${styles.sidebarCollapseControl} ${
+            sidebarCollapsed ? styles.sidebarCollapseControlCollapsed : ''
+          }`}
+        >
+          <Button
+            className={styles.sidebarCollapseButton}
+            appearance="subtle"
+            size="small"
+            aria-label={sidebarCollapsed ? 'Expand navigation' : 'Collapse navigation'}
+            aria-expanded={!sidebarCollapsed}
+            aria-controls="primary-sidebar"
+            disabled={sidebarPreferenceBusy}
+            onClick={() => void toggleSidebar()}
+          >
+            <svg aria-hidden="true" focusable="false" viewBox="0 0 20 20">
+              <path
+                d={
+                  sidebarCollapsed
+                    ? 'M7.65 4.15a.5.5 0 0 1 .7 0l5.5 5.5a.5.5 0 0 1 0 .7l-5.5 5.5a.5.5 0 1 1-.7-.7L12.79 10 7.65 4.85a.5.5 0 0 1 0-.7Z'
+                    : 'M12.35 4.15a.5.5 0 0 1 0 .7L7.21 10l5.14 5.15a.5.5 0 1 1-.7.7l-5.5-5.5a.5.5 0 0 1 0-.7l5.5-5.5a.5.5 0 0 1 .7 0Z'
+                }
+                fill="currentColor"
+              />
+            </svg>
+          </Button>
         </div>
+        <Button
+          className={`${styles.sidebarBrand} ${
+            sidebarCollapsed ? styles.sidebarBrandCollapsed : ''
+          }`}
+          appearance="subtle"
+          aria-label={`${sidebarCollapsed ? 'Expand' : 'Collapse'} navigation from Balance Book logo`}
+          aria-expanded={!sidebarCollapsed}
+          aria-controls="primary-sidebar"
+          disabled={sidebarPreferenceBusy}
+          onClick={() => void toggleSidebar()}
+          style={sidebarCollapsed ? { width: '100%', minWidth: 0, maxWidth: '100%' } : undefined}
+        >
+          <span className={styles.sidebarBrandMark} data-testid="sidebar-brand-mark">
+            <BalanceBookMark compact />
+          </span>
+          <span
+            className={`${styles.sidebarBrandCopy} ${
+              sidebarCollapsed ? styles.sidebarBrandCopyCollapsed : ''
+            }`}
+          >
+            <Title2>Balance Book</Title2>
+            <Text size={200} className={styles.sidebarTagline}>
+              Private financial planner
+            </Text>
+          </span>
+        </Button>
+        {sidebarPreferenceError && (
+          <Text size={100} role="alert">
+            {sidebarPreferenceError}
+          </Text>
+        )}
         <Select
           className={styles.mobileNav}
           aria-label="Go to page"
-          value={location.pathname}
+          value={currentPrimaryPath}
           onChange={(_, data) => navigate(data.value)}
         >
           {navGroups.map((group) => (
@@ -1058,52 +1657,257 @@ const AppShell = ({
             </optgroup>
           ))}
         </Select>
-        <nav className={styles.nav} aria-label="Primary navigation">
+        <nav
+          className={`${styles.nav} ${sidebarCollapsed ? styles.navCollapsed : ''}`}
+          aria-label="Primary navigation"
+        >
           {navGroups.map((group) => (
             <div className={styles.navGroup} key={group.label}>
-              <Text className={styles.navLabel}>{group.label}</Text>
+              {!sidebarCollapsed && <Text className={styles.navLabel}>{group.label}</Text>}
               {group.items.map(([label, path, icon]) => {
-                const active = location.pathname === path;
+                const active = currentPrimaryPath === path;
                 return (
                   <Button
                     key={path}
                     className={`${styles.navButton} balance-nav-button`}
                     appearance="subtle"
+                    aria-label={sidebarCollapsed ? label : undefined}
                     aria-current={active ? 'page' : undefined}
                     onClick={() => navigate(path)}
                   >
-                    <span className={styles.navIcon} aria-hidden="true">
-                      {icon}
+                    <span
+                      className={`${styles.navIcon} ${
+                        sidebarCollapsed ? styles.navIconCollapsed : ''
+                      }`}
+                      aria-hidden="true"
+                    >
+                      <NavigationIcon name={icon} />
                     </span>
-                    {label}
+                    {!sidebarCollapsed && label}
                   </Button>
                 );
               })}
             </div>
           ))}
         </nav>
-        <Text size={200} className={styles.sidebarFooter}>
-          Local-only · no bank connection
-        </Text>
+        {!sidebarCollapsed && (
+          <Text size={200} className={styles.sidebarFooter}>
+            Local-only · no bank connection
+          </Text>
+        )}
       </aside>
       <main className={styles.content} id="main-content" ref={mainRef} tabIndex={-1}>
+        {postUpdateNotice && (
+          <Card className={styles.postUpdateNotice} aria-labelledby="post-update-title">
+            <Text className={styles.eyebrow}>Update complete</Text>
+            <Title2 id="post-update-title" as="h2">
+              Balance Book was updated
+            </Title2>
+            <Text>
+              Version {postUpdateNotice.oldVersion} became {postUpdateNotice.newVersion}. Your local
+              profile, password, settings, and financial records were retained.
+            </Text>
+            {postUpdateNotice.releaseNotes && <Text>{postUpdateNotice.releaseNotes}</Text>}
+            <div className={styles.actions}>
+              <Button appearance="primary" onClick={() => navigate('/settings?section=data')}>
+                Review backup controls
+              </Button>
+              <Button
+                onClick={() => {
+                  void window.balanceBook.acknowledgePostUpdateNotice().then((result) => {
+                    if (result.ok) setPostUpdateNotice(null);
+                  });
+                }}
+              >
+                Dismiss
+              </Button>
+            </div>
+          </Card>
+        )}
+        {secondaryDestinations.length > 0 && (
+          <nav className={styles.secondaryNav} aria-label="Section navigation">
+            {secondaryDestinations.map(([label, path]) => (
+              <Button
+                key={path}
+                size="small"
+                appearance={location.pathname === path ? 'primary' : 'subtle'}
+                aria-current={location.pathname === path ? 'page' : undefined}
+                onClick={() => navigate(path)}
+              >
+                {label}
+              </Button>
+            ))}
+          </nav>
+        )}
         <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/forecast" element={<DashboardPage fullForecast />} />
-          <Route path="/income" element={<IncomePage />} />
+          <Route
+            path="/"
+            element={
+              <DashboardPage
+                key={`dashboard:${session.preferences.overviewForecastMode}`}
+                preferences={session.preferences}
+              />
+            }
+          />
+          <Route
+            path="/forecast"
+            element={
+              <DashboardPage
+                key={`dashboard:${session.preferences.overviewForecastMode}`}
+                fullForecast
+                preferences={session.preferences}
+              />
+            }
+          />
+          <Route
+            path="/income"
+            element={featurePage(
+              'income',
+              <IncomePage
+                experimentalCardInterestForecastEnabled={
+                  session.preferences.experimentalCardInterestForecastEnabled
+                }
+              />,
+            )}
+          />
           <Route path="/baseline" element={<BaselinePage />} />
-          <Route path="/cards" element={<CardsPage />} />
-          <Route path="/loans" element={<LoansPage />} />
-          <Route path="/receivables" element={<ReceivablesPage />} />
-          <Route path="/setup" element={<SetupPage />} />
+          <Route
+            path="/accounts"
+            element={
+              <HubPage
+                title="Accounts"
+                preferences={session.preferences}
+                description="Every balance, debt, receivable, and asset—organized by what you need to manage."
+                items={[
+                  {
+                    title: 'Cash accounts',
+                    description: 'Balances, protection, visibility, and transfer timing.',
+                    path: '/settings?section=accounts',
+                  },
+                  {
+                    title: 'Bills & subscriptions',
+                    description: 'Amounts, schedules, payment sources, and shared costs.',
+                    path: '/bills',
+                    feature: 'bills',
+                  },
+                  {
+                    title: 'Credit cards',
+                    description: 'Runway, statements, payments, activity, and card terms.',
+                    path: '/cards',
+                    feature: 'credit-cards',
+                  },
+                  {
+                    title: 'Loans',
+                    description: 'Payoff progress, amortization, payments, and loan assumptions.',
+                    path: '/loans',
+                    feature: 'loans',
+                  },
+                  {
+                    title: 'Money owed',
+                    description: 'Current balances, future receivables, and recorded releases.',
+                    path: '/receivables',
+                    feature: 'money-owed',
+                  },
+                  {
+                    title: 'Assets and net worth',
+                    description: 'Investments, other assets, liabilities, and net worth.',
+                    path: '/net-worth',
+                    feature: 'assets',
+                  },
+                ]}
+              />
+            }
+          />
+          <Route
+            path="/cards"
+            element={featurePage(
+              'credit-cards',
+              <CardsPage
+                experimentalCardInterestForecastEnabled={
+                  session.preferences.experimentalCardInterestForecastEnabled
+                }
+              />,
+            )}
+          />
+          <Route path="/bills" element={featurePage('bills', <BillsPage />)} />
+          <Route path="/loans" element={featurePage('loans', <LoansPage />)} />
+          <Route path="/receivables" element={featurePage('money-owed', <ReceivablesPage />)} />
+          <Route path="/setup" element={<SetupPage session={session} onSession={onSession} />} />
           <Route path="/scenario" element={<ScenarioPage />} />
+          <Route
+            path="/planning"
+            element={
+              <HubPage
+                title="Planning"
+                preferences={session.preferences}
+                description="Explore decisions without cluttering the day-to-day view."
+                items={[
+                  {
+                    title: 'Scenarios',
+                    description: 'Test purchases and saved what-if decisions.',
+                    path: '/scenario',
+                  },
+                  {
+                    title: 'Refinance',
+                    description: 'Compare and commit replacement-loan plans.',
+                    path: '/refinance',
+                    feature: 'loans',
+                  },
+                  {
+                    title: 'Trends',
+                    description: 'Review historical and projected financial trajectories.',
+                    path: '/charts',
+                  },
+                ]}
+              />
+            }
+          />
           <Route path="/records" element={<RecordsPage />} />
-          <Route path="/net-worth" element={<NetWorthPage />} />
-          <Route path="/charts" element={<ChartsPage />} />
-          <Route path="/refinance" element={<RefinancePage />} />
+          <Route path="/net-worth" element={featurePage('assets', <NetWorthPage />)} />
+          <Route
+            path="/charts"
+            element={
+              <ChartsPage
+                experimentalCardInterestForecastEnabled={
+                  session.preferences.experimentalCardInterestForecastEnabled
+                }
+              />
+            }
+          />
+          <Route
+            path="/refinance"
+            element={featurePage(
+              'loans',
+              <RefinancePage
+                experimentalCardInterestForecastEnabled={
+                  session.preferences.experimentalCardInterestForecastEnabled
+                }
+              />,
+            )}
+          />
           <Route path="/reconcile" element={<ReconciliationPage />} />
-          <Route path="/data" element={<DataPage />} />
-          <Route path="/settings" element={<Navigate replace to="/data" />} />
+          <Route
+            path="/data"
+            element={
+              <DataPage
+                session={session}
+                systemDark={systemDark}
+                onSession={onSession}
+                initialSection={settingsInitialSection}
+              />
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <DataPage
+                session={session}
+                systemDark={systemDark}
+                onSession={onSession}
+                initialSection={settingsInitialSection}
+              />
+            }
+          />
           <Route path="*" element={<Navigate replace to="/" />} />
         </Routes>
       </main>
@@ -1111,13 +1915,25 @@ const AppShell = ({
   );
 };
 
-const SetupPage = (): React.JSX.Element => {
+export const SetupPage = ({
+  session,
+  onSession,
+}: {
+  session?: SessionDto;
+  onSession?: (session: SessionDto) => void;
+}): React.JSX.Element => {
   const styles = useStyles();
   const navigate = useNavigate();
   const today = Temporal.Now.plainDateISO();
   const form = useForm<SetupValues>({
     resolver: zodResolver(setupSchema),
     defaultValues: {
+      usesIncome: '',
+      usesBills: '',
+      usesCreditCards: '',
+      usesLoans: '',
+      usesMoneyOwed: '',
+      usesAssets: '',
       balanceAsOf: today.toString(),
       accountName: '',
       openingBalance: '',
@@ -1150,11 +1966,15 @@ const SetupPage = (): React.JSX.Element => {
   const [reviewSections, setReviewSections] = useState<
     Record<string, 'reviewed' | 'not-applicable'>
   >({});
+  const reviewSectionsRef = useRef<Record<string, SetupReviewStatus>>({});
   const [isExitingSetup, setIsExitingSetup] = useState(false);
   const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const exitSetupLockRef = useRef(false);
   const watchedSetupValues = useWatch({ control: form.control });
+  const activeSetupSteps = activeSetupStepIds(watchedSetupValues);
+  const currentSetupStepIndex = Math.min(step, Math.max(0, activeSetupSteps.length - 1));
+  const currentSetupStep = activeSetupSteps[currentSetupStepIndex] ?? 'welcome';
   const persistSetupDraft = useCallback(
     async (values: Record<string, string>, successStatus: string): Promise<boolean> => {
       const operation = draftSaveQueueRef.current.then(async () => {
@@ -1210,6 +2030,7 @@ const SetupPage = (): React.JSX.Element => {
               ]),
           );
           form.reset({ ...currentValues, ...formValues } as SetupValues);
+          reviewSectionsRef.current = savedSections;
           setReviewSections(savedSections);
           setDraftStatus(
             `Resumed saved setup from ${new Date(draftResult.value.updatedAt).toLocaleString()}.`,
@@ -1266,21 +2087,21 @@ const SetupPage = (): React.JSX.Element => {
         balanceAsOf: values.balanceAsOf,
         accountName: values.accountName,
         openingBalanceCents: dollarsToCents(values.openingBalance),
-        ...(values.incomeLabel
+        ...(values.usesIncome === 'yes' && values.incomeLabel
           ? {
               incomeLabel: values.incomeLabel,
               incomeDate: values.incomeDate || undefined,
               incomeAmountCents: dollarsToCents(values.incomeAmount),
             }
           : {}),
-        ...(values.commitmentLabel
+        ...(values.usesBills === 'yes' && values.commitmentLabel
           ? {
               commitmentLabel: values.commitmentLabel,
               commitmentDate: values.commitmentDate || undefined,
               commitmentAmountCents: dollarsToCents(values.commitmentAmount),
             }
           : {}),
-        ...(values.cardName
+        ...(values.usesCreditCards === 'yes' && values.cardName
           ? {
               cardName: values.cardName,
               cardEstimateCents: dollarsToCents(values.cardEstimate),
@@ -1310,6 +2131,27 @@ const SetupPage = (): React.JSX.Element => {
       });
       if (!result.ok) setError(result.error);
       else {
+        const currentSession =
+          session ??
+          (await window.balanceBook
+            .getSession()
+            .then((sessionResult) => (sessionResult.ok ? sessionResult.value : null)));
+        if (!currentSession) throw new Error('Your profile settings could not be loaded.');
+        const preferencesResult = await window.balanceBook.setPreferences({
+          ...currentSession.preferences,
+          showIncomeTools: values.usesIncome === 'yes',
+          showBills: values.usesBills === 'yes',
+          showCreditCards: values.usesCreditCards === 'yes',
+          showLoans: values.usesLoans === 'yes',
+          showMoneyOwed: values.usesMoneyOwed === 'yes',
+          showAssetsAndNetWorth: values.usesAssets === 'yes',
+        });
+        if (!preferencesResult.ok) {
+          throw new Error(
+            `Your first forecast was saved, but section visibility could not be saved: ${preferencesResult.error}`,
+          );
+        }
+        onSession?.(preferencesResult.value);
         const refreshed = await window.balanceBook.listRecords();
         if (!refreshed.ok) setError(refreshed.error);
         else {
@@ -1331,12 +2173,92 @@ const SetupPage = (): React.JSX.Element => {
       <Input type={type} disabled={isExitingSetup} {...form.register(name)} />
     </Field>
   );
-  const fieldsByStep: Array<Array<keyof SetupValues>> = [
-    [],
-    ['balanceAsOf', 'accountName', 'openingBalance'],
-    ['incomeLabel', 'incomeDate', 'incomeAmount'],
-    ['commitmentLabel', 'commitmentDate', 'commitmentAmount'],
-    [
+  const applicabilityQuestions: Array<{
+    name:
+      'usesIncome' | 'usesBills' | 'usesCreditCards' | 'usesLoans' | 'usesMoneyOwed' | 'usesAssets';
+    title: string;
+    detail: string;
+  }> = [
+    {
+      name: 'usesIncome',
+      title: 'Do you want to track income, raises, or bonuses?',
+      detail: 'Includes regular pay, split deposits, and future pay changes.',
+    },
+    {
+      name: 'usesBills',
+      title: 'Do you pay bills or subscriptions?',
+      detail: 'Includes recurring and changing expenses from cash or cards.',
+    },
+    {
+      name: 'usesCreditCards',
+      title: 'Do you use credit cards?',
+      detail: 'Adds statement tracking, payment timing, and safe-to-spend guidance.',
+    },
+    {
+      name: 'usesLoans',
+      title: 'Do you have installment loans?',
+      detail: 'Includes payoff progress, amortization, and refinancing.',
+    },
+    {
+      name: 'usesMoneyOwed',
+      title: 'Does anyone reimburse or repay you?',
+      detail: 'Tracks current and future money owed without treating it as cash too early.',
+    },
+    {
+      name: 'usesAssets',
+      title: 'Do you want to track investments or other assets?',
+      detail: 'Adds investment growth, assets, and net worth.',
+    },
+  ];
+  const applicabilityQuestion = (
+    question: (typeof applicabilityQuestions)[number],
+  ): React.JSX.Element => {
+    const answer = watchedSetupValues[question.name] ?? '';
+    const validationMessage = form.formState.errors[question.name]?.message;
+    return (
+      <div className={styles.applicabilityRow} key={question.name}>
+        <div>
+          <strong>{question.title}</strong>
+          <Text size={200}>{question.detail}</Text>
+          {validationMessage && (
+            <Text role="alert" className={styles.error} size={200}>
+              {validationMessage}
+            </Text>
+          )}
+        </div>
+        <div className={styles.applicabilityChoices} role="group" aria-label={question.title}>
+          {(['yes', 'no'] as const).map((choice) => (
+            <Button
+              key={choice}
+              type="button"
+              size="small"
+              appearance={answer === choice ? 'primary' : 'outline'}
+              className={answer === choice ? styles.applicabilityChoiceSelected : undefined}
+              aria-pressed={answer === choice}
+              disabled={isExitingSetup}
+              onClick={() => {
+                form.setValue(question.name, choice, {
+                  shouldDirty: true,
+                  shouldTouch: true,
+                  shouldValidate: true,
+                });
+                form.clearErrors(question.name);
+              }}
+            >
+              {choice === 'yes' ? 'Yes' : 'No'}
+            </Button>
+          ))}
+        </div>
+      </div>
+    );
+  };
+  const fieldsByStep: Record<SetupStepId, Array<keyof SetupValues>> = {
+    welcome: [],
+    fit: ['usesIncome', 'usesBills', 'usesCreditCards', 'usesLoans', 'usesMoneyOwed', 'usesAssets'],
+    cash: ['balanceAsOf', 'accountName', 'openingBalance'],
+    income: ['incomeLabel', 'incomeDate', 'incomeAmount'],
+    bill: ['commitmentLabel', 'commitmentDate', 'commitmentAmount'],
+    cards: [
       'cardName',
       'cardEstimate',
       'cardPaymentDay',
@@ -1346,13 +2268,13 @@ const SetupPage = (): React.JSX.Element => {
       'cardMinimumPayment',
       'cardFixedPayment',
     ],
-    ['hardFloor', 'preferredFloor'],
-    [],
-  ];
+    minimums: ['hardFloor', 'preferredFloor'],
+    review: [],
+  };
   const continueSetup = async () => {
-    const fields = fieldsByStep[step];
+    const fields = fieldsByStep[currentSetupStep];
     form.clearErrors(fields);
-    const result = setupStepSchemas[step]!.safeParse(form.getValues());
+    const result = setupStepSchemas[currentSetupStep].safeParse(form.getValues());
     if (!result.success) {
       for (const issue of result.error.issues) {
         const field = issue.path[0];
@@ -1362,7 +2284,7 @@ const SetupPage = (): React.JSX.Element => {
       }
       return;
     }
-    setStep((current) => Math.min(6, current + 1));
+    setStep(Math.min(activeSetupSteps.length - 1, currentSetupStepIndex + 1));
   };
 
   if (!setupRecords) {
@@ -1407,7 +2329,7 @@ const SetupPage = (): React.JSX.Element => {
       (asset) => asset.type === 'investment',
     ).length;
     const otherAssetCount = setupRecords.assets.length - investmentCount;
-    const setupTopics = [
+    const allSetupTopics = [
       {
         id: 'cash',
         section: 'A · What you own',
@@ -1565,20 +2487,43 @@ const SetupPage = (): React.JSX.Element => {
           ]
         : []),
     ];
-    const cardsWithoutCycles = setupRecords.cards.filter(
-      (card) =>
-        card.paymentPolicy !== 'manual' &&
-        card.paymentDayOfMonth !== undefined &&
-        card.statementCloseDayOfMonth !== undefined &&
-        !setupRecords.cardCycles.some(
-          (cycle) => cycle.cardId === card.id && cycle.state !== 'paid',
-        ),
-    ).length;
-    const cardsWithIncompleteTiming = setupRecords.cards.filter(
-      (card) =>
-        card.paymentPolicy !== 'manual' &&
-        (card.paymentDayOfMonth === undefined || card.statementCloseDayOfMonth === undefined),
-    ).length;
+    const setupTopicFeatures: Partial<Record<string, FinancialFeature>> = {
+      'money-owed': 'money-owed',
+      'regular-owed': 'money-owed',
+      investments: 'assets',
+      'other-assets': 'assets',
+      contributions: 'assets',
+      cards: 'credit-cards',
+      rewards: 'credit-cards',
+      loans: 'loans',
+      'direct-payments': 'bills',
+      payables: 'bills',
+      income: 'income',
+    };
+    const setupPreferences = session?.preferences ?? defaultProfilePreferences;
+    const setupTopics = allSetupTopics.filter((topic) => {
+      const feature = setupTopicFeatures[topic.id];
+      return feature === undefined || isFinancialFeatureVisible(setupPreferences, feature);
+    });
+    const cardsFeatureVisible = isFinancialFeatureVisible(setupPreferences, 'credit-cards');
+    const cardsWithoutCycles = cardsFeatureVisible
+      ? setupRecords.cards.filter(
+          (card) =>
+            card.paymentPolicy !== 'manual' &&
+            card.paymentDayOfMonth !== undefined &&
+            card.statementCloseDayOfMonth !== undefined &&
+            !setupRecords.cardCycles.some(
+              (cycle) => cycle.cardId === card.id && cycle.state !== 'paid',
+            ),
+        ).length
+      : 0;
+    const cardsWithIncompleteTiming = cardsFeatureVisible
+      ? setupRecords.cards.filter(
+          (card) =>
+            card.paymentPolicy !== 'manual' &&
+            (card.paymentDayOfMonth === undefined || card.statementCloseDayOfMonth === undefined),
+        ).length
+      : 0;
     const cardSetupIssueCount = cardsWithoutCycles + cardsWithIncompleteTiming;
     const topicStatus = (topic: (typeof setupTopics)[number]): string => {
       if (topic.requiresReview) {
@@ -1619,51 +2564,44 @@ const SetupPage = (): React.JSX.Element => {
         : []),
     ];
     type SetupTopic = (typeof setupTopics)[number];
-    type SetupGroupId = 'essentials' | 'daily-driver' | 'optional-expansion' | 'advanced-review';
+    type SetupGroupId = 'start' | 'accuracy' | 'advanced';
     const groupByTopicId: Record<string, SetupGroupId> = {
-      cash: 'essentials',
-      income: 'essentials',
-      'direct-payments': 'essentials',
-      guardrails: 'essentials',
-      cards: 'daily-driver',
-      'money-owed': 'daily-driver',
-      'regular-owed': 'daily-driver',
-      loans: 'daily-driver',
-      investments: 'optional-expansion',
-      'other-assets': 'optional-expansion',
-      payables: 'optional-expansion',
-      'pre-paycheck': 'optional-expansion',
-      contributions: 'optional-expansion',
-      rewards: 'optional-expansion',
-      sources: 'advanced-review',
+      cash: 'start',
+      income: 'start',
+      'direct-payments': 'start',
+      cards: 'start',
+      guardrails: 'accuracy',
+      'money-owed': 'accuracy',
+      'regular-owed': 'accuracy',
+      payables: 'accuracy',
+      'pre-paycheck': 'accuracy',
+      loans: 'advanced',
+      investments: 'advanced',
+      'other-assets': 'advanced',
+      contributions: 'advanced',
+      rewards: 'advanced',
+      sources: 'advanced',
     };
     const setupGroups = [
       {
-        id: 'essentials',
-        title: 'Essentials',
+        id: 'start',
+        title: 'Level 1 — Start',
         description:
-          'Starting cash, regular income, cash-paid bills, and account minimums establish the forecast you rely on every day.',
+          'Checking balances, income, major recurring expenses, and cards create a useful Overview immediately.',
         collapsed: false,
       },
       {
-        id: 'daily-driver',
-        title: 'Daily-driver verification',
+        id: 'accuracy',
+        title: 'Level 2 — Improve accuracy',
         description:
-          'Confirm the cards, loans, and money-coming-back schedules that affect card choice, cash lows, and transfer guidance.',
+          'Refine statement timing, payment accounts, money owed, thresholds, and recurring timing.',
         collapsed: false,
       },
       {
-        id: 'optional-expansion',
-        title: 'Optional expansion',
+        id: 'advanced',
+        title: 'Level 3 — Advanced',
         description:
-          'Add net-worth context, uncommon obligations, contributions, spending assumptions, and rewards only when they apply.',
-        collapsed: true,
-      },
-      {
-        id: 'advanced-review',
-        title: 'Advanced review',
-        description:
-          'Review imported-source mapping and audit lineage after the daily forecast inputs are in place.',
+          'Add loans, assets, raises and bonuses, refinance planning, custom forecast behavior, rewards, and source review only when useful.',
         collapsed: true,
       },
     ] as const;
@@ -1691,22 +2629,35 @@ const SetupPage = (): React.JSX.Element => {
       recommendedPriority
         .map((topicId) => setupTopics.find((topic) => topic.id === topicId))
         .find((topic): topic is SetupTopic => Boolean(topic && !topicComplete(topic)));
-    const updateTopicReview = (topicId: string, status: 'reviewed' | 'not-applicable'): void => {
-      setReviewSections((current) => ({ ...current, [topicId]: status }));
-    };
-    const reopenTopic = (topicId: string): void => {
-      setReviewSections((current) => {
-        const next = { ...current };
-        delete next[topicId];
-        return next;
-      });
+    const persistTopicReview = (topicId: string, status?: SetupReviewStatus): void => {
+      const nextReviewSections = updateSetupReviewSections(
+        reviewSectionsRef.current,
+        topicId,
+        status,
+      );
+      reviewSectionsRef.current = nextReviewSections;
+      setReviewSections(nextReviewSections);
+      if (draftTimerRef.current) {
+        clearTimeout(draftTimerRef.current);
+        draftTimerRef.current = null;
+      }
+      setDraftError(null);
+      setDraftStatus(status === undefined ? 'Saving reopened section...' : 'Saving decision...');
+      void persistSetupDraft(
+        setupDraftPayloadValues(form.getValues(), nextReviewSections),
+        status === undefined ? 'Section reopened and saved locally.' : 'Decision saved locally.',
+      );
     };
     const renderSetupTopic = (topic: SetupTopic): React.JSX.Element => {
       const status = topicStatus(topic);
       const unresolved = !topicComplete(topic);
       const primaryAttention = status === 'Needs setup' || status === 'Review needed';
       return (
-        <Card className={styles.setupTopic} key={topic.id}>
+        <Card
+          className={styles.setupTopic}
+          key={topic.id}
+          aria-label={`${topic.title} setup topic`}
+        >
           <span
             className={`${styles.setupTopicStatus} ${
               unresolved ? styles.setupTopicStatusOpen : ''
@@ -1730,15 +2681,17 @@ const SetupPage = (): React.JSX.Element => {
               {topic.action}
             </Button>
             {topic.requiresReview && reviewSections[topic.id] !== 'reviewed' && (
-              <Button onClick={() => updateTopicReview(topic.id, 'reviewed')}>Mark reviewed</Button>
+              <Button onClick={() => persistTopicReview(topic.id, 'reviewed')}>
+                Mark reviewed
+              </Button>
             )}
             {!topic.required && !topic.hasData && reviewSections[topic.id] !== 'not-applicable' && (
-              <Button onClick={() => updateTopicReview(topic.id, 'not-applicable')}>
+              <Button onClick={() => persistTopicReview(topic.id, 'not-applicable')}>
                 Not applicable
               </Button>
             )}
             {reviewSections[topic.id] !== undefined && (
-              <Button appearance="subtle" onClick={() => reopenTopic(topic.id)}>
+              <Button appearance="subtle" onClick={() => persistTopicReview(topic.id)}>
                 Reopen section
               </Button>
             )}
@@ -1759,10 +2712,32 @@ const SetupPage = (): React.JSX.Element => {
           <Title2 as="h2">Guided setup checklist</Title2>
           <Text>
             {completedTopicCount} of {setupTopics.length} topics are ready, reviewed, or marked not
-            applicable. Essentials stay visible; optional and advanced topics stay out of the way
-            until you open them. Every guided page updates the same native records used by Overview
-            and Cash Forecast.
+            applicable. Start and accuracy stay visible; advanced topics stay out of the way until
+            you open them. Every guided page updates the same native records used by Overview and
+            Cash Forecast.
           </Text>
+          {draftError && (
+            <div className={styles.error} role="alert">
+              Checklist decision not saved: {draftError}
+            </div>
+          )}
+          {draftStatus && <div role="status">{draftStatus}</div>}
+          {draftError && (
+            <div className={styles.actions}>
+              <Button
+                onClick={() => {
+                  setDraftError(null);
+                  setDraftStatus('Retrying checklist save...');
+                  void persistSetupDraft(
+                    setupDraftPayloadValues(form.getValues(), reviewSectionsRef.current),
+                    'Checklist decisions saved locally.',
+                  );
+                }}
+              >
+                Retry checklist save
+              </Button>
+            </div>
+          )}
         </Card>
         <Card className={styles.setupRecommended} aria-labelledby="recommended-setup-title">
           <Text>
@@ -1786,14 +2761,14 @@ const SetupPage = (): React.JSX.Element => {
                   !recommendedTopic.hasData &&
                   reviewSections[recommendedTopic.id] !== 'not-applicable' && (
                     <Button
-                      onClick={() => updateTopicReview(recommendedTopic.id, 'not-applicable')}
+                      onClick={() => persistTopicReview(recommendedTopic.id, 'not-applicable')}
                     >
                       Not applicable
                     </Button>
                   )}
                 {recommendedTopic.requiresReview &&
                   reviewSections[recommendedTopic.id] !== 'reviewed' && (
-                    <Button onClick={() => updateTopicReview(recommendedTopic.id, 'reviewed')}>
+                    <Button onClick={() => persistTopicReview(recommendedTopic.id, 'reviewed')}>
                       Mark reviewed
                     </Button>
                   )}
@@ -1806,7 +2781,7 @@ const SetupPage = (): React.JSX.Element => {
               </Title2>
               <Text>
                 Every setup topic is resolved. Check the projected low, account funding, and card
-                spending guidance against the daily ledger.
+                spending guidance against the daily forecast.
               </Text>
               <div className={styles.actions}>
                 <Button appearance="primary" onClick={() => navigate('/')}>
@@ -1884,16 +2859,16 @@ const SetupPage = (): React.JSX.Element => {
             </ul>
           )}
           <Text>
-            Open the daily ledger after editing to verify timing by account. Reconcile an actual
+            Open the daily forecast after editing to verify timing by account. Check an actual
             balance later without rewriting the original forecast.
           </Text>
           <div className={styles.actions}>
             <Button appearance="primary" onClick={() => navigate('/')}>
               Open Overview
             </Button>
-            <Button onClick={() => navigate('/forecast')}>Open daily Cash Forecast</Button>
-            <Button onClick={() => navigate('/reconcile')}>Reconcile a balance</Button>
-            <Button onClick={() => navigate('/records')}>Advanced Financial Records</Button>
+            <Button onClick={() => navigate('/forecast')}>Open cash forecast</Button>
+            <Button onClick={() => navigate('/reconcile')}>Check a balance</Button>
+            <Button onClick={() => navigate('/records')}>Advanced financial records</Button>
           </div>
         </Card>
       </>
@@ -1915,7 +2890,7 @@ const SetupPage = (): React.JSX.Element => {
           className={styles.form}
           aria-busy={isExitingSetup}
           onSubmit={(event) => {
-            if (step < 6) {
+            if (currentSetupStep !== 'review') {
               event.preventDefault();
               void continueSetup();
             } else void submit(event);
@@ -1936,7 +2911,8 @@ const SetupPage = (): React.JSX.Element => {
           {draftStatus && <div role="status">{draftStatus}</div>}
           <div className={styles.setupStepMeta}>
             <Text>
-              Step {step + 1} of 7 · {setupStepNames[step]}
+              Step {currentSetupStepIndex + 1} of {activeSetupSteps.length} ·{' '}
+              {setupStepDefinitions[currentSetupStep].name}
             </Text>
             <Text>Draft changes autosave locally</Text>
           </div>
@@ -1945,23 +2921,24 @@ const SetupPage = (): React.JSX.Element => {
             role="progressbar"
             aria-label="First forecast setup progress"
             aria-valuemin={1}
-            aria-valuemax={7}
-            aria-valuenow={step + 1}
-            aria-valuetext={`${setupStepNames[step]}, step ${step + 1} of 7`}
+            aria-valuemax={activeSetupSteps.length}
+            aria-valuenow={currentSetupStepIndex + 1}
+            aria-valuetext={`${setupStepDefinitions[currentSetupStep].name}, step ${currentSetupStepIndex + 1} of ${activeSetupSteps.length}`}
+            style={{ gridTemplateColumns: `repeat(${activeSetupSteps.length}, minmax(0, 1fr))` }}
           >
-            {setupStepNames.map((name, index) => (
+            {activeSetupSteps.map((stepId, index) => (
               <span
-                key={name}
-                title={name}
-                className={`${styles.setupProgressStep} ${index <= step ? styles.setupProgressStepComplete : ''}`}
+                key={stepId}
+                title={setupStepDefinitions[stepId].name}
+                className={`${styles.setupProgressStep} ${index <= currentSetupStepIndex ? styles.setupProgressStepComplete : ''}`}
               />
             ))}
           </div>
           <div className={styles.setupPromise}>
             <Text size={200}>This step unlocks</Text>
-            <strong>{setupStepPromises[step]}</strong>
+            <strong>{setupStepDefinitions[currentSetupStep].promise}</strong>
           </div>
-          {step === 0 && (
+          {currentSetupStep === 'welcome' && (
             <>
               <Title2 as="h2">Welcome</Title2>
               <Text>
@@ -1971,7 +2948,19 @@ const SetupPage = (): React.JSX.Element => {
               </Text>
             </>
           )}
-          {step === 1 && (
+          {currentSetupStep === 'fit' && (
+            <>
+              <Title2 as="h2">Which parts fit your finances?</Title2>
+              <Text>
+                Six quick answers keep the app focused. Choose No to hide a section; nothing is
+                deleted, and you can turn it on later from searchable Settings.
+              </Text>
+              <div className={styles.applicabilityGrid}>
+                {applicabilityQuestions.map(applicabilityQuestion)}
+              </div>
+            </>
+          )}
+          {currentSetupStep === 'cash' && (
             <>
               <Title2 as="h2">Cash account</Title2>
               <Text>Enter a dated balance so the forecast has a clear starting point.</Text>
@@ -1982,7 +2971,7 @@ const SetupPage = (): React.JSX.Element => {
               </div>
             </>
           )}
-          {step === 2 && (
+          {currentSetupStep === 'income' && (
             <>
               <Title2 as="h2">One upcoming deposit (optional)</Title2>
               <Text>
@@ -1998,7 +2987,7 @@ const SetupPage = (): React.JSX.Element => {
               </div>
             </>
           )}
-          {step === 3 && (
+          {currentSetupStep === 'bill' && (
             <>
               <Title2 as="h2">One upcoming bill (optional)</Title2>
               <Text>
@@ -2012,7 +3001,7 @@ const SetupPage = (): React.JSX.Element => {
               </div>
             </>
           )}
-          {step === 4 && (
+          {currentSetupStep === 'cards' && (
             <>
               <Title2 as="h2">Credit card (optional)</Title2>
               <Text>
@@ -2087,7 +3076,7 @@ const SetupPage = (): React.JSX.Element => {
               </div>
             </>
           )}
-          {step === 5 && (
+          {currentSetupStep === 'minimums' && (
             <>
               <Title2 as="h2">Global minimum and buffer</Title2>
               <Text>
@@ -2100,19 +3089,19 @@ const SetupPage = (): React.JSX.Element => {
               </div>
             </>
           )}
-          {step === 6 && (
+          {currentSetupStep === 'review' && (
             <>
               <Title2 as="h2">Review first forecast</Title2>
               <p>
                 <strong>{watchedSetupValues.accountName}</strong> starts at{' '}
                 {watchedSetupValues.openingBalance} as of {watchedSetupValues.balanceAsOf}.
-                {watchedSetupValues.incomeLabel
+                {watchedSetupValues.usesIncome === 'yes' && watchedSetupValues.incomeLabel
                   ? ` A deposit of ${watchedSetupValues.incomeAmount} is expected on ${watchedSetupValues.incomeDate}.`
                   : ' No deposit is being added in this first pass.'}
-                {watchedSetupValues.commitmentLabel
+                {watchedSetupValues.usesBills === 'yes' && watchedSetupValues.commitmentLabel
                   ? ` The bill is ${watchedSetupValues.commitmentAmount} on ${watchedSetupValues.commitmentDate}.`
                   : ' No bill is being added in this first pass.'}
-                {watchedSetupValues.cardName
+                {watchedSetupValues.usesCreditCards === 'yes' && watchedSetupValues.cardName
                   ? watchedSetupValues.cardStatementCloseDay && watchedSetupValues.cardPaymentDay
                     ? ` ${watchedSetupValues.cardName} uses a typical statement of ${watchedSetupValues.cardEstimate}, closes on day ${watchedSetupValues.cardStatementCloseDay}, and pays on day ${watchedSetupValues.cardPaymentDay}. Forecast payment policy: ${watchedSetupValues.cardPaymentPolicy === 'full-statement' ? 'full statement' : watchedSetupValues.cardPaymentPolicy === 'minimum' ? `minimum of ${watchedSetupValues.cardMinimumPayment}` : watchedSetupValues.cardPaymentPolicy === 'fixed' ? `fixed amount of ${watchedSetupValues.cardFixedPayment}` : 'manual'}. Its actual statement and current cycle will be added next.`
                     : ` ${watchedSetupValues.cardName} uses a typical statement of ${watchedSetupValues.cardEstimate} with payments entered manually. No statement-close or payment dates were inferred. Its actual statement and current cycle can be added next.`
@@ -2126,16 +3115,16 @@ const SetupPage = (): React.JSX.Element => {
             </>
           )}
           <div className={styles.actions}>
-            {step > 0 && (
+            {currentSetupStepIndex > 0 && (
               <Button
                 type="button"
                 disabled={isExitingSetup}
-                onClick={() => setStep((current) => current - 1)}
+                onClick={() => setStep(currentSetupStepIndex - 1)}
               >
                 Back
               </Button>
             )}
-            {step < 6 ? (
+            {currentSetupStep !== 'review' ? (
               <Button
                 type="button"
                 appearance="primary"
@@ -2198,8 +3187,8 @@ const ScenarioPage = (): React.JSX.Element => {
   } | null>(null);
   const [evaluatedInputKey, setEvaluatedInputKey] = useState<string | null>(null);
   const [savedEvaluationKey, setSavedEvaluationKey] = useState<string | null>(null);
-  const [isSavingScenario, setIsSavingScenario] = useState(false);
-  const saveScenarioLockRef = useRef<string | null>(null);
+  const [scenarioAction, setScenarioAction] = useState<string | null>(null);
+  const [scenarioActionLock] = useState(createImmediateActionLock);
   const [records, setRecords] = useState<ManagedRecordsDto | null>(null);
   const watchedScenarioValues = useWatch({ control: form.control });
   const currentEvaluationKey = scenarioEvaluationKey(watchedScenarioValues, {
@@ -2207,7 +3196,7 @@ const ScenarioPage = (): React.JSX.Element => {
     accountId,
     cardId,
   });
-  const scenarioControlsBusy = form.formState.isSubmitting || isSavingScenario;
+  const scenarioControlsBusy = form.formState.isSubmitting || scenarioAction !== null;
   useEffect(() => {
     void window.balanceBook
       .listRecords()
@@ -2238,7 +3227,21 @@ const ScenarioPage = (): React.JSX.Element => {
     setEvaluatedInputKey(null);
     setSavedMessage(null);
   };
+  const beginScenarioAction = (action: string): boolean => {
+    if (!scenarioActionLock.acquire(action)) return false;
+    setScenarioAction(action);
+    setError(null);
+    setSavedMessage(null);
+    return true;
+  };
+  const finishScenarioAction = (action: string): void => {
+    if (scenarioActionLock.active() !== action) return;
+    scenarioActionLock.release(action);
+    setScenarioAction(null);
+  };
   const submit = form.handleSubmit(async (values) => {
+    const action = 'evaluate-scenario';
+    if (!beginScenarioAction(action)) return;
     setError(null);
     setSavedMessage(null);
     setResult(null);
@@ -2278,11 +3281,12 @@ const ScenarioPage = (): React.JSX.Element => {
       setEvaluatedInputKey(requestedEvaluationKey);
     } catch (caught: unknown) {
       setError(errorMessage(caught));
+    } finally {
+      finishScenarioAction(action);
     }
   });
   const saveScenario = async () => {
     if (
-      saveScenarioLockRef.current === evaluatedInputKey ||
       !evaluatedScenario ||
       !evaluatedFunding ||
       !result ||
@@ -2291,15 +3295,12 @@ const ScenarioPage = (): React.JSX.Element => {
       savedEvaluationKey === evaluatedInputKey
     )
       return;
+    const action = 'save-evaluated-scenario';
+    if (!beginScenarioAction(action)) return;
     const scenarioSnapshot = { ...evaluatedScenario };
     const fundingSnapshot = { ...evaluatedFunding };
     const resultSnapshot = result;
     const evaluationKeySnapshot = evaluatedInputKey;
-    saveScenarioLockRef.current = evaluationKeySnapshot;
-    setIsSavingScenario(true);
-    setError(null);
-    setSavedMessage(null);
-    let savedSuccessfully = false;
     try {
       const recordsResponse = await window.balanceBook.listRecords();
       if (!recordsResponse.ok) {
@@ -2334,93 +3335,135 @@ const ScenarioPage = (): React.JSX.Element => {
         setError(response.error);
         return;
       }
-      savedSuccessfully = true;
       setSavedEvaluationKey(evaluationKeySnapshot);
       setRecords(response.value);
       setSavedMessage('Scenario saved locally for this profile.');
     } catch (caught: unknown) {
       setError(errorMessage(caught));
     } finally {
-      if (!savedSuccessfully && saveScenarioLockRef.current === evaluationKeySnapshot)
-        saveScenarioLockRef.current = null;
-      setIsSavingScenario(false);
+      finishScenarioAction(action);
     }
   };
   type SavedScenario = ManagedRecordsDto['savedScenarios'][number];
   const saveScenarioRecord = async (scenario: SavedScenario, status: SavedScenario['status']) => {
-    const response = await window.balanceBook.upsertRecord({
-      entityType: 'saved-scenario',
-      payload: {
-        id: scenario.id,
-        description: scenario.description,
-        amountCents: scenario.amountCents,
-        settlementDate: scenario.settlementDate,
-        accountId: scenario.accountId,
-        fundingType: scenario.fundingType,
-        cardId: scenario.cardId,
-        purchaseDate: scenario.purchaseDate,
-        status,
-        notes: scenario.notes,
-      },
-    });
-    if (response.ok) setRecords(response.value);
-    else setError(response.error);
+    const action = `update-scenario:${scenario.id}`;
+    if (!beginScenarioAction(action)) return;
+    try {
+      const response = await window.balanceBook.upsertRecord({
+        entityType: 'saved-scenario',
+        payload: {
+          id: scenario.id,
+          description: scenario.description,
+          amountCents: scenario.amountCents,
+          settlementDate: scenario.settlementDate,
+          accountId: scenario.accountId,
+          fundingType: scenario.fundingType,
+          cardId: scenario.cardId,
+          purchaseDate: scenario.purchaseDate,
+          status,
+          notes: scenario.notes,
+        },
+      });
+      if (!response.ok) throw new Error(response.error);
+      setRecords(response.value);
+      setSavedMessage(
+        status === 'archived'
+          ? 'Scenario archived.'
+          : status === 'accepted'
+            ? 'Scenario accepted for combined comparison.'
+            : 'Scenario returned to saved comparisons.',
+      );
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+    } finally {
+      finishScenarioAction(action);
+    }
   };
   const evaluateSavedScenarios = async (scenarioIds: string[]) => {
-    setError(null);
-    setSavedMessage(null);
-    const response = await window.balanceBook.evaluateCombinedScenarios({ scenarioIds });
-    if (response.ok) {
+    const action = 'evaluate-saved-scenarios';
+    if (!beginScenarioAction(action)) return;
+    try {
+      const response = await window.balanceBook.evaluateCombinedScenarios({ scenarioIds });
+      if (!response.ok) throw new Error(response.error);
       setResult(response.value);
       setEvaluatedScenario(null);
       setEvaluatedFunding(null);
       setEvaluatedInputKey(null);
-    } else setError(response.error);
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+    } finally {
+      finishScenarioAction(action);
+    }
   };
   const duplicateScenario = async (scenario: SavedScenario) => {
-    const response = await window.balanceBook.upsertRecord({
-      entityType: 'saved-scenario',
-      payload: {
-        id: crypto.randomUUID(),
-        description: `${scenario.description} (copy)`,
-        amountCents: scenario.amountCents,
-        settlementDate: scenario.settlementDate,
-        accountId: scenario.accountId,
-        fundingType: scenario.fundingType,
-        cardId: scenario.cardId,
-        purchaseDate: scenario.purchaseDate,
-        status: 'saved',
-        notes: scenario.notes,
-      },
-    });
-    if (response.ok) setRecords(response.value);
-    else setError(response.error);
+    const action = `duplicate-scenario:${scenario.id}`;
+    if (!beginScenarioAction(action)) return;
+    try {
+      const response = await window.balanceBook.upsertRecord({
+        entityType: 'saved-scenario',
+        payload: {
+          id: crypto.randomUUID(),
+          description: `${scenario.description} (copy)`,
+          amountCents: scenario.amountCents,
+          settlementDate: scenario.settlementDate,
+          accountId: scenario.accountId,
+          fundingType: scenario.fundingType,
+          cardId: scenario.cardId,
+          purchaseDate: scenario.purchaseDate,
+          status: 'saved',
+          notes: scenario.notes,
+        },
+      });
+      if (!response.ok) throw new Error(response.error);
+      setRecords(response.value);
+      setSavedMessage('Scenario duplicated once.');
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+    } finally {
+      finishScenarioAction(action);
+    }
   };
   const convertScenario = async (scenario: SavedScenario) => {
+    const action = `convert-scenario:${scenario.id}`;
+    if (!beginScenarioAction(action)) return;
     const destination =
       scenario.fundingType === 'card'
         ? 'planned card activity on its purchase date'
         : 'a real planned cash commitment';
-    if (!window.confirm(`Convert this scenario into ${destination}?`)) return;
-    const response = await window.balanceBook.convertScenario({ scenarioId: scenario.id });
-    if (response.ok) {
+    try {
+      if (!window.confirm(`Convert this scenario into ${destination}?`)) return;
+      const response = await window.balanceBook.convertScenario({ scenarioId: scenario.id });
+      if (!response.ok) throw new Error(response.error);
       setRecords(response.value);
       setSavedMessage(
         scenario.fundingType === 'card'
           ? "Scenario converted into card activity; its payment now follows that card's live cycle and payment policy."
           : 'Scenario converted transactionally into a forecast commitment.',
       );
-    } else setError(response.error);
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+    } finally {
+      finishScenarioAction(action);
+    }
   };
   const deleteScenario = async (scenario: SavedScenario) => {
-    if (!window.confirm('Permanently delete this saved scenario?')) return;
-    const response = await window.balanceBook.deleteRecord({
-      entityType: 'saved-scenario',
-      entityId: scenario.id,
-      confirmed: true,
-    });
-    if (response.ok) setRecords(response.value);
-    else setError(response.error);
+    const action = `delete-scenario:${scenario.id}`;
+    if (!beginScenarioAction(action)) return;
+    try {
+      if (!window.confirm('Permanently delete this saved scenario?')) return;
+      const response = await window.balanceBook.deleteRecord({
+        entityType: 'saved-scenario',
+        entityId: scenario.id,
+        confirmed: true,
+      });
+      if (!response.ok) throw new Error(response.error);
+      setRecords(response.value);
+      setSavedMessage('Scenario deleted.');
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+    } finally {
+      finishScenarioAction(action);
+    }
   };
   const displayedResult =
     evaluatedInputKey === null || evaluatedInputKey === currentEvaluationKey ? result : null;
@@ -2524,7 +3567,7 @@ const ScenarioPage = (): React.JSX.Element => {
             </Text>
           )}
           <Button type="submit" appearance="primary" disabled={scenarioControlsBusy}>
-            {form.formState.isSubmitting ? 'Evaluating…' : 'Evaluate purchase'}
+            {scenarioAction === 'evaluate-scenario' ? 'Evaluating…' : 'Evaluate purchase'}
           </Button>
         </form>
       </Card>
@@ -2636,10 +3679,10 @@ const ScenarioPage = (): React.JSX.Element => {
           {evaluatedScenario && evaluatedFunding && evaluatedInputKey && (
             <Button
               appearance="primary"
-              disabled={!canSaveEvaluatedScenario || isSavingScenario}
+              disabled={!canSaveEvaluatedScenario || scenarioControlsBusy}
               onClick={() => void saveScenario()}
             >
-              {isSavingScenario
+              {scenarioAction === 'save-evaluated-scenario'
                 ? 'Saving scenario...'
                 : savedEvaluationKey === evaluatedInputKey
                   ? 'Scenario saved'
@@ -2660,6 +3703,7 @@ const ScenarioPage = (): React.JSX.Element => {
               1 && (
               <Button
                 appearance="primary"
+                disabled={scenarioControlsBusy}
                 onClick={() =>
                   void evaluateSavedScenarios(
                     records.savedScenarios
@@ -2691,10 +3735,14 @@ const ScenarioPage = (): React.JSX.Element => {
               <div className={styles.actions}>
                 {scenario.status !== 'archived' && (
                   <>
-                    <Button onClick={() => void evaluateSavedScenarios([scenario.id])}>
+                    <Button
+                      disabled={scenarioControlsBusy}
+                      onClick={() => void evaluateSavedScenarios([scenario.id])}
+                    >
                       Evaluate
                     </Button>
                     <Button
+                      disabled={scenarioControlsBusy}
                       onClick={() =>
                         void saveScenarioRecord(
                           scenario,
@@ -2704,16 +3752,32 @@ const ScenarioPage = (): React.JSX.Element => {
                     >
                       {scenario.status === 'accepted' ? 'Return to saved' : 'Accept together'}
                     </Button>
-                    <Button onClick={() => void convertScenario(scenario)}>
+                    <Button
+                      disabled={scenarioControlsBusy}
+                      onClick={() => void convertScenario(scenario)}
+                    >
                       Convert to commitment
                     </Button>
-                    <Button onClick={() => void saveScenarioRecord(scenario, 'archived')}>
+                    <Button
+                      disabled={scenarioControlsBusy}
+                      onClick={() => void saveScenarioRecord(scenario, 'archived')}
+                    >
                       Archive
                     </Button>
                   </>
                 )}
-                <Button onClick={() => void duplicateScenario(scenario)}>Duplicate</Button>
-                <Button onClick={() => void deleteScenario(scenario)}>Delete</Button>
+                <Button
+                  disabled={scenarioControlsBusy}
+                  onClick={() => void duplicateScenario(scenario)}
+                >
+                  Duplicate
+                </Button>
+                <Button
+                  disabled={scenarioControlsBusy}
+                  onClick={() => void deleteScenario(scenario)}
+                >
+                  Delete
+                </Button>
               </div>
             </Card>
           ))}
@@ -2756,6 +3820,15 @@ export const App = (): React.JSX.Element => {
     document.documentElement.dataset.theme = resolvedDark ? 'dark' : 'light';
   }, [resolvedDark]);
 
+  useEffect(() => {
+    document.documentElement.dataset.density = session?.preferences.compactLayout
+      ? 'compact'
+      : 'comfortable';
+    document.documentElement.dataset.reduceMotion = session?.preferences.reduceMotion
+      ? 'true'
+      : 'false';
+  }, [session?.preferences.compactLayout, session?.preferences.reduceMotion]);
+
   const logout = async () => {
     await window.balanceBook.logout();
     setSession(null);
@@ -2765,6 +3838,7 @@ export const App = (): React.JSX.Element => {
 
   return (
     <FluentProvider theme={resolvedDark ? balanceBookDarkTheme : balanceBookLightTheme}>
+      <NativeMenuHoverEdge />
       {loading ? (
         <LoadingSkeleton label="Opening Balance Book" variant="launch" />
       ) : error ? (
@@ -2783,6 +3857,7 @@ export const App = (): React.JSX.Element => {
           <AppShell
             session={session}
             systemDark={systemDark}
+            darkMode={resolvedDark}
             onSession={setSession}
             onLogout={() => void logout()}
           />

@@ -75,6 +75,7 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorNeutralBackground2,
     display: 'grid',
     gap: tokens.spacingVerticalL,
+    '&[hidden]': { display: 'none' },
   },
   grid: {
     display: 'grid',
@@ -121,6 +122,24 @@ const useStyles = makeStyles({
   decisionPanel: {
     borderLeft: `4px solid ${tokens.colorBrandStroke1}`,
     backgroundColor: tokens.colorNeutralBackground2,
+  },
+  stepper: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: tokens.spacingHorizontalS,
+    paddingBottom: tokens.spacingVerticalS,
+  },
+  stickySummary: {
+    position: 'sticky',
+    top: tokens.spacingVerticalM,
+    zIndex: 3,
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+    gap: tokens.spacingHorizontalM,
+    padding: tokens.spacingHorizontalM,
+    borderRadius: tokens.borderRadiusLarge,
+    backgroundColor: tokens.colorNeutralBackground1,
+    boxShadow: tokens.shadow8,
   },
   comparisonScroll: { overflowX: 'auto' },
   comparisonTable: {
@@ -290,7 +309,11 @@ const lifecycleLabel = (lifecycle: ReturnType<typeof refinancePlanLifecycle>): s
   }
 };
 
-export const RefinancePlannerPage = (): React.JSX.Element => {
+export const RefinancePlannerPage = ({
+  experimentalCardInterestForecastEnabled,
+}: {
+  experimentalCardInterestForecastEnabled: boolean;
+}): React.JSX.Element => {
   const styles = useStyles();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -315,6 +338,7 @@ export const RefinancePlannerPage = (): React.JSX.Element => {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [plannerStep, setPlannerStep] = useState<1 | 2 | 3>(1);
   const busyRef = useRef(false);
 
   useEffect(() => {
@@ -655,6 +679,7 @@ export const RefinancePlannerPage = (): React.JSX.Element => {
         cardCycles: records.cardCycles,
         loans: records.loans,
         receivables: records.receivables,
+        includeCardInterest: experimentalCardInterestForecastEnabled,
         policy: records.policy,
         requestedStartDate: forecast.startDate,
         existingPlans: records.committedRefinancePlans,
@@ -815,11 +840,7 @@ export const RefinancePlannerPage = (): React.JSX.Element => {
     <>
       <div className={styles.header}>
         <Title1 as="h1">Refinance planner</Title1>
-        <Text>
-          Compare a real offer, see exactly when old and new payments change, then explicitly put
-          the refinance into your live plan. You can consolidate loans and refinance a replacement
-          loan again later.
-        </Text>
+        <Text>Compare an offer, review payment timing and cost, then add it to your plan.</Text>
       </div>
 
       {(message || visibleError) && (
@@ -853,7 +874,56 @@ export const RefinancePlannerPage = (): React.JSX.Element => {
             onSubmit={submit}
             onChange={() => setResult(null)}
           >
-            <section className={styles.formSection} aria-labelledby="payoff-section-title">
+            <div className={styles.stepper} aria-label="Refinance steps">
+              {(
+                [
+                  [1, 'Loans and timing'],
+                  [2, 'New loan'],
+                  [3, 'Cash and review'],
+                ] as const
+              ).map(([step, label]) => (
+                <Button
+                  key={step}
+                  type="button"
+                  size="small"
+                  appearance={plannerStep === step ? 'primary' : 'subtle'}
+                  onClick={() => setPlannerStep(step)}
+                >
+                  {step}. {label}
+                </Button>
+              ))}
+            </div>
+            <aside className={styles.stickySummary} aria-label="Refinance working summary">
+              <div className={styles.compact}>
+                <Text className={styles.muted}>Replacing</Text>
+                <strong>{selectedNames || 'Choose loans'}</strong>
+              </div>
+              <div className={styles.compact}>
+                <Text className={styles.muted}>Modeled payoff</Text>
+                <strong>{formatMoney(settlement?.totalPayoffCents ?? 0)}</strong>
+              </div>
+              <div className={styles.compact}>
+                <Text className={styles.muted}>New principal</Text>
+                <strong>
+                  {formatMoney(
+                    Number.isFinite(Number(newPrincipal))
+                      ? Math.round(Number(newPrincipal) * 100)
+                      : 0,
+                  )}
+                </strong>
+              </div>
+              <div className={styles.compact}>
+                <Text className={styles.muted}>Closing / first payment</Text>
+                <strong>
+                  {closingDate} / {firstPaymentDate}
+                </strong>
+              </div>
+            </aside>
+            <section
+              hidden={plannerStep !== 1}
+              className={styles.formSection}
+              aria-labelledby="payoff-section-title"
+            >
               <div className={styles.compact}>
                 <Title2 id="payoff-section-title" as="h2">
                   1. Loans and payoff timing
@@ -955,7 +1025,11 @@ export const RefinancePlannerPage = (): React.JSX.Element => {
               )}
             </section>
 
-            <section className={styles.formSection} aria-labelledby="new-loan-section-title">
+            <section
+              hidden={plannerStep !== 2}
+              className={styles.formSection}
+              aria-labelledby="new-loan-section-title"
+            >
               <div className={styles.compact}>
                 <Title2 id="new-loan-section-title" as="h2">
                   2. New loan
@@ -1062,7 +1136,11 @@ export const RefinancePlannerPage = (): React.JSX.Element => {
               />
             </section>
 
-            <section className={styles.formSection} aria-labelledby="cash-section-title">
+            <section
+              hidden={plannerStep !== 3}
+              className={styles.formSection}
+              aria-labelledby="cash-section-title"
+            >
               <div className={styles.compact}>
                 <Title2 id="cash-section-title" as="h2">
                   3. Money moving through your bank accounts
@@ -1153,13 +1231,31 @@ export const RefinancePlannerPage = (): React.JSX.Element => {
               </Field>
             </section>
 
-            <Button
-              appearance="primary"
-              type="submit"
-              disabled={selectedLoans.length === 0 || busy}
-            >
-              Compare full refinance
-            </Button>
+            <div className={styles.actions}>
+              {plannerStep > 1 && (
+                <Button type="button" onClick={() => setPlannerStep(plannerStep === 3 ? 2 : 1)}>
+                  Back
+                </Button>
+              )}
+              {plannerStep < 3 ? (
+                <Button
+                  appearance="primary"
+                  type="button"
+                  disabled={selectedLoans.length === 0}
+                  onClick={() => setPlannerStep(plannerStep === 1 ? 2 : 3)}
+                >
+                  Continue
+                </Button>
+              ) : (
+                <Button
+                  appearance="primary"
+                  type="submit"
+                  disabled={selectedLoans.length === 0 || busy}
+                >
+                  Compare full refinance
+                </Button>
+              )}
+            </div>
           </form>
         </Card>
       )}

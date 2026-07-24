@@ -28,6 +28,7 @@ if ($rootPackage.version -ne $ExpectedVersion -or $desktopPackage.version -ne $E
 if ($rootPackage.name -ne 'balance-book-mvp') {
   throw "The stable Squirrel identity requires package name 'balance-book-mvp'."
 }
+$releaseLabel = 'V' + $ExpectedVersion.Split('.')[0]
 if (-not $ReleaseClass) {
   $ReleaseClass = if ($AllowUnsigned) { 'local-unsigned-candidate' } else { 'public-production' }
 }
@@ -47,22 +48,22 @@ if (-not (Test-Path -LiteralPath $HandoffDirectory -PathType Container)) {
 }
 
 $expectedNames = @(
-  "1 - Install Balance Book V1 ($ExpectedVersion).exe",
+  "1 - Install Balance Book $releaseLabel ($ExpectedVersion).exe",
   '2 - Uninstall Balance Book.exe',
-  '3 - Balance Book V1 Private Backup.balancebook-backup'
+  "3 - Balance Book $releaseLabel Private Backup.balancebook-backup"
 )
 $children = @(Get-ChildItem -LiteralPath $HandoffDirectory -Force)
 $files = @($children | Where-Object { -not $_.PSIsContainer })
 $directories = @($children | Where-Object { $_.PSIsContainer })
 if ($files.Count -ne 3 -or $directories.Count -ne 0) {
-  throw "The V1 handoff must contain exactly three files and no directories; found $($files.Count) file(s) and $($directories.Count) directory(ies)."
+  throw "The handoff must contain exactly three files and no directories; found $($files.Count) file(s) and $($directories.Count) directory(ies)."
 }
 $nameDifferences = @(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $files.Name)
 if ($nameDifferences.Count -ne 0) {
-  throw "The V1 handoff file names do not match the exact release contract: $($files.Name -join ', ')"
+  throw "The handoff file names do not match the exact release contract: $($files.Name -join ', ')"
 }
 if ($files | Where-Object { ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 }) {
-  throw 'The V1 handoff may not contain links or reparse points.'
+  throw 'The handoff may not contain links or reparse points.'
 }
 
 function Get-VersionTriple([string] $Value) {
@@ -196,7 +197,7 @@ if ($SquirrelArtifactDirectory) {
   $package = Get-Item -LiteralPath $packagePath
   $expectedReleaseLine = '{0} {1} {2}' -f (Get-FileHash -Algorithm SHA1 -LiteralPath $packagePath).Hash, $package.Name, $package.Length
   if ($releaseLine -ne $expectedReleaseLine) {
-    throw 'Squirrel RELEASES does not exactly match the full V1 package hash, name, and length.'
+    throw 'Squirrel RELEASES does not exactly match the full package hash, name, and length.'
   }
   if ((Get-FileHash -Algorithm SHA256 -LiteralPath $sourceSetupPath).Hash -ne (Get-FileHash -Algorithm SHA256 -LiteralPath $setupPath).Hash) {
     throw 'The handoff installer is not byte-identical to the validated Squirrel Setup artifact.'
@@ -314,7 +315,7 @@ $metadata = [ordered]@{
   format = 'balance-book-windows-release-metadata'
   metadataVersion = 1
   product = 'Balance Book'
-  releaseLabel = 'V1'
+  releaseLabel = $releaseLabel
   releaseClass = $ReleaseClass
   productionReady = $ReleaseClass -eq 'public-production' -and $gitStatus.Count -eq 0
   version = $ExpectedVersion

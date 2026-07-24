@@ -6,6 +6,7 @@ import { createElement } from 'react';
 import { cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  createImmediateActionLock,
   editorRevealScrollBehavior,
   useEditorReveal,
 } from '../apps/desktop/src/renderer/useEditorReveal';
@@ -20,8 +21,14 @@ const pageSource = (name: string, nextName: string): string => {
   return corePages.slice(start, end);
 };
 
-const Harness = ({ activeKey }: { activeKey: string | null }) => {
-  const editorRef = useEditorReveal<HTMLDivElement>(activeKey);
+const Harness = ({
+  activeKey,
+  revealRequest = 0,
+}: {
+  activeKey: string | null;
+  revealRequest?: number;
+}) => {
+  const editorRef = useEditorReveal<HTMLDivElement>(activeKey, revealRequest);
   return activeKey
     ? createElement('div', { ref: editorRef, tabIndex: -1, 'data-testid': 'editor' }, 'Editor')
     : null;
@@ -69,6 +76,32 @@ describe('long-list editor reveal', () => {
     expect(editorRevealScrollBehavior(false)).toBe('smooth');
   });
 
+  it('re-reveals the same mounted editor when its trigger is activated again', () => {
+    const view = render(createElement(Harness, { activeKey: 'card-1', revealRequest: 1 }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+    view.rerender(createElement(Harness, { activeKey: 'card-1', revealRequest: 2 }));
+
+    expect(document.activeElement).toBe(view.getByTestId('editor'));
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  });
+
+  it('locks an async action synchronously and only releases the matching owner', () => {
+    const lock = createImmediateActionLock();
+
+    expect(lock.acquire('save-card')).toBe(true);
+    expect(lock.active()).toBe('save-card');
+    expect(lock.acquire('save-card')).toBe(false);
+    expect(lock.acquire('save-cycle')).toBe(false);
+
+    lock.release('save-cycle');
+    expect(lock.active()).toBe('save-card');
+    lock.release('save-card');
+
+    expect(lock.active()).toBeNull();
+    expect(lock.acquire('save-cycle')).toBe(true);
+  });
+
   it.each([
     [
       'CardsPage',
@@ -106,10 +139,12 @@ describe('long-list editor reveal', () => {
     'wires %s before its loading return and labels the focus target',
     (pageName, nextPageName, refName, stateName, titleId, loadingReturn) => {
       const source = pageSource(pageName, nextPageName);
-      const hookCall = `const ${refName} = useEditorReveal<HTMLDivElement>(${stateName});`;
+      const hookCall = new RegExp(
+        `const\\s+${refName}\\s*=\\s*useEditorReveal<HTMLDivElement>\\(\\s*${stateName}`,
+      );
 
-      expect(source).toContain(hookCall);
-      expect(source.indexOf(hookCall)).toBeLessThan(source.indexOf(loadingReturn));
+      expect(source).toMatch(hookCall);
+      expect(source.search(hookCall)).toBeLessThan(source.indexOf(loadingReturn));
       expect(source).toContain(`ref={${refName}}`);
       expect(source).toContain('className={`${styles.panel} balance-editor-reveal`}');
       expect(source).toContain('tabIndex={-1}');
@@ -117,6 +152,26 @@ describe('long-list editor reveal', () => {
       expect(source).toContain(`id="${titleId}"`);
     },
   );
+
+  it('wires every card subeditor to reveal, mutual exclusion, and an immediate mutation lock', () => {
+    const source = pageSource('CardsPage', 'LoansPage');
+
+    expect(source).toContain(
+      'const cycleEditorRef = useEditorReveal<HTMLDivElement>(editingCycleId, cycleRevealRequest);',
+    );
+    expect(source).toContain('const scheduledPaymentEditorRef = useEditorReveal<HTMLFormElement>(');
+    expect(source).toContain('const statementPaymentEditorRef = useEditorReveal<HTMLFormElement>(');
+    expect(source).toContain('ref={cycleEditorRef}');
+    expect(source).toContain('ref={scheduledPaymentEditorRef}');
+    expect(source).toContain('ref={statementPaymentEditorRef}');
+    expect(source).toContain("prepareCardEditor('card')");
+    expect(source).toContain("prepareCardEditor('cycle')");
+    expect(source).toContain("prepareCardEditor('scheduled-payment')");
+    expect(source).toContain("prepareCardEditor('statement-payment')");
+    expect(source.match(/if \(!beginCardMutation\(action\)\) return;/g)).toHaveLength(6);
+    expect(source).toContain('disabled={pendingAction !== null}');
+    expect(source).toContain('<GuidedEditorFeedback message={null} error={error} />');
+  });
 
   it('uses a blue, offset focus ring without placing editor regions in normal tab order', () => {
     expect(styles).toMatch(

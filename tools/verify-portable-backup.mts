@@ -40,7 +40,7 @@ const normalized = (value: unknown): unknown => {
 
 const digest = (value: unknown): string =>
   createHash('sha256')
-    .update(JSON.stringify(normalized(value)))
+    .update(JSON.stringify(normalized(value)) ?? 'undefined')
     .digest('hex');
 
 const backupPath = path.resolve(argument('--backup')!);
@@ -58,8 +58,8 @@ if (!password) throw new Error('Backup password is required');
 if (!fs.existsSync(backupPath)) throw new Error('Backup file does not exist');
 
 const portable = await readEncryptedBackup(backupPath, password);
-if (portable.format !== 'balance-book-portable-profile' || portable.version !== 2) {
-  throw new Error('V1 portability verification requires a version 2 portable profile');
+if (portable.format !== 'balance-book-portable-profile' || portable.version !== 3) {
+  throw new Error('V1 portability verification requires a normalized version 3 portable profile');
 }
 
 const temporaryBase = path.resolve(argument('--work-root', false) ?? os.tmpdir());
@@ -92,6 +92,13 @@ try {
   ) {
     throw new Error('Restore changed the destination login identity or password');
   }
+  if (
+    credentialsAfter.themePreference !== portable.sourceProfile.themePreference ||
+    digest(credentialsAfter.preferences) !== digest(portable.sourceProfile.preferences) ||
+    credentialsAfter.onboardingComplete !== portable.sourceProfile.onboardingComplete
+  ) {
+    throw new Error('Restore did not preserve portable theme, preferences, or onboarding state');
+  }
 
   const expectedRecords: ManagedRecords = {
     accounts: portable.accounts,
@@ -105,6 +112,7 @@ try {
     rewardPrograms: portable.rewardPrograms,
     reconciliations: portable.reconciliations,
     savedScenarios: portable.savedScenarios,
+    committedRefinancePlans: portable.committedRefinancePlans,
   };
   const restoredRecords = store.getManagedRecords(destinationProfile.id);
   if (digest(restoredRecords) !== digest(expectedRecords)) {
@@ -114,7 +122,7 @@ try {
     throw new Error('Restored forecast policy does not match the portable profile');
   }
 
-  const restoredPortable = store.exportPortableProfile(destinationProfile.id, '1.1.2');
+  const restoredPortable = store.exportPortableProfile(destinationProfile.id, '1.1.9');
   if (restoredPortable.auditEvents.length !== portable.auditEvents.length + 1) {
     throw new Error('Audit history was not restored with exactly one restore audit event');
   }
@@ -135,6 +143,14 @@ try {
   if (digest(store.getManagedRecords(destinationProfile.id)) !== digest(expectedRecords)) {
     throw new Error('Restored records changed after a full database restart');
   }
+  const restartedCredentials = store.getCredentialsById(destinationProfile.id)!;
+  if (
+    restartedCredentials.themePreference !== portable.sourceProfile.themePreference ||
+    digest(restartedCredentials.preferences) !== digest(portable.sourceProfile.preferences) ||
+    restartedCredentials.onboardingComplete !== portable.sourceProfile.onboardingComplete
+  ) {
+    throw new Error('Restored theme, preferences, or onboarding state changed after restart');
+  }
 
   process.stdout.write(
     `${JSON.stringify({
@@ -147,6 +163,7 @@ try {
       auditEventCount: restoredPortable.auditEvents.length,
       importBatchCount: restoredPortable.importBatches.length,
       importLineageCount: restoredPortable.importLineage.length,
+      experiencePreferencesVerified: true,
       restartLoginVerified: true,
       sqliteIntegrity: 'ok',
     })}\n`,

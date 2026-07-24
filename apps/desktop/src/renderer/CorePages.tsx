@@ -6,6 +6,8 @@ import {
   Field,
   Input,
   Select,
+  Tab,
+  TabList,
   Text,
   Textarea,
   Title1,
@@ -19,12 +21,15 @@ import { Temporal } from '@js-temporal/polyfill';
 import { useNavigate, useSearchParams } from 'react-router';
 import {
   buildForecastBundle,
+  cardsForInterestForecast,
   accrueSimpleInterest,
   activeLoansForDate,
   analyzeLoanContinuationFromPayoff,
   calculateNetWorth,
   contractualMonthlyPaymentDay,
   effectiveAssetsForDate,
+  effectiveCarryingBalanceAprBasisPoints,
+  estimatedMonthlyCardInterestCents,
   enrichCardCyclesWithActivities,
   expandRecurrence,
   firstAnchoredReceivableSettlementDate,
@@ -67,8 +72,11 @@ import {
 } from '@balance-book/domain';
 import type {
   ForecastSnapshotDto,
+  AuditHistoryEntryDto,
   ImportReviewDto,
   ManagedRecordsDto,
+  SessionDto,
+  UpdateStatusDto,
   UpsertManagedEntityRequest,
 } from '../shared/contracts';
 import {
@@ -95,7 +103,14 @@ import {
 import { refinanceLoanCandidates } from './refinance-view-model';
 import { dollarsToCents, formatMoney, formatPlainDate } from './utils';
 import { LoadingSkeleton } from './LoadingSkeleton';
-import { useEditorReveal } from './useEditorReveal';
+import { createImmediateActionLock, useEditorReveal } from './useEditorReveal';
+import {
+  buildActivityTimeline,
+  filterActivityTimeline,
+  type ActivityKind,
+} from './activity-view-model';
+import { financialFeatureLabels } from './feature-visibility';
+import { searchSettings, type SettingsSearchEntry, type SettingsSection } from './settings-search';
 
 const useCoreStyles = makeStyles({
   header: {
@@ -137,6 +152,46 @@ const useCoreStyles = makeStyles({
     minWidth: 0,
     '& > *': { minWidth: 0, maxWidth: '100%' },
     '& button': { whiteSpace: 'normal' },
+  },
+  settingsTabs: {
+    maxWidth: '100%',
+    flexWrap: 'wrap',
+    '@media (max-width: 520px)': {
+      width: '100%',
+      display: 'grid',
+      gridTemplateColumns: 'minmax(0, 1fr)',
+      '& [role="tab"]': {
+        width: '100%',
+        minWidth: 0,
+        justifyContent: 'center',
+      },
+    },
+  },
+  settingsSearch: {
+    maxWidth: '680px',
+    marginBottom: tokens.spacingVerticalL,
+  },
+  settingsSearchResults: {
+    display: 'grid',
+    gap: tokens.spacingVerticalS,
+    marginBottom: tokens.spacingVerticalL,
+    padding: tokens.spacingHorizontalM,
+  },
+  settingsSearchResult: {
+    minWidth: 0,
+    minHeight: '58px',
+    padding: `${tokens.spacingVerticalS} ${tokens.spacingHorizontalM}`,
+    justifyContent: 'flex-start',
+    textAlign: 'left',
+    borderRadius: tokens.borderRadiusLarge,
+    '& .fui-Button__content': {
+      minWidth: 0,
+      width: '100%',
+      display: 'grid',
+      justifyItems: 'start',
+      gap: tokens.spacingVerticalXXS,
+      whiteSpace: 'normal',
+    },
   },
   dataActionArea: {
     minWidth: 0,
@@ -235,6 +290,22 @@ const useCoreStyles = makeStyles({
     display: 'grid',
     gap: tokens.spacingVerticalS,
     marginBottom: '18px',
+  },
+  preferenceGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(min(260px, 100%), 1fr))',
+    gap: tokens.spacingHorizontalL,
+  },
+  preferenceGroup: {
+    display: 'grid',
+    alignContent: 'start',
+    gap: tokens.spacingVerticalM,
+    minWidth: 0,
+    padding: tokens.spacingHorizontalL,
+    border: `${tokens.strokeWidthThin} solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusXLarge,
+    backgroundColor: 'color-mix(in srgb, var(--balance-glass-highlight) 34%, transparent)',
+    boxShadow: 'inset 0 1px 0 var(--balance-glass-highlight)',
   },
   eyebrow: {
     color: tokens.colorNeutralForeground3,
@@ -1107,12 +1178,12 @@ export const scheduledCardPaymentRequest = (input: {
       kind: 'card-payment',
       direction: 'outflow',
       amountCents: input.amountCents,
-      certainty: 'confirmed',
-      status: 'scheduled',
+      certainty: input.existing?.certainty ?? 'confirmed',
+      status: input.existing?.status ?? 'scheduled',
       label: input.label,
       sourceRecordId: input.sourceCycleId,
-      hypothetical: false,
-      accepted: false,
+      hypothetical: input.existing?.hypothetical ?? false,
+      accepted: input.existing?.accepted ?? false,
       paymentMethod: 'cash-account',
       cardId: input.cardId,
     },
@@ -1280,6 +1351,8 @@ export const makeRequest = (type: EditorType, form: FormData): UpsertManagedEnti
           estimatePolicy: get(form, 'estimatePolicy') as 'actual-reset' | 'baseline-guardrail',
           paymentPolicy: get(form, 'paymentPolicy') as
             'full-statement' | 'minimum' | 'fixed' | 'manual',
+          interestForecastEnabled: false,
+          promotionalCarryingBalance: false,
           fixedPaymentCents: optionalCents(form, 'fixedPayment'),
           minimumPaymentCents: optionalCents(form, 'minimumPayment'),
           aprBasisPoints: get(form, 'apr')
@@ -1540,7 +1613,9 @@ export const makeForecastEventEditRequest = (
           ? get(form, 'editEventLoanId')
           : selectedEventKind === 'card-payment'
             ? get(form, 'editEventCardCycleId') || undefined
-            : event.sourceRecordId,
+            : event.kind === 'loan-payment' || event.kind === 'card-payment'
+              ? undefined
+              : event.sourceRecordId,
       incomeType: event.incomeType,
       parentIncomeEventId: event.parentIncomeEventId,
       notes:
@@ -1609,12 +1684,14 @@ const GuidedEditorFeedback = ({ message, error }: GuidedEditorFeedbackProps): Re
 
 type CashAccountGuidedEditorProps = GuidedEditorFeedbackProps & {
   account: CashAccount;
+  busy: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
 };
 
 const CashAccountGuidedEditor = ({
   account,
+  busy,
   onSubmit,
   onCancel,
   message,
@@ -1622,12 +1699,17 @@ const CashAccountGuidedEditor = ({
 }: CashAccountGuidedEditorProps): React.JSX.Element => {
   const styles = useCoreStyles();
   return (
-    <form aria-label="Cash account editor" className={styles.formSection} onSubmit={onSubmit}>
+    <form
+      aria-label="Cash account editor"
+      aria-busy={busy}
+      className={styles.formSection}
+      onSubmit={onSubmit}
+    >
       <div className={styles.sectionIntro}>
         <Title2 as="h2">Edit cash account</Title2>
         <Text>
-          The balance and date form the account's forecast starting point. Floors remain account
-          guardrails; they do not change the balance.
+          The balance and date are the starting point for this account&apos;s forecast. The
+          protected minimum and preferred buffer guide warnings; they do not change the balance.
         </Text>
       </div>
       <GuidedEditorFeedback message={message} error={error} />
@@ -1669,14 +1751,14 @@ const CashAccountGuidedEditor = ({
             defaultValue={centsInput(account.availableBalanceCents)}
           />
         </Field>
-        <Field label="Hard floor (optional)">
+        <Field label="Protected minimum (optional)">
           <Input
             name="editAccountHardFloor"
             inputMode="decimal"
             defaultValue={centsInput(account.hardFloorCents)}
           />
         </Field>
-        <Field label="Preferred floor (optional)">
+        <Field label="Preferred buffer (optional)">
           <Input
             name="editAccountPreferredFloor"
             inputMode="decimal"
@@ -1711,10 +1793,10 @@ const CashAccountGuidedEditor = ({
         />
       </div>
       <div className={styles.actions}>
-        <Button appearance="primary" type="submit">
-          Save account changes
+        <Button appearance="primary" type="submit" disabled={busy}>
+          {busy ? 'Saving account…' : 'Save account changes'}
         </Button>
-        <Button type="button" onClick={onCancel}>
+        <Button type="button" disabled={busy} onClick={onCancel}>
           Close editor
         </Button>
       </div>
@@ -1728,6 +1810,7 @@ type ForecastEventGuidedEditorProps = GuidedEditorFeedbackProps & {
   cards: ManagedRecordsDto['cards'];
   cardCycles: ManagedRecordsDto['cardCycles'];
   loans: ManagedRecordsDto['loans'];
+  busy: boolean;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
 };
@@ -1738,6 +1821,7 @@ const ForecastEventGuidedEditor = ({
   cards,
   cardCycles,
   loans,
+  busy,
   onSubmit,
   onCancel,
   message,
@@ -1788,7 +1872,12 @@ const ForecastEventGuidedEditor = ({
   const selectedLoan = loans.find((loan) => loan.id === selectedLoanId);
 
   return (
-    <form aria-label="Cash event editor" className={styles.formSection} onSubmit={onSubmit}>
+    <form
+      aria-label="Cash event editor"
+      aria-busy={busy}
+      className={styles.formSection}
+      onSubmit={onSubmit}
+    >
       <div className={styles.sectionIntro}>
         <Title2 as="h2">Edit cash event</Title2>
         <Text>
@@ -2228,10 +2317,10 @@ const ForecastEventGuidedEditor = ({
         )}
       </div>
       <div className={styles.actions}>
-        <Button appearance="primary" type="submit">
-          Save event changes
+        <Button appearance="primary" type="submit" disabled={busy}>
+          {busy ? 'Saving event…' : 'Save event changes'}
         </Button>
-        <Button type="button" onClick={onCancel}>
+        <Button type="button" disabled={busy} onClick={onCancel}>
           Close editor
         </Button>
       </div>
@@ -2243,8 +2332,9 @@ export const RecordsPage = (): React.JSX.Element => {
   const styles = useCoreStyles();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const requestedRecordType = searchParams.get('type');
+  const requestedRecordType = searchParams.get('type') ?? searchParams.get('entityType');
   const requestedEventKind = searchParams.get('kind');
+  const requestedEntityId = searchParams.get('entityId');
   const [records, setRecords] = useState<ManagedRecordsDto | null>(null);
   const [type, setType] = useState<EditorType>(() =>
     isEditorType(requestedRecordType) ? requestedRecordType : 'forecast-event',
@@ -2267,15 +2357,34 @@ export const RecordsPage = (): React.JSX.Element => {
     isRecordLibraryType(requestedRecordType) ? requestedRecordType : 'all',
   );
   const [addRecordOpen, setAddRecordOpen] = useState(searchParams.get('mode') === 'add');
-  const [recordSearch, setRecordSearch] = useState('');
+  const [recordSearch, setRecordSearch] = useState(requestedEntityId ?? '');
+  const [activitySearch, setActivitySearch] = useState('');
+  const [activityEntityId, setActivityEntityId] = useState('');
+  const [activityKind, setActivityKind] = useState<ActivityKind | 'all'>('all');
+  const [activityStatus, setActivityStatus] = useState('');
+  const [activityFrom, setActivityFrom] = useState('');
+  const [activityThrough, setActivityThrough] = useState('');
+  const [showAllActivity, setShowAllActivity] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<UpsertManagedEntityRequest | null>(null);
   const [guidedEditing, setGuidedEditing] = useState<GuidedEditorTarget | null>(null);
   const [editingJson, setEditingJson] = useState('');
+  const [editorRevealRequest, setEditorRevealRequest] = useState(0);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [mutationLock] = useState(createImmediateActionLock);
   const [importReview, setImportReview] = useState<ImportReviewDto | null>(null);
   const [importReviewLoaded, setImportReviewLoaded] = useState(false);
   const [importReviewError, setImportReviewError] = useState<string | null>(null);
+  const [auditHistory, setAuditHistory] = useState<AuditHistoryEntryDto[]>([]);
+  const [auditHistoryError, setAuditHistoryError] = useState<string | null>(null);
+  const deepLinkAppliedRef = useRef<string | null>(null);
+  const activeEditorKey = guidedEditing
+    ? `guided:${guidedEditing.entityType}:${guidedEditing.entityId}`
+    : editing
+      ? `advanced:${editing.entityType}:${String(editing.payload.id ?? 'record')}`
+      : null;
+  const activeEditorRef = useEditorReveal<HTMLDivElement>(activeEditorKey, editorRevealRequest);
   useEffect(() => {
     void window.balanceBook
       .getImportReview()
@@ -2296,15 +2405,89 @@ export const RecordsPage = (): React.JSX.Element => {
       .catch((caught: Error) => setError(caught.message));
   }, []);
   useEffect(() => {
+    void window.balanceBook
+      .listAuditHistory()
+      .then((result) => {
+        if (result.ok) setAuditHistory(result.value);
+        else setAuditHistoryError(result.error);
+      })
+      .catch((caught: unknown) =>
+        setAuditHistoryError(
+          caught instanceof Error ? caught.message : 'Audit history could not be loaded.',
+        ),
+      );
+  }, []);
+  useEffect(() => {
     if (searchParams.get('sourceReview') !== '1' || !importReview) return;
     document.getElementById('workbook-import-review')?.scrollIntoView({ block: 'start' });
   }, [importReview, searchParams]);
+  useEffect(() => {
+    if (!records || !requestedEntityId || !isEditorType(requestedRecordType)) return;
+    const key = `${requestedRecordType}:${requestedEntityId}`;
+    if (deepLinkAppliedRef.current === key) return;
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      deepLinkAppliedRef.current = key;
+      setRecordSearch(requestedEntityId);
+      setRecordFilter(isRecordLibraryType(requestedRecordType) ? requestedRecordType : 'all');
+      if (requestedRecordType === 'cash-account') {
+        if (records.accounts.some((item) => item.id === requestedEntityId)) {
+          setGuidedEditing({ entityType: 'cash-account', entityId: requestedEntityId });
+          setEditorRevealRequest((value) => value + 1);
+        }
+        return;
+      }
+      if (requestedRecordType === 'forecast-event') {
+        if (records.events.some((item) => item.id === requestedEntityId)) {
+          setGuidedEditing({ entityType: 'forecast-event', entityId: requestedEntityId });
+          setEditorRevealRequest((value) => value + 1);
+        }
+        return;
+      }
+      const candidates: UpsertManagedEntityRequest[] = [
+        ...records.cards.map((item) => makeEditRequest('credit-card', item)),
+        ...records.cardCycles.map((item) => makeEditRequest('card-cycle', item)),
+        ...records.loans.map((item) => makeEditRequest('loan', item)),
+        ...records.receivables.map((item) => makeEditRequest('receivable', item)),
+        ...records.assets.map((item) => makeEditRequest('asset', item)),
+        ...records.rewardPrograms.map((item) => makeEditRequest('reward-program', item)),
+        ...records.reconciliations.map((item) => makeEditRequest('reconciliation', item)),
+        ...records.savedScenarios.map((item) => makeEditRequest('saved-scenario', item)),
+      ];
+      const request = candidates.find(
+        (candidate) =>
+          candidate.entityType === requestedRecordType &&
+          candidate.payload.id === requestedEntityId,
+      );
+      if (request) {
+        setEditing(request);
+        setEditingJson(JSON.stringify(request.payload, null, 2));
+        setEditorRevealRequest((value) => value + 1);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [records, requestedEntityId, requestedRecordType]);
+
+  const beginRecordMutation = (action: string): boolean => {
+    if (!mutationLock.acquire(action)) return false;
+    setPendingAction(action);
+    setError(null);
+    setMessage(null);
+    return true;
+  };
+  const finishRecordMutation = (action: string): void => {
+    mutationLock.release(action);
+    setPendingAction(null);
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const action = 'create-record';
+    if (!beginRecordMutation(action)) return;
     const formElement = event.currentTarget;
-    setError(null);
-    setMessage(null);
     try {
       const request = makeRequest(type, new FormData(formElement));
       const result = await window.balanceBook.upsertRecord(request);
@@ -2321,46 +2504,67 @@ export const RecordsPage = (): React.JSX.Element => {
       setMessage('Record saved locally and added to the audit history.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Record could not be saved');
+    } finally {
+      finishRecordMutation(action);
     }
   };
 
   const remove = async (entityType: UpsertManagedEntityRequest['entityType'], entityId: string) => {
+    const action = `delete:${entityType}:${entityId}`;
+    if (!beginRecordMutation(action)) return;
     const pairedTransfer =
       entityType === 'forecast-event'
         ? records?.events.find((event) => event.id === entityId)?.transferId
         : undefined;
-    if (
-      !window.confirm(
-        pairedTransfer
-          ? 'Delete this entire internal transfer? Its initiation and arrival legs will be removed together.'
-          : 'Delete this record? To protect your history, records with linked financial details must be cleared first.',
+    try {
+      if (
+        !window.confirm(
+          pairedTransfer
+            ? 'Delete this entire internal transfer? Its initiation and arrival legs will be removed together.'
+            : 'Delete this record? To protect your history, records with linked financial details must be cleared first.',
+        )
       )
-    )
-      return;
-    const result = await window.balanceBook.deleteRecord({ entityType, entityId, confirmed: true });
-    if (result.ok) {
+        return;
+      const result = await window.balanceBook.deleteRecord({
+        entityType,
+        entityId,
+        confirmed: true,
+      });
+      if (!result.ok) throw new Error(result.error);
       setRecords(result.value);
-      if (pairedTransfer) setMessage('Transfer initiation and arrival deleted together.');
+      setMessage(
+        pairedTransfer
+          ? 'Transfer initiation and arrival deleted together.'
+          : 'Record deleted locally and added to the audit history.',
+      );
       if (guidedEditing?.entityType === entityType && guidedEditing.entityId === entityId) {
         setGuidedEditing(null);
       }
-    } else setError(result.error);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Record could not be deleted');
+    } finally {
+      finishRecordMutation(action);
+    }
   };
 
   const startEditing = (request: UpsertManagedEntityRequest) => {
+    if (mutationLock.active() !== null) return;
     setError(null);
     setMessage(null);
     setGuidedEditing(null);
     setEditing(request);
     setEditingJson(JSON.stringify(request.payload, null, 2));
+    setEditorRevealRequest((requestNumber) => requestNumber + 1);
   };
 
   const startGuidedEditing = (entityType: GuidedEditorTarget['entityType'], entityId: string) => {
+    if (mutationLock.active() !== null) return;
     setError(null);
     setMessage(null);
     setEditing(null);
     setEditingJson('');
     setGuidedEditing({ entityType, entityId });
+    setEditorRevealRequest((requestNumber) => requestNumber + 1);
   };
 
   const closeGuidedEditing = () => {
@@ -2372,8 +2576,8 @@ export const RecordsPage = (): React.JSX.Element => {
   const saveGuidedEdit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!guidedEditing || !records) return;
-    setError(null);
-    setMessage(null);
+    const action = 'save-guided-record';
+    if (!beginRecordMutation(action)) return;
     try {
       let request: CashAccountRequest | ForecastEventRequest;
       if (guidedEditing.entityType === 'cash-account') {
@@ -2390,19 +2594,21 @@ export const RecordsPage = (): React.JSX.Element => {
       setRecords(result.value);
       setMessage(
         guidedEditing.entityType === 'cash-account'
-          ? 'Cash account updated; the forecast now uses the new balance and guardrails.'
+          ? 'Cash account updated; the forecast now uses the new balance and safety settings.'
           : 'Cash event updated; timing, recurrence, and forecast treatment are now in effect.',
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Record could not be updated');
+    } finally {
+      finishRecordMutation(action);
     }
   };
 
   const saveEdit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!editing) return;
-    setError(null);
-    setMessage(null);
+    const action = 'save-advanced-record';
+    if (!beginRecordMutation(action)) return;
     try {
       const payload: unknown = JSON.parse(editingJson);
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -2436,6 +2642,8 @@ export const RecordsPage = (): React.JSX.Element => {
       setMessage('Record changes saved locally and added to the audit history.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Record could not be updated');
+    } finally {
+      finishRecordMutation(action);
     }
   };
 
@@ -2628,7 +2836,7 @@ export const RecordsPage = (): React.JSX.Element => {
       type: 'reconciliation' as const,
       id: item.id,
       title: `Balance check on ${item.date}`,
-      detail: `${formatMoney(item.actualBalanceCents)} actual · ${formatMoney(item.varianceCents)} variance · ${item.resolution}`,
+      detail: `${formatMoney(item.actualBalanceCents)} actual · ${formatMoney(item.varianceCents)} difference · ${item.resolution}`,
       request: makeEditRequest('reconciliation', item),
     })),
     ...records.savedScenarios.map((item) => ({
@@ -2644,18 +2852,174 @@ export const RecordsPage = (): React.JSX.Element => {
     (row) =>
       (recordFilter === 'all' || row.type === recordFilter) &&
       (normalizedSearch === '' ||
-        `${row.title} ${row.detail} ${row.type}`.toLocaleLowerCase().includes(normalizedSearch)),
+        `${row.title} ${row.detail} ${row.type} ${row.id}`
+          .toLocaleLowerCase()
+          .includes(normalizedSearch)),
   );
+  const activityTimeline = buildActivityTimeline(records, importReview, auditHistory);
+  const visibleActivity = filterActivityTimeline(activityTimeline, {
+    query: activitySearch,
+    accountOrCardId: activityEntityId || undefined,
+    kind: activityKind,
+    status: activityStatus || undefined,
+    from: activityFrom || undefined,
+    through: activityThrough || undefined,
+  });
+  const shownActivity = showAllActivity ? visibleActivity : visibleActivity.slice(0, 12);
+  const activityStatuses = [...new Set(activityTimeline.map((row) => row.status))].sort();
 
   return (
     <>
       <div className={styles.header}>
-        <Title1 as="h1">Financial records</Title1>
-        <Text>
-          This is the complete, advanced record library behind the guided pages. Use it for setup,
-          unusual fields, and audit work; use the topic pages for faster day-to-day updates.
-        </Text>
+        <Title1 as="h1">Activity &amp; records</Title1>
+        <Text>Trace what changed, then open the canonical record when you need to edit it.</Text>
       </div>
+      <Card className={styles.panel} aria-labelledby="activity-timeline-title">
+        <div className={styles.recordHeader}>
+          <div className={styles.sectionIntro}>
+            <Text className={styles.eyebrow}>Unified timeline</Text>
+            <Title2 id="activity-timeline-title" as="h2">
+              Financial activity ({visibleActivity.length})
+            </Title2>
+            <Text className={styles.muted}>
+              Reported balances, cash and card activity, statements, payments, receivables, loans,
+              imports, reconciliations, and reversals—one view of existing records, not a second
+              ledger.
+            </Text>
+          </div>
+        </div>
+        {auditHistoryError && (
+          <div role="alert" className={styles.error}>
+            {auditHistoryError}
+          </div>
+        )}
+        <div className={styles.grid} aria-label="Activity filters">
+          <Field label="Search activity">
+            <Input
+              type="search"
+              value={activitySearch}
+              placeholder="Description, source, or ID"
+              onChange={(_, data) => setActivitySearch(data.value)}
+            />
+          </Field>
+          <Field label="Account or card">
+            <Select
+              value={activityEntityId}
+              onChange={(_, data) => setActivityEntityId(data.value)}
+            >
+              <option value="">Every account and card</option>
+              {records.accounts.map((account) => (
+                <option key={`activity-account:${account.id}`} value={account.id}>
+                  {account.name}
+                </option>
+              ))}
+              {records.cards.map((card) => (
+                <option key={`activity-card:${card.id}`} value={card.id}>
+                  {card.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Type">
+            <Select
+              value={activityKind}
+              onChange={(_, data) => setActivityKind(data.value as ActivityKind | 'all')}
+            >
+              <option value="all">Every type</option>
+              <option value="balance">Balance snapshots</option>
+              <option value="cash">Cash transactions</option>
+              <option value="card">Card purchases and credits</option>
+              <option value="statement">Statements</option>
+              <option value="payment">Payments</option>
+              <option value="income">Income</option>
+              <option value="bill">Bills</option>
+              <option value="receivable">Money owed</option>
+              <option value="loan">Loans</option>
+              <option value="asset">Assets</option>
+              <option value="reconciliation">Reconciliations</option>
+              <option value="import">Imports</option>
+              <option value="reversal">Reversals</option>
+              <option value="audit">Audit-only changes</option>
+            </Select>
+          </Field>
+          <Field label="Status">
+            <Select value={activityStatus} onChange={(_, data) => setActivityStatus(data.value)}>
+              <option value="">Every status</option>
+              {activityStatuses.map((status) => (
+                <option key={status} value={status}>
+                  {status.replaceAll('-', ' ')}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="From">
+            <Input
+              type="date"
+              value={activityFrom}
+              onChange={(_, data) => setActivityFrom(data.value)}
+            />
+          </Field>
+          <Field label="Through">
+            <Input
+              type="date"
+              value={activityThrough}
+              onChange={(_, data) => setActivityThrough(data.value)}
+            />
+          </Field>
+        </div>
+        <div className={styles.rows} aria-live="polite">
+          {shownActivity.length === 0 && <Text>No activity matches these filters.</Text>}
+          {shownActivity.map((activity) => (
+            <div className={styles.row} key={activity.id}>
+              <div className={styles.compact}>
+                <strong>{activity.title}</strong>
+                <Text size={200} className={styles.muted}>
+                  {formatPlainDate(activity.date)} · {activity.kind.replaceAll('-', ' ')} ·{' '}
+                  {activity.status.replaceAll('-', ' ')}
+                  {activity.detail ? ` · ${activity.detail}` : ''}
+                </Text>
+              </div>
+              <div className={styles.actions}>
+                {activity.amountCents !== undefined && (
+                  <strong>
+                    {activity.direction === 'inflow'
+                      ? '+'
+                      : activity.direction === 'outflow'
+                        ? '−'
+                        : ''}
+                    {formatMoney(activity.amountCents)}
+                  </strong>
+                )}
+                <Button
+                  size="small"
+                  appearance="subtle"
+                  onClick={() => {
+                    setRecordSearch(activity.entityId);
+                    setRecordFilter(
+                      isRecordLibraryType(activity.entityType) ? activity.entityType : 'all',
+                    );
+                    document.getElementById('canonical-record-library')?.scrollIntoView({
+                      block: 'start',
+                    });
+                  }}
+                >
+                  Trace source
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+        {visibleActivity.length > 12 && (
+          <Button appearance="subtle" onClick={() => setShowAllActivity((value) => !value)}>
+            {showAllActivity ? 'Show recent only' : `Show all ${visibleActivity.length}`}
+          </Button>
+        )}
+      </Card>
+      {!editing && !guidedEditing && !addRecordOpen && (message || error) && (
+        <Card className={styles.panel}>
+          <GuidedEditorFeedback message={message} error={error} />
+        </Card>
+      )}
       <Card className={styles.panel}>
         <div className={styles.sectionIntro}>
           <Title2 as="h2">Choose the simplest place to make a change</Title2>
@@ -2689,7 +3053,11 @@ export const RecordsPage = (): React.JSX.Element => {
               validated, profile-owned, and written to audit history.
             </Text>
           </div>
-          <form className={styles.form} onSubmit={(event) => void submit(event)}>
+          <form
+            className={styles.form}
+            aria-busy={pendingAction === 'create-record'}
+            onSubmit={(event) => void submit(event)}
+          >
             {!guidedEditing && error && (
               <div role="alert" className={styles.error}>
                 {error}
@@ -3112,7 +3480,10 @@ export const RecordsPage = (): React.JSX.Element => {
                     <Field label="Minimum payment (optional)">
                       <Input name="minimumPayment" inputMode="decimal" />
                     </Field>
-                    <Field label="Promotion end date (optional)">
+                    <Field
+                      label="Promotion end date (reference only)"
+                      hint="Stored as a reminder. It does not invent a later APR or change the cash forecast."
+                    >
                       <Input name="promotionEndDate" type="date" />
                     </Field>
                     <Field
@@ -3261,20 +3632,32 @@ export const RecordsPage = (): React.JSX.Element => {
                 </Field>
               </div>
             )}
-            <Button appearance="primary" type="submit">
-              Save record
+            <Button appearance="primary" type="submit" disabled={pendingAction !== null}>
+              {pendingAction === 'create-record' ? 'Saving record…' : 'Save record'}
             </Button>
           </form>
         </div>
       </details>
       {editing && (
-        <Card className={styles.panel}>
-          <form className={styles.form} onSubmit={(event) => void saveEdit(event)}>
-            <Title2 as="h2">Advanced record editor</Title2>
+        <Card
+          ref={activeEditorRef}
+          className={`${styles.panel} balance-editor-reveal`}
+          tabIndex={-1}
+          aria-labelledby="advanced-record-editor-title"
+        >
+          <form
+            className={styles.form}
+            aria-busy={pendingAction === 'save-advanced-record'}
+            onSubmit={(event) => void saveEdit(event)}
+          >
+            <Title2 id="advanced-record-editor-title" as="h2">
+              Advanced record editor
+            </Title2>
             <Text>
               Use the guided topic page when possible. This fallback exposes every stored field;
               validation and profile-ownership checks still apply.
             </Text>
+            <GuidedEditorFeedback message={message} error={error} />
             <details>
               <summary>Show advanced structured fields</summary>
               <div className={styles.form}>
@@ -3287,10 +3670,17 @@ export const RecordsPage = (): React.JSX.Element => {
                   />
                 </Field>
                 <div className={styles.actions}>
-                  <Button appearance="primary" type="submit">
-                    Save changes
+                  <Button appearance="primary" type="submit" disabled={pendingAction !== null}>
+                    {pendingAction === 'save-advanced-record' ? 'Saving changes…' : 'Save changes'}
                   </Button>
-                  <Button type="button" onClick={() => setEditing(null)}>
+                  <Button
+                    type="button"
+                    disabled={pendingAction !== null}
+                    onClick={() => {
+                      setEditing(null);
+                      setError(null);
+                    }}
+                  >
                     Cancel
                   </Button>
                 </div>
@@ -3299,7 +3689,7 @@ export const RecordsPage = (): React.JSX.Element => {
           </form>
         </Card>
       )}
-      <Card className={styles.panel}>
+      <Card className={styles.panel} id="canonical-record-library">
         <div className={styles.recordHeader}>
           <div>
             <Title2 as="h2">All financial entries ({rows.length})</Title2>
@@ -3370,6 +3760,7 @@ export const RecordsPage = (): React.JSX.Element => {
                       <Button
                         appearance="primary"
                         aria-label={`Edit ${row.title}`}
+                        disabled={pendingAction !== null}
                         onClick={() =>
                           startGuidedEditing(row.type as GuidedEditorTarget['entityType'], row.id)
                         }
@@ -3382,6 +3773,7 @@ export const RecordsPage = (): React.JSX.Element => {
                     ) : (
                       <Button
                         aria-label={`Advanced edit ${row.title}`}
+                        disabled={pendingAction !== null}
                         onClick={() => startEditing(row.request)}
                       >
                         {supportsGuidedEdit ? 'Advanced' : 'Advanced edit'}
@@ -3390,6 +3782,7 @@ export const RecordsPage = (): React.JSX.Element => {
                     {!groupedIncome && (
                       <Button
                         aria-label={`Delete ${row.title}`}
+                        disabled={pendingAction !== null}
                         onClick={() => void remove(row.type, row.id)}
                       >
                         Delete
@@ -3398,27 +3791,43 @@ export const RecordsPage = (): React.JSX.Element => {
                   </div>
                 </div>
                 {isGuidedEditing && account && (
-                  <CashAccountGuidedEditor
-                    account={account}
-                    message={message}
-                    error={error}
-                    onSubmit={(event) => void saveGuidedEdit(event)}
-                    onCancel={closeGuidedEditing}
-                  />
+                  <div
+                    ref={activeEditorRef}
+                    className="balance-editor-reveal"
+                    tabIndex={-1}
+                    aria-label={`${row.title} active editor`}
+                  >
+                    <CashAccountGuidedEditor
+                      account={account}
+                      busy={pendingAction === 'save-guided-record'}
+                      message={message}
+                      error={error}
+                      onSubmit={(event) => void saveGuidedEdit(event)}
+                      onCancel={closeGuidedEditing}
+                    />
+                  </div>
                 )}
                 {isGuidedEditing && forecastEvent && (
-                  <ForecastEventGuidedEditor
-                    key={forecastEvent.id}
-                    event={forecastEvent}
-                    accounts={records.accounts}
-                    cards={records.cards}
-                    cardCycles={records.cardCycles}
-                    loans={records.loans}
-                    message={message}
-                    error={error}
-                    onSubmit={(event) => void saveGuidedEdit(event)}
-                    onCancel={closeGuidedEditing}
-                  />
+                  <div
+                    ref={activeEditorRef}
+                    className="balance-editor-reveal"
+                    tabIndex={-1}
+                    aria-label={`${row.title} active editor`}
+                  >
+                    <ForecastEventGuidedEditor
+                      key={forecastEvent.id}
+                      event={forecastEvent}
+                      accounts={records.accounts}
+                      cards={records.cards}
+                      cardCycles={records.cardCycles}
+                      loans={records.loans}
+                      busy={pendingAction === 'save-guided-record'}
+                      message={message}
+                      error={error}
+                      onSubmit={(event) => void saveGuidedEdit(event)}
+                      onCancel={closeGuidedEditing}
+                    />
+                  </div>
                 )}
               </div>
             );
@@ -3551,21 +3960,27 @@ type IncomeForecastImpact = {
 const rollingForecastContext = (
   records: ManagedRecordsDto,
   requestedStartDate: string,
+  experimentalCardInterestForecastEnabled: boolean,
 ): {
   accounts: ManagedRecordsDto['accounts'];
   startDate: string;
   endDate: string;
 } | null => {
   if (!records.policy || records.accounts.length === 0) return null;
+  const forecastCards = cardsForInterestForecast(
+    records.cards,
+    experimentalCardInterestForecastEnabled,
+  );
   const { accounts, startDate, endDate } = prepareRollingForecastContext({
     accounts: records.accounts,
     events: records.events,
-    cards: records.cards,
+    cards: forecastCards,
     cardCycles: records.cardCycles,
     loans: records.loans,
     committedRefinancePlans: records.committedRefinancePlans,
     receivables: records.receivables,
     policy: records.policy,
+    includeCardInterest: experimentalCardInterestForecastEnabled,
     requestedStartDate,
   });
   return { accounts, startDate, endDate };
@@ -3574,18 +3989,24 @@ const rollingForecastContext = (
 const forecastSnapshotForIncome = (
   records: ManagedRecordsDto,
   requestedStartDate: string,
+  experimentalCardInterestForecastEnabled: boolean,
 ): IncomeForecastSnapshot | null => {
-  const context = rollingForecastContext(records, requestedStartDate);
+  const context = rollingForecastContext(
+    records,
+    requestedStartDate,
+    experimentalCardInterestForecastEnabled,
+  );
   if (!context || !records.policy) return null;
   const { accounts, startDate, endDate } = context;
   const events = materializeCommittedRefinanceEvents({
     accounts,
     events: records.events,
-    cards: records.cards,
+    cards: cardsForInterestForecast(records.cards, experimentalCardInterestForecastEnabled),
     cardCycles: records.cardCycles,
     loans: records.loans,
     plans: records.committedRefinancePlans,
     receivables: records.receivables,
+    includeCardInterest: experimentalCardInterestForecastEnabled,
     startDate,
     endDate,
   });
@@ -3750,7 +4171,11 @@ const recurringBaseIncome = (event: ForecastEvent): boolean =>
   event.status !== 'cancelled' &&
   event.status !== 'skipped';
 
-export const IncomePage = (): React.JSX.Element => {
+export const IncomePage = ({
+  experimentalCardInterestForecastEnabled,
+}: {
+  experimentalCardInterestForecastEnabled: boolean;
+}): React.JSX.Element => {
   const styles = useCoreStyles();
   const navigate = useNavigate();
   const [records, setRecords] = useState<ManagedRecordsDto | null>(null);
@@ -3783,6 +4208,23 @@ export const IncomePage = (): React.JSX.Element => {
   const [impact, setImpact] = useState<IncomeForecastImpact | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorContext, setErrorContext] = useState<'plan' | 'raise' | 'event' | null>(null);
+  const [incomePlanRevealRequest, setIncomePlanRevealRequest] = useState(0);
+  const [incomeEventRevealRequest, setIncomeEventRevealRequest] = useState(0);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [mutationLock] = useState(createImmediateActionLock);
+  const incomePlanEditorRef = useEditorReveal<HTMLDivElement>(
+    editingIncomePlanId
+      ? `income-plan:${editingIncomePlanId}`
+      : targetIncomeStreamId
+        ? `income-phase:${targetIncomeStreamId}`
+        : null,
+    incomePlanRevealRequest,
+  );
+  const incomeEventEditorRef = useEditorReveal<HTMLDivElement>(
+    editingIncomeId ? `income-event:${editingIncomeId}` : null,
+    incomeEventRevealRequest,
+  );
 
   useEffect(() => {
     void Promise.all([loadRecords(), window.balanceBook.getForecast()])
@@ -3845,6 +4287,27 @@ export const IncomePage = (): React.JSX.Element => {
       })
       .catch((caught: Error) => setError(caught.message));
   }, []);
+
+  const beginIncomeMutation = (action: string): boolean => {
+    if (!mutationLock.acquire(action)) return false;
+    setPendingAction(action);
+    setMessage(null);
+    setError(null);
+    setErrorContext(
+      action === 'save-income'
+        ? 'plan'
+        : action === 'save-raise'
+          ? 'raise'
+          : action.startsWith('save-income-event:')
+            ? 'event'
+            : null,
+    );
+    return true;
+  };
+  const finishIncomeMutation = (action: string): void => {
+    mutationLock.release(action);
+    setPendingAction(null);
+  };
 
   if (!records)
     return error ? (
@@ -4049,8 +4512,16 @@ export const IncomePage = (): React.JSX.Element => {
     beforeRecords: ManagedRecordsDto,
     afterRecords: ManagedRecordsDto,
   ) => {
-    const before = forecastSnapshotForIncome(beforeRecords, forecastStartDate);
-    const after = forecastSnapshotForIncome(afterRecords, forecastStartDate);
+    const before = forecastSnapshotForIncome(
+      beforeRecords,
+      forecastStartDate,
+      experimentalCardInterestForecastEnabled,
+    );
+    const after = forecastSnapshotForIncome(
+      afterRecords,
+      forecastStartDate,
+      experimentalCardInterestForecastEnabled,
+    );
     setImpact(before && after ? { label, before, after } : null);
   };
 
@@ -4121,6 +4592,7 @@ export const IncomePage = (): React.JSX.Element => {
     const usedAccounts = new Set(incomeAllocations.map((allocation) => allocation.accountId));
     const nextAccount = records.accounts.find((account) => !usedAccounts.has(account.id));
     if (!nextAccount) {
+      setErrorContext('plan');
       setError('Every cash account is already part of this paycheck split.');
       return;
     }
@@ -4138,10 +4610,12 @@ export const IncomePage = (): React.JSX.Element => {
   };
 
   const editIncomePlan = (plan: IncomePlanSummary) => {
+    if (mutationLock.active() !== null) return;
     const first = plan.first;
     setEditingIncomePlanId(plan.id);
     setTargetIncomeStreamId(plan.streamId);
     setEditingIncomeId(null);
+    setErrorContext(null);
     setIncomeRoutingMode('routed');
     setIncomeLabel(first.label);
     setIncomeType(
@@ -4174,10 +4648,11 @@ export const IncomePage = (): React.JSX.Element => {
         daysEarly: String(Math.max(0, -(allocation.incomeArrivalOffsetDays ?? 0))),
       })),
     );
-    document.getElementById('income-plan-editor')?.scrollIntoView({ behavior: 'smooth' });
+    setIncomePlanRevealRequest((request) => request + 1);
   };
 
   const scheduleIncomePhase = (stream: IncomeStreamSummary) => {
+    if (mutationLock.active() !== null) return;
     const priorPlan = stream.phases.at(-1)!;
     const first = priorPlan.first;
     if (
@@ -4185,6 +4660,7 @@ export const IncomePage = (): React.JSX.Element => {
       first.recurrenceRule.frequency === 'once' ||
       !first.recurrenceEndDate
     ) {
+      setErrorContext('plan');
       setError(
         'Set an end date on the latest routing phase first, then schedule its replacement from the next official payday.',
       );
@@ -4192,6 +4668,7 @@ export const IncomePage = (): React.JSX.Element => {
     }
     const nextPayday = nextIncomePhaseStart(priorPlan);
     if (!nextPayday) {
+      setErrorContext('plan');
       setError('Balance Book could not find the next official payday for this routing change.');
       return;
     }
@@ -4233,41 +4710,59 @@ export const IncomePage = (): React.JSX.Element => {
         daysEarly: String(Math.max(0, -(allocation.incomeArrivalOffsetDays ?? 0))),
       })),
     );
-    document.getElementById('income-plan-editor')?.scrollIntoView({ behavior: 'smooth' });
+    setIncomePlanRevealRequest((request) => request + 1);
+  };
+
+  const toggleIncomeEventEdit = (incomeId: string): void => {
+    if (mutationLock.active() !== null) return;
+    if (editingIncomeId === incomeId) {
+      setIncomeEventRevealRequest((request) => request + 1);
+      return;
+    }
+    setEditingIncomePlanId(null);
+    setTargetIncomeStreamId(null);
+    setEditingIncomeId(incomeId);
+    setMessage(null);
+    setError(null);
+    setErrorContext(null);
+    setIncomeEventRevealRequest((request) => request + 1);
   };
 
   const deleteIncomePlan = async (plan: IncomePlanSummary) => {
-    if (
-      !window.confirm(
-        `Delete ${plan.first.label} and all ${plan.events.length} routed deposit${plan.events.length === 1 ? '' : 's'}?`,
+    const action = `delete-income-plan:${plan.id}`;
+    if (!beginIncomeMutation(action)) return;
+    try {
+      if (
+        !window.confirm(
+          `Delete ${plan.first.label} and all ${plan.events.length} routed deposit${plan.events.length === 1 ? '' : 's'}?`,
+        )
       )
-    )
-      return;
-    setMessage(null);
-    setError(null);
-    const response = await window.balanceBook.deleteRecord({
-      entityType: 'forecast-event',
-      entityId: plan.first.id,
-      confirmed: true,
-    });
-    if (!response.ok) {
-      setError(response.error);
-      return;
+        return;
+      const response = await window.balanceBook.deleteRecord({
+        entityType: 'forecast-event',
+        entityId: plan.first.id,
+        confirmed: true,
+      });
+      if (!response.ok) throw new Error(response.error);
+      setSavedImpact('Deleted income plan', records, response.value);
+      setRecords(response.value);
+      if (editingIncomePlanId === plan.id || targetIncomeStreamId === plan.streamId) {
+        resetIncomeEditor();
+      }
+      setMessage('Income plan and every routed deposit were deleted together.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Income plan could not be deleted.');
+    } finally {
+      finishIncomeMutation(action);
     }
-    setSavedImpact('Deleted income plan', records, response.value);
-    setRecords(response.value);
-    if (editingIncomePlanId === plan.id || targetIncomeStreamId === plan.streamId) {
-      resetIncomeEditor();
-    }
-    setMessage('Income plan and every routed deposit were deleted together.');
   };
 
   const addIncome = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const action = 'save-income';
+    if (!beginIncomeMutation(action)) return;
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    setMessage(null);
-    setError(null);
     try {
       if (records.accounts.length === 0) {
         throw new Error('Add a cash account before adding income.');
@@ -4390,15 +4885,17 @@ export const IncomePage = (): React.JSX.Element => {
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Income could not be saved.');
+    } finally {
+      finishIncomeMutation(action);
     }
   };
 
   const addRaise = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const action = 'save-raise';
+    if (!beginIncomeMutation(action)) return;
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    setMessage(null);
-    setError(null);
     try {
       const selectedBase = baseIncomeEvents.find(
         (candidate) => candidate.id === get(form, 'raiseBaseId'),
@@ -4545,8 +5042,10 @@ export const IncomePage = (): React.JSX.Element => {
           : 'Projected higher pay saved in the expected projection only.',
       );
     } catch (caught) {
-      void loadRecords().then(setRecords);
+      await loadRecords().then(setRecords);
       setError(caught instanceof Error ? caught.message : 'Raise plan could not be saved.');
+    } finally {
+      finishIncomeMutation(action);
     }
   };
 
@@ -4554,23 +5053,28 @@ export const IncomePage = (): React.JSX.Element => {
     event.preventDefault();
     const current = incomeEvents.find((candidate) => candidate.id === editingIncomeId);
     if (!current) return;
-    setMessage(null);
-    setError(null);
-    const request = makeForecastEventEditRequest(current, new FormData(event.currentTarget));
-    request.payload.kind = 'income';
-    request.payload.direction = 'inflow';
-    request.payload.incomeType = current.incomeType ?? 'other';
-    request.payload.parentIncomeEventId = current.parentIncomeEventId;
-    request.payload.paymentMethod = 'cash-account';
-    request.payload.cardId = undefined;
-    request.payload.cardActivityTreatment = undefined;
-    const response = await window.balanceBook.upsertRecord(request);
-    if (response.ok) {
+    const action = `save-income-event:${current.id}`;
+    if (!beginIncomeMutation(action)) return;
+    try {
+      const request = makeForecastEventEditRequest(current, new FormData(event.currentTarget));
+      request.payload.kind = 'income';
+      request.payload.direction = 'inflow';
+      request.payload.incomeType = current.incomeType ?? 'other';
+      request.payload.parentIncomeEventId = current.parentIncomeEventId;
+      request.payload.paymentMethod = 'cash-account';
+      request.payload.cardId = undefined;
+      request.payload.cardActivityTreatment = undefined;
+      const response = await window.balanceBook.upsertRecord(request);
+      if (!response.ok) throw new Error(response.error);
       setSavedImpact('Edited income', records, response.value);
       setRecords(response.value);
       setEditingIncomeId(null);
       setMessage('Income changes saved and recalculated through the cash forecast.');
-    } else setError(response.error);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Income could not be updated.');
+    } finally {
+      finishIncomeMutation(action);
+    }
   };
 
   return (
@@ -4578,10 +5082,7 @@ export const IncomePage = (): React.JSX.Element => {
       <div className={styles.header}>
         <Text className={styles.eyebrow}>Plan</Text>
         <Title1 as="h1">Income and raises</Title1>
-        <Text>
-          Record the cash that will actually arrive, where it lands, and how certain it is. Raises
-          are stored as linked adjustments, so your original pay history stays intact.
-        </Text>
+        <Text>Track income, deposits, raises, and bonuses.</Text>
       </div>
 
       {records.accounts.length === 0 ? (
@@ -4596,9 +5097,14 @@ export const IncomePage = (): React.JSX.Element => {
           </Button>
         </Card>
       ) : (
-        <Card className={styles.panel}>
+        <Card
+          ref={incomePlanEditorRef}
+          className={`${styles.panel} balance-editor-reveal`}
+          tabIndex={-1}
+          aria-labelledby="income-plan-editor-title"
+        >
           <div className={styles.sectionIntro}>
-            <Title2 as="h2">
+            <Title2 id="income-plan-editor-title" as="h2">
               {editingIncomePlanId
                 ? 'Edit paycheck routing'
                 : targetIncomeStreamId
@@ -4613,8 +5119,12 @@ export const IncomePage = (): React.JSX.Element => {
           <form
             id="income-plan-editor"
             className={styles.form}
+            aria-busy={pendingAction === 'save-income'}
             onSubmit={(event) => void addIncome(event)}
           >
+            {error && errorContext === 'plan' && (
+              <GuidedEditorFeedback message={null} error={error} />
+            )}
             <div className={styles.grid}>
               <Field label="Source or label">
                 <Input
@@ -4972,16 +5482,18 @@ export const IncomePage = (): React.JSX.Element => {
               <Button
                 appearance="primary"
                 type="submit"
-                disabled={Boolean(routingIssue || incomeScheduleIssue)}
+                disabled={Boolean(routingIssue || incomeScheduleIssue || pendingAction !== null)}
               >
-                {editingIncomePlanId
-                  ? 'Save paycheck plan'
-                  : targetIncomeStreamId
-                    ? 'Schedule routing change'
-                    : 'Save income stream'}
+                {pendingAction === 'save-income'
+                  ? 'Saving income…'
+                  : editingIncomePlanId
+                    ? 'Save paycheck plan'
+                    : targetIncomeStreamId
+                      ? 'Schedule routing change'
+                      : 'Save income stream'}
               </Button>
               {(editingIncomePlanId || targetIncomeStreamId) && (
-                <Button type="button" onClick={resetIncomeEditor}>
+                <Button type="button" disabled={pendingAction !== null} onClick={resetIncomeEditor}>
                   Cancel
                 </Button>
               )}
@@ -5003,7 +5515,14 @@ export const IncomePage = (): React.JSX.Element => {
             Add at least one recurring income stream above before planning a raise.
           </Text>
         ) : (
-          <form className={styles.form} onSubmit={(event) => void addRaise(event)}>
+          <form
+            className={styles.form}
+            aria-busy={pendingAction === 'save-raise'}
+            onSubmit={(event) => void addRaise(event)}
+          >
+            {error && errorContext === 'raise' && (
+              <GuidedEditorFeedback message={null} error={error} />
+            )}
             <div className={styles.grid}>
               <Field label="Recurring base pay">
                 <Select
@@ -5164,14 +5683,14 @@ export const IncomePage = (): React.JSX.Element => {
                 </Field>
               </div>
             </div>
-            <Button appearance="primary" type="submit">
-              Save raise plan
+            <Button appearance="primary" type="submit" disabled={pendingAction !== null}>
+              {pendingAction === 'save-raise' ? 'Saving raise…' : 'Save raise plan'}
             </Button>
           </form>
         )}
       </Card>
 
-      <GuidedEditorFeedback message={message} error={error} />
+      <GuidedEditorFeedback message={message} error={errorContext === null ? error : null} />
 
       {impact && (
         <Card className={styles.panel}>
@@ -5267,7 +5786,11 @@ export const IncomePage = (): React.JSX.Element => {
                       </Text>
                     </div>
                     {effectiveIncome.incomeType !== 'raise-adjustment' && (
-                      <Button size="small" onClick={() => scheduleIncomePhase(stream)}>
+                      <Button
+                        size="small"
+                        disabled={pendingAction !== null}
+                        onClick={() => scheduleIncomePhase(stream)}
+                      >
                         Schedule routing change
                       </Button>
                     )}
@@ -5301,11 +5824,19 @@ export const IncomePage = (): React.JSX.Element => {
                           </div>
                           <div className={styles.actions}>
                             {income.incomeType !== 'raise-adjustment' && (
-                              <Button size="small" onClick={() => editIncomePlan(plan)}>
+                              <Button
+                                size="small"
+                                disabled={pendingAction !== null}
+                                onClick={() => editIncomePlan(plan)}
+                              >
                                 Edit paycheck
                               </Button>
                             )}
-                            <Button size="small" onClick={() => void deleteIncomePlan(plan)}>
+                            <Button
+                              size="small"
+                              disabled={pendingAction !== null}
+                              onClick={() => void deleteIncomePlan(plan)}
+                            >
                               {stream.phases.length === 1 ? 'Delete plan' : 'Delete phase'}
                             </Button>
                           </div>
@@ -5389,7 +5920,11 @@ export const IncomePage = (): React.JSX.Element => {
                             <Text className={styles.amount}>
                               +{formatMoney(raisePlan.totalCents)}
                             </Text>
-                            <Button size="small" onClick={() => void deleteIncomePlan(raisePlan)}>
+                            <Button
+                              size="small"
+                              disabled={pendingAction !== null}
+                              onClick={() => void deleteIncomePlan(raisePlan)}
+                            >
                               Delete raise
                             </Button>
                           </div>
@@ -5410,28 +5945,33 @@ export const IncomePage = (): React.JSX.Element => {
                               </Text>
                               <Button
                                 size="small"
-                                onClick={() =>
-                                  setEditingIncomeId((current) =>
-                                    current === income.id ? null : income.id,
-                                  )
-                                }
+                                disabled={pendingAction !== null}
+                                onClick={() => toggleIncomeEventEdit(income.id)}
                               >
-                                {editingIncomeId === income.id ? 'Close edit' : 'Edit'}
+                                Edit
                               </Button>
                             </div>
                           </div>
                           {editingIncomeId === income.id && (
-                            <ForecastEventGuidedEditor
-                              event={income}
-                              accounts={records.accounts}
-                              cards={records.cards}
-                              cardCycles={records.cardCycles}
-                              loans={records.loans}
-                              onSubmit={saveIncomeEdit}
-                              onCancel={() => setEditingIncomeId(null)}
-                              message={null}
-                              error={null}
-                            />
+                            <div
+                              ref={incomeEventEditorRef}
+                              className="balance-editor-reveal"
+                              tabIndex={-1}
+                              aria-label={`${income.label} active editor`}
+                            >
+                              <ForecastEventGuidedEditor
+                                event={income}
+                                accounts={records.accounts}
+                                cards={records.cards}
+                                cardCycles={records.cardCycles}
+                                loans={records.loans}
+                                busy={pendingAction === `save-income-event:${income.id}`}
+                                onSubmit={saveIncomeEdit}
+                                onCancel={() => setEditingIncomeId(null)}
+                                message={null}
+                                error={errorContext === 'event' ? error : null}
+                              />
+                            </div>
                           )}
                         </div>
                       ))}
@@ -5456,11 +5996,10 @@ export const IncomePage = (): React.JSX.Element => {
                     </div>
                     <Button
                       size="small"
-                      onClick={() =>
-                        setEditingIncomeId((current) => (current === income.id ? null : income.id))
-                      }
+                      disabled={pendingAction !== null}
+                      onClick={() => toggleIncomeEventEdit(income.id)}
                     >
-                      {editingIncomeId === income.id ? 'Close edit' : 'Edit'}
+                      Edit
                     </Button>
                   </div>
                   <div className={styles.recordFacts}>
@@ -5493,7 +6032,12 @@ export const IncomePage = (): React.JSX.Element => {
                     <Text className={styles.muted}>Linked to recurring base: {parent.label}</Text>
                   )}
                   {editingIncomeId === income.id && (
-                    <div className={styles.divider}>
+                    <div
+                      ref={incomeEventEditorRef}
+                      className={`${styles.divider} balance-editor-reveal`}
+                      tabIndex={-1}
+                      aria-label={`${income.label} active editor`}
+                    >
                       <ForecastEventGuidedEditor
                         key={income.id}
                         event={income}
@@ -5501,10 +6045,11 @@ export const IncomePage = (): React.JSX.Element => {
                         cards={records.cards}
                         cardCycles={records.cardCycles}
                         loans={records.loans}
+                        busy={pendingAction === `save-income-event:${income.id}`}
                         onSubmit={saveIncomeEdit}
                         onCancel={() => setEditingIncomeId(null)}
                         message={null}
-                        error={null}
+                        error={errorContext === 'event' ? error : null}
                       />
                     </div>
                   )}
@@ -5527,13 +6072,26 @@ export const BaselinePage = (): React.JSX.Element => {
   const [error, setError] = useState<string | null>(null);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [transferCadence, setTransferCadence] = useState<EventRecurrenceChoice>('one-time');
-  const transferInFlightRef = useRef(false);
-  const [transferInFlight, setTransferInFlight] = useState(false);
+  const [editorRevealRequest, setEditorRevealRequest] = useState(0);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [mutationLock] = useState(createImmediateActionLock);
+  const eventEditorRef = useEditorReveal<HTMLDivElement>(editingEventId, editorRevealRequest);
   useEffect(() => {
     void loadRecords()
       .then(setRecords)
       .catch((caught: Error) => setError(caught.message));
   }, []);
+  const beginBaselineMutation = (action: string): boolean => {
+    if (!mutationLock.acquire(action)) return false;
+    setPendingAction(action);
+    setMessage(null);
+    setError(null);
+    return true;
+  };
+  const finishBaselineMutation = (action: string): void => {
+    mutationLock.release(action);
+    setPendingAction(null);
+  };
   if (!records)
     return error ? (
       <div role="alert" className={styles.error}>
@@ -5614,13 +6172,10 @@ export const BaselinePage = (): React.JSX.Element => {
   ].join('|');
   const createTransfer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (transferInFlightRef.current) return;
-    transferInFlightRef.current = true;
-    setTransferInFlight(true);
+    const action = 'create-transfer';
+    if (!beginBaselineMutation(action)) return;
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    setMessage(null);
-    setError(null);
     try {
       const initiationDate = get(form, 'initiationDate');
       const recurrenceRule = makeTransferRecurrence(form, initiationDate);
@@ -5650,31 +6205,35 @@ export const BaselinePage = (): React.JSX.Element => {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Transfer could not be created.');
     } finally {
-      transferInFlightRef.current = false;
-      setTransferInFlight(false);
+      finishBaselineMutation(action);
     }
   };
   const saveEvent = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const currentEvent = records.events.find((item) => item.id === editingEventId);
     if (!currentEvent) return;
-    setMessage(null);
-    setError(null);
-    const response = await window.balanceBook.upsertRecord(
-      makeForecastEventEditRequest(currentEvent, new FormData(event.currentTarget)),
-    );
-    if (response.ok) {
+    const action = `save-event:${currentEvent.id}`;
+    if (!beginBaselineMutation(action)) return;
+    try {
+      const response = await window.balanceBook.upsertRecord(
+        makeForecastEventEditRequest(currentEvent, new FormData(event.currentTarget)),
+      );
+      if (!response.ok) throw new Error(response.error);
       setRecords(response.value);
       setMessage('Cash event updated; card-cycle treatment and forecast timing are now in effect.');
-    } else setError(response.error);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Cash event could not be updated.');
+    } finally {
+      finishBaselineMutation(action);
+    }
   };
   return (
     <>
       <div className={styles.header}>
-        <Title1 as="h1">Baseline plan</Title1>
+        <Title1 as="h1">Recurring plan</Title1>
         <Text>
-          A rolling cash baseline for income, direct commitments, payables, loans, and card
-          settlements—not a category spending limit.
+          Your repeating income, bills, loan payments, and card payments in one forward-looking
+          schedule—not a category spending limit.
         </Text>
       </div>
       <Card className={styles.panel}>
@@ -5831,8 +6390,8 @@ export const BaselinePage = (): React.JSX.Element => {
                 />
               </Field>
             </div>
-            <Button appearance="primary" type="submit" disabled={transferInFlight}>
-              {transferInFlight ? 'Adding transfer…' : 'Add planned transfer'}
+            <Button appearance="primary" type="submit" disabled={pendingAction !== null}>
+              {pendingAction === 'create-transfer' ? 'Adding transfer…' : 'Add planned transfer'}
             </Button>
           </form>
         </Card>
@@ -5890,10 +6449,12 @@ export const BaselinePage = (): React.JSX.Element => {
                     </Text>
                     <Button
                       aria-label={`Edit ${event.label}`}
+                      disabled={pendingAction !== null}
                       onClick={() => {
                         setEditingEventId(event.id);
                         setMessage(null);
                         setError(null);
+                        setEditorRevealRequest((request) => request + 1);
                       }}
                     >
                       Edit
@@ -5901,22 +6462,30 @@ export const BaselinePage = (): React.JSX.Element => {
                   </div>
                 </div>
                 {editingEventId === event.id && (
-                  <ForecastEventGuidedEditor
-                    key={event.id}
-                    event={event}
-                    accounts={records.accounts}
-                    cards={records.cards}
-                    cardCycles={records.cardCycles}
-                    loans={records.loans}
-                    message={message}
-                    error={error}
-                    onSubmit={(formEvent) => void saveEvent(formEvent)}
-                    onCancel={() => {
-                      setEditingEventId(null);
-                      setMessage(null);
-                      setError(null);
-                    }}
-                  />
+                  <div
+                    ref={eventEditorRef}
+                    className="balance-editor-reveal"
+                    tabIndex={-1}
+                    aria-label={`${event.label} active editor`}
+                  >
+                    <ForecastEventGuidedEditor
+                      key={event.id}
+                      event={event}
+                      accounts={records.accounts}
+                      cards={records.cards}
+                      cardCycles={records.cardCycles}
+                      loans={records.loans}
+                      busy={pendingAction === `save-event:${event.id}`}
+                      message={message}
+                      error={error}
+                      onSubmit={(formEvent) => void saveEvent(formEvent)}
+                      onCancel={() => {
+                        setEditingEventId(null);
+                        setMessage(null);
+                        setError(null);
+                      }}
+                    />
+                  </div>
                 )}
               </div>
             );
@@ -5938,7 +6507,7 @@ export const BaselinePage = (): React.JSX.Element => {
                 <strong>{cycle.state}</strong> due {cycle.dueOn} · baseline{' '}
                 {formatMoney(cycle.defaultEstimateCents)} · entered/locked{' '}
                 {formatMoney(cycleDisplayAmount(cycle))} · projected {formatMoney(projected)} ·{' '}
-                variance {formatMoney(projected - cycle.defaultEstimateCents)}
+                difference {formatMoney(projected - cycle.defaultEstimateCents)}
               </p>
             );
           })
@@ -5948,9 +6517,453 @@ export const BaselinePage = (): React.JSX.Element => {
   );
 };
 
-export const CardsPage = (): React.JSX.Element => {
+type BillRecurrenceChoice = 'once' | 'weekly' | 'biweekly' | 'monthly' | 'semimonthly';
+type BillOwedTreatment = 'none' | 'reimbursable' | 'shared';
+
+const billRecurrenceChoice = (event?: ForecastEvent): BillRecurrenceChoice => {
+  const frequency = event?.recurrenceRule?.frequency;
+  return frequency === undefined ? 'monthly' : frequency;
+};
+
+const billRecurrenceRule = (
+  choice: BillRecurrenceChoice,
+  firstBillDate: string,
+  interval: number,
+  secondDay: number,
+): RecurrenceRule => {
+  const firstDay = Temporal.PlainDate.from(firstBillDate).day;
+  if (choice === 'once') return { frequency: 'once' };
+  if (choice === 'weekly') return { frequency: 'weekly', interval: Math.max(1, interval) };
+  if (choice === 'biweekly') return { frequency: 'biweekly' };
+  if (choice === 'monthly') {
+    return { frequency: 'monthly', dayOfMonth: firstDay, interval: Math.max(1, interval) };
+  }
+  return {
+    frequency: 'semimonthly',
+    daysOfMonth: [firstDay, secondDay],
+  };
+};
+
+const billScheduleLabel = (event: ForecastEvent): string => incomeCadenceLabel(event);
+
+export const BillsPage = (): React.JSX.Element => {
+  const styles = useCoreStyles();
+  const [records, setRecords] = useState<ManagedRecordsDto | null>(null);
+  const [editingId, setEditingId] = useState<string | 'new' | null>(null);
+  const [editorRevealRequest, setEditorRevealRequest] = useState(0);
+  const [paymentSource, setPaymentSource] = useState('');
+  const [addToCardBalance, setAddToCardBalance] = useState(false);
+  const [recurrenceChoice, setRecurrenceChoice] = useState<BillRecurrenceChoice>('monthly');
+  const [owedTreatment, setOwedTreatment] = useState<BillOwedTreatment>('none');
+  const [active, setActive] = useState(true);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const mutationLock = useRef(createImmediateActionLock()).current;
+  const billEditorRef = useEditorReveal<HTMLDivElement>(editingId, editorRevealRequest);
+
+  useEffect(() => {
+    void loadRecords()
+      .then(setRecords)
+      .catch((caught: unknown) =>
+        setError(caught instanceof Error ? caught.message : 'Bills could not be loaded.'),
+      );
+  }, []);
+
+  const bills = useMemo(
+    () =>
+      (records?.events ?? [])
+        .filter(
+          (event) =>
+            event.direction === 'outflow' &&
+            ['direct-commitment', 'payable', 'baseline-spending'].includes(event.kind),
+        )
+        .sort(
+          (left, right) =>
+            Number(left.status === 'cancelled') - Number(right.status === 'cancelled') ||
+            left.date.localeCompare(right.date) ||
+            left.label.localeCompare(right.label),
+        ),
+    [records],
+  );
+  const editingBill =
+    editingId && editingId !== 'new' ? bills.find((bill) => bill.id === editingId) : undefined;
+  const linkedReceivable = editingBill
+    ? records?.receivables.find((receivable) => receivable.relatedExpenseId === editingBill.id)
+    : undefined;
+
+  const beginEdit = (bill?: ForecastEvent): void => {
+    if (!records) return;
+    setEditingId(bill?.id ?? 'new');
+    setPaymentSource(
+      bill?.paymentMethod === 'credit-card' && bill.cardId
+        ? `card:${bill.cardId}`
+        : `cash:${bill?.accountId ?? records.accounts[0]?.id ?? ''}`,
+    );
+    setAddToCardBalance(
+      bill?.paymentMethod === 'credit-card' && bill.cardActivityTreatment === 'additional',
+    );
+    setRecurrenceChoice(billRecurrenceChoice(bill));
+    const receivable = bill
+      ? records.receivables.find((candidate) => candidate.relatedExpenseId === bill.id)
+      : undefined;
+    setOwedTreatment(
+      receivable?.accrualAmountCents === undefined
+        ? 'none'
+        : receivable.grossExpenseCents === receivable.accrualAmountCents
+          ? 'reimbursable'
+          : 'shared',
+    );
+    setActive(bill?.status !== 'cancelled');
+    setMessage(null);
+    setError(null);
+    setEditorRevealRequest((current) => current + 1);
+  };
+
+  const saveBill = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    if (!records || !editingId || busy) return;
+    const action = `save-bill:${editingId}`;
+    if (!mutationLock.acquire(action)) return;
+    setBusy(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const form = new FormData(event.currentTarget);
+      const firstBillDate = get(form, 'firstBillDate');
+      const interval = Math.trunc(number(form, 'recurrenceInterval') || 1);
+      const secondDay = Math.trunc(number(form, 'secondBillDay') || 15);
+      const [sourceKind, sourceId] = paymentSource.split(':', 2);
+      if (!sourceId || (sourceKind !== 'cash' && sourceKind !== 'card')) {
+        throw new Error('Choose where this bill is paid from.');
+      }
+      const response = await window.balanceBook.upsertBillPlan({
+        eventId: editingBill?.id ?? crypto.randomUUID(),
+        linkedReceivableId: linkedReceivable?.id,
+        paymentSource:
+          sourceKind === 'card'
+            ? { kind: 'credit-card', cardId: sourceId, addToCardBalance }
+            : { kind: 'cash-account', accountId: sourceId },
+        amountCents: cents(form, 'amount'),
+        firstBillDate,
+        label: get(form, 'label'),
+        recurrenceRule: billRecurrenceRule(recurrenceChoice, firstBillDate, interval, secondDay),
+        recurrenceEndDate: get(form, 'recurrenceEndDate') || undefined,
+        certainty: get(form, 'certainty') as 'confirmed' | 'expected' | 'uncertain',
+        active,
+        notes: get(form, 'notes') || undefined,
+        owedTreatment,
+        owedBy: owedTreatment === 'none' ? undefined : get(form, 'owedBy'),
+      });
+      if (!response.ok) throw new Error(response.error);
+      setRecords(response.value);
+      setEditingId(null);
+      setMessage(editingBill ? 'Bill updated.' : 'Bill added to your forecast.');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Bill could not be saved.');
+    } finally {
+      mutationLock.release(action);
+      setBusy(false);
+    }
+  };
+
+  if (!records) {
+    return error ? (
+      <div className={styles.error} role="alert">
+        {error}
+      </div>
+    ) : (
+      <LoadingSkeleton label="Loading bills and subscriptions" variant="list" />
+    );
+  }
+
+  const initialRule = editingBill?.recurrenceRule;
+  const initialInterval =
+    initialRule?.frequency === 'weekly' || initialRule?.frequency === 'monthly'
+      ? initialRule.interval
+      : 1;
+  const initialSecondDay =
+    initialRule?.frequency === 'semimonthly' ? initialRule.daysOfMonth[1] : 15;
+  const initialOwedBy = linkedReceivable?.source ?? '';
+  const paymentSourceLabel = (bill: ForecastEvent): string => {
+    if (bill.paymentMethod === 'credit-card' && bill.cardId) {
+      return records.cards.find((card) => card.id === bill.cardId)?.name ?? 'Unknown card';
+    }
+    return (
+      records.accounts.find((account) => account.id === bill.accountId)?.name ?? 'Unknown account'
+    );
+  };
+
+  return (
+    <>
+      <div className={styles.header}>
+        <Text className={styles.eyebrow}>Accounts</Text>
+        <Title1 as="h1">Bills &amp; subscriptions</Title1>
+        <Text>
+          Keep recurring costs in one place. Each bill flows to cash or a card on its billing date,
+          and shared costs can add Money Owed automatically.
+        </Text>
+      </div>
+      {message && (
+        <div className={styles.positive} role="status">
+          {message}
+        </div>
+      )}
+      {error && (
+        <div className={styles.error} role="alert">
+          {error}
+        </div>
+      )}
+      <Card className={styles.panel}>
+        <div className={styles.recordHeader}>
+          <div className={styles.sectionIntro}>
+            <Title2 as="h2">Your recurring costs</Title2>
+            <Text className={styles.muted}>
+              Edit the next billing date, amount, schedule, or payment source whenever something
+              changes.
+            </Text>
+          </div>
+          <Button appearance="primary" onClick={() => beginEdit()} disabled={busy}>
+            Add bill
+          </Button>
+        </div>
+      </Card>
+      {editingId && (
+        <Card ref={billEditorRef} className={`${styles.panel} balance-editor-reveal`} tabIndex={-1}>
+          <form
+            key={editingBill?.id ?? 'new'}
+            className={styles.form}
+            aria-label={editingBill ? `Edit ${editingBill.label}` : 'Add bill'}
+            aria-busy={busy}
+            onSubmit={(event) => void saveBill(event)}
+          >
+            <Title2 as="h2">{editingBill ? `Edit ${editingBill.label}` : 'Add a bill'}</Title2>
+            <div className={styles.grid}>
+              <Field label="Bill or subscription name">
+                <Input name="label" required defaultValue={editingBill?.label ?? ''} />
+              </Field>
+              <Field label="Amount">
+                <Input
+                  name="amount"
+                  inputMode="decimal"
+                  required
+                  defaultValue={centsInput(editingBill?.amountCents)}
+                />
+              </Field>
+              <Field
+                label="First or next billing date"
+                hint="For an existing bill, use the next date this amount should apply."
+              >
+                <Input
+                  name="firstBillDate"
+                  type="date"
+                  required
+                  defaultValue={editingBill?.date ?? Temporal.Now.plainDateISO().toString()}
+                />
+              </Field>
+              <Field label="Repeats">
+                <Select
+                  value={recurrenceChoice}
+                  onChange={(_, data) => setRecurrenceChoice(data.value as BillRecurrenceChoice)}
+                >
+                  <option value="once">One time</option>
+                  <option value="weekly">Weekly or every few weeks</option>
+                  <option value="biweekly">Every two weeks</option>
+                  <option value="monthly">Monthly or every few months</option>
+                  <option value="semimonthly">Twice a month</option>
+                </Select>
+              </Field>
+              {(recurrenceChoice === 'weekly' || recurrenceChoice === 'monthly') && (
+                <Field
+                  label={
+                    recurrenceChoice === 'weekly'
+                      ? 'Number of weeks between bills'
+                      : 'Number of months between bills'
+                  }
+                >
+                  <Input
+                    name="recurrenceInterval"
+                    type="number"
+                    min={1}
+                    max={recurrenceChoice === 'weekly' ? 52 : 120}
+                    required
+                    defaultValue={String(initialInterval)}
+                  />
+                </Field>
+              )}
+              {recurrenceChoice === 'semimonthly' && (
+                <Field
+                  label="Second billing day"
+                  hint="The first day comes from the billing date above."
+                >
+                  <Input
+                    name="secondBillDay"
+                    type="number"
+                    min={1}
+                    max={31}
+                    required
+                    defaultValue={String(initialSecondDay)}
+                  />
+                </Field>
+              )}
+              <Field label="Stop after (optional)">
+                <Input
+                  name="recurrenceEndDate"
+                  type="date"
+                  defaultValue={editingBill?.recurrenceEndDate ?? ''}
+                />
+              </Field>
+              <Field label="Paid from">
+                <Select
+                  value={paymentSource}
+                  onChange={(_, data) => {
+                    setPaymentSource(data.value);
+                    if (!data.value.startsWith('card:')) setAddToCardBalance(false);
+                  }}
+                  required
+                >
+                  {records.accounts.map((account) => (
+                    <option key={account.id} value={`cash:${account.id}`}>
+                      {account.name} · cash account
+                    </option>
+                  ))}
+                  {records.cards
+                    .filter((card) => card.status === 'active' || card.id === editingBill?.cardId)
+                    .map((card) => (
+                      <option key={card.id} value={`card:${card.id}`}>
+                        {card.name} · credit card
+                      </option>
+                    ))}
+                </Select>
+              </Field>
+              <Field
+                label="How certain is this amount?"
+                hint="Choose Expected when the amount may vary, such as an electric bill."
+              >
+                <Select name="certainty" defaultValue={editingBill?.certainty ?? 'confirmed'}>
+                  <option value="confirmed">Confirmed</option>
+                  <option value="expected">Expected</option>
+                  <option value="uncertain">Uncertain</option>
+                </Select>
+              </Field>
+            </div>
+            {paymentSource.startsWith('card:') && (
+              <Checkbox
+                checked={addToCardBalance}
+                onChange={(_, data) => setAddToCardBalance(data.checked === true)}
+                label="Add this charge to the card balance"
+              />
+            )}
+            {paymentSource.startsWith('card:') && !addToCardBalance && (
+              <Text className={styles.muted}>
+                Off means this bill is already included in the card’s entered cycle total, so it
+                will not be counted twice.
+              </Text>
+            )}
+            <div className={styles.sectionIntro}>
+              <strong>Shared or reimbursable</strong>
+              <Text className={styles.muted}>
+                Turn on one option to add the amount owed to you automatically on each billing date.
+              </Text>
+            </div>
+            <div className={styles.actions}>
+              <Checkbox
+                checked={owedTreatment === 'reimbursable'}
+                onChange={(_, data) =>
+                  setOwedTreatment(data.checked === true ? 'reimbursable' : 'none')
+                }
+                label="Fully reimbursable"
+              />
+              <Checkbox
+                checked={owedTreatment === 'shared'}
+                onChange={(_, data) => setOwedTreatment(data.checked === true ? 'shared' : 'none')}
+                label="Split 50/50"
+              />
+            </div>
+            {owedTreatment !== 'none' && (
+              <Field label="Who owes you?">
+                <Input name="owedBy" required defaultValue={initialOwedBy} />
+              </Field>
+            )}
+            <Checkbox
+              checked={active}
+              onChange={(_, data) => setActive(data.checked === true)}
+              label="Keep this bill active in future forecasts"
+            />
+            <Field label="Notes (optional)">
+              <Textarea name="notes" defaultValue={editingBill?.notes ?? ''} />
+            </Field>
+            <div className={styles.actions}>
+              <Button appearance="primary" type="submit" disabled={busy}>
+                {busy ? 'Saving…' : 'Save bill'}
+              </Button>
+              <Button type="button" disabled={busy} onClick={() => setEditingId(null)}>
+                Cancel
+              </Button>
+            </div>
+          </form>
+        </Card>
+      )}
+      <div className={styles.recordGrid} aria-label="Bills and subscriptions">
+        {bills.length === 0 && (
+          <Card className={styles.recordCard}>
+            <strong>No bills added yet</strong>
+            <Text className={styles.muted}>
+              Add a recurring bill or subscription to include it in your daily forecast.
+            </Text>
+          </Card>
+        )}
+        {bills.map((bill) => {
+          const receivable = records.receivables.find(
+            (candidate) => candidate.relatedExpenseId === bill.id,
+          );
+          const treatment =
+            bill.paymentMethod === 'credit-card'
+              ? bill.cardActivityTreatment === 'additional'
+                ? 'Adds to card balance'
+                : 'Already included in card total'
+              : 'Paid from cash';
+          return (
+            <Card className={styles.recordCard} key={bill.id}>
+              <Text className={styles.eyebrow}>
+                {bill.status === 'cancelled' ? 'Stopped' : billScheduleLabel(bill)}
+              </Text>
+              <strong>{bill.label}</strong>
+              <Text className={styles.amount}>{formatMoney(bill.amountCents)}</Text>
+              <Text className={styles.muted}>
+                Next/start date {formatPlainDate(bill.date)} · {paymentSourceLabel(bill)}
+              </Text>
+              <Text className={styles.muted}>{treatment}</Text>
+              {receivable?.accrualAmountCents !== undefined && (
+                <Text className={styles.muted}>
+                  Adds {formatMoney(receivable.accrualAmountCents)} to Money Owed ·{' '}
+                  {receivable.source}
+                </Text>
+              )}
+              {bill.recurrenceEndDate && (
+                <Text className={styles.muted}>
+                  Scheduled through {formatPlainDate(bill.recurrenceEndDate)}
+                </Text>
+              )}
+              <Button disabled={busy} onClick={() => beginEdit(bill)}>
+                Edit bill
+              </Button>
+            </Card>
+          );
+        })}
+      </div>
+    </>
+  );
+};
+
+export const CardsPage = ({
+  experimentalCardInterestForecastEnabled,
+}: {
+  experimentalCardInterestForecastEnabled: boolean;
+}): React.JSX.Element => {
   const styles = useCoreStyles();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [records, setRecords] = useState<ManagedRecordsDto | null>(null);
   const [snapshot, setSnapshot] = useState<ForecastSnapshotDto | null>(null);
   const [asOfDate, setAsOfDate] = useState(Temporal.Now.plainDateISO().toString());
@@ -5960,16 +6973,39 @@ export const CardsPage = (): React.JSX.Element => {
   const [schedulingPaymentCardId, setSchedulingPaymentCardId] = useState<string | null>(null);
   const [editingScheduledPaymentId, setEditingScheduledPaymentId] = useState<string | null>(null);
   const [recordingPaymentCycleId, setRecordingPaymentCycleId] = useState<string | null>(null);
+  const [confirmingRecurringCancellationId, setConfirmingRecurringCancellationId] = useState<
+    string | null
+  >(null);
   const [paymentPolicyChoice, setPaymentPolicyChoice] = useState<
     'full-statement' | 'minimum' | 'fixed' | 'manual'
   >('full-statement');
   const [cardStatusChoice, setCardStatusChoice] = useState<'active' | 'closed'>('active');
+  const [promotionalCarryingBalanceChoice, setPromotionalCarryingBalanceChoice] = useState(false);
   const [cycleStateChoice, setCycleStateChoice] = useState<
     'future-estimated' | 'open' | 'closed-statement' | 'scheduled-payment' | 'paid'
   >('open');
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const cardEditorRef = useEditorReveal<HTMLDivElement>(editingCardId);
+  const [cardRevealRequest, setCardRevealRequest] = useState(0);
+  const [cycleRevealRequest, setCycleRevealRequest] = useState(0);
+  const [scheduledPaymentRevealRequest, setScheduledPaymentRevealRequest] = useState(0);
+  const [statementPaymentRevealRequest, setStatementPaymentRevealRequest] = useState(0);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [managedCardId, setManagedCardId] = useState<string | null>(null);
+  const [mutationLock] = useState(createImmediateActionLock);
+  const appliedCardLinkRef = useRef<string | null>(null);
+  const cardEditorRef = useEditorReveal<HTMLDivElement>(editingCardId, cardRevealRequest);
+  const cycleEditorRef = useEditorReveal<HTMLDivElement>(editingCycleId, cycleRevealRequest);
+  const scheduledPaymentEditorRef = useEditorReveal<HTMLFormElement>(
+    schedulingPaymentCardId === null
+      ? null
+      : `${schedulingPaymentCardId}:${editingScheduledPaymentId ?? 'new'}`,
+    scheduledPaymentRevealRequest,
+  );
+  const statementPaymentEditorRef = useEditorReveal<HTMLFormElement>(
+    recordingPaymentCycleId,
+    statementPaymentRevealRequest,
+  );
   useEffect(() => {
     void Promise.all([loadRecords(), window.balanceBook.getForecast()])
       .then(([loaded, forecast]) => {
@@ -5981,6 +7017,48 @@ export const CardsPage = (): React.JSX.Element => {
       })
       .catch((caught: Error) => setError(caught.message));
   }, []);
+  useEffect(() => {
+    const cardId = searchParams.get('card');
+    if (!records || !cardId) return;
+    const focus = searchParams.get('focus') ?? 'card';
+    const key = `${cardId}:${focus}`;
+    if (appliedCardLinkRef.current === key || !records.cards.some((card) => card.id === cardId)) {
+      return;
+    }
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      appliedCardLinkRef.current = key;
+      setManagedCardId(cardId);
+      if (focus === 'payment') {
+        const cycle = records.cardCycles
+          .filter((candidate) => candidate.cardId === cardId && candidate.state !== 'paid')
+          .sort((left, right) => left.dueOn.localeCompare(right.dueOn))[0];
+        if (cycle) {
+          setRecordingPaymentCycleId(cycle.id);
+          setStatementPaymentRevealRequest((value) => value + 1);
+        } else {
+          setSchedulingPaymentCardId(cardId);
+          setScheduledPaymentRevealRequest((value) => value + 1);
+        }
+      } else if (focus === 'schedule') {
+        setSchedulingPaymentCardId(cardId);
+        setScheduledPaymentRevealRequest((value) => value + 1);
+      } else {
+        setEditingCardId(cardId);
+        setPaymentPolicyChoice(
+          records.cards.find((card) => card.id === cardId)?.paymentPolicy ?? 'full-statement',
+        );
+        setPromotionalCarryingBalanceChoice(
+          records.cards.find((card) => card.id === cardId)?.promotionalCarryingBalance ?? false,
+        );
+        setCardRevealRequest((value) => value + 1);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [records, searchParams]);
   if (!records)
     return error ? (
       <div role="alert" className={styles.error}>
@@ -5998,17 +7076,69 @@ export const CardsPage = (): React.JSX.Element => {
     editingCycleId && editingCycleId !== 'new'
       ? records.cardCycles.find((cycle) => cycle.id === editingCycleId)
       : undefined;
+  const beginCardMutation = (action: string): boolean => {
+    if (!mutationLock.acquire(action)) return false;
+    setPendingAction(action);
+    setError(null);
+    setMessage(null);
+    return true;
+  };
+  const finishCardMutation = (action: string): void => {
+    mutationLock.release(action);
+    setPendingAction(null);
+  };
+  const closeCompetingCardEditors = (
+    keep: 'card' | 'cycle' | 'scheduled-payment' | 'statement-payment',
+  ): void => {
+    if (keep !== 'card') setEditingCardId(null);
+    if (keep !== 'cycle') {
+      setEditingCycleId(null);
+      setCycleCardId(null);
+    }
+    if (keep !== 'scheduled-payment') {
+      setSchedulingPaymentCardId(null);
+      setEditingScheduledPaymentId(null);
+    }
+    if (keep !== 'statement-payment') setRecordingPaymentCycleId(null);
+  };
+  const prepareCardEditor = (
+    keep: 'card' | 'cycle' | 'scheduled-payment' | 'statement-payment',
+  ): boolean => {
+    if (mutationLock.active() !== null) return false;
+    closeCompetingCardEditors(keep);
+    setConfirmingRecurringCancellationId(null);
+    setMessage(null);
+    setError(null);
+    return true;
+  };
   const startCardEdit = (cardId: string | 'new'): void => {
+    if (!prepareCardEditor('card')) return;
     const card = cardId === 'new' ? undefined : records.cards.find((item) => item.id === cardId);
     setPaymentPolicyChoice(card?.paymentPolicy ?? 'full-statement');
     setCardStatusChoice(card?.status ?? 'active');
+    setPromotionalCarryingBalanceChoice(card?.promotionalCarryingBalance ?? false);
     setEditingCardId(cardId);
+    setCardRevealRequest((request) => request + 1);
   };
-  const startCycleEdit = (cycleId: string | 'new'): void => {
+  const startCycleEdit = (cycleId: string | 'new', cardId?: string): void => {
+    if (!prepareCardEditor('cycle')) return;
     const cycle =
       cycleId === 'new' ? undefined : records.cardCycles.find((item) => item.id === cycleId);
     setCycleStateChoice(cycle?.state ?? 'open');
+    setCycleCardId(cycleId === 'new' ? (cardId ?? null) : null);
     setEditingCycleId(cycleId);
+    setCycleRevealRequest((request) => request + 1);
+  };
+  const startScheduledPaymentEdit = (cardId: string, paymentId?: string): void => {
+    if (!prepareCardEditor('scheduled-payment')) return;
+    setEditingScheduledPaymentId(paymentId ?? null);
+    setSchedulingPaymentCardId(cardId);
+    setScheduledPaymentRevealRequest((request) => request + 1);
+  };
+  const startStatementPaymentEdit = (cycleId: string): void => {
+    if (!prepareCardEditor('statement-payment')) return;
+    setRecordingPaymentCycleId(cycleId);
+    setStatementPaymentRevealRequest((request) => request + 1);
   };
   const displayedCardCycles = enrichCardCyclesWithActivities({
     cardCycles: resolveCardCyclesAsOf({ cardCycles: records.cardCycles, asOfDate }),
@@ -6065,198 +7195,266 @@ export const CardsPage = (): React.JSX.Element => {
 
   const saveCard = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const existing = editCard
-      ? (makeEditRequest('credit-card', editCard).payload as Record<string, unknown>)
-      : {};
-    const response = await window.balanceBook.upsertRecord({
-      entityType: 'credit-card',
-      payload: {
-        ...existing,
-        id: editCard?.id ?? crypto.randomUUID(),
-        name: get(form, 'name'),
-        issuer: get(form, 'issuer') || undefined,
-        lastFour: get(form, 'lastFour') || undefined,
-        fundingAccountId: get(form, 'accountId'),
-        accountKind: get(form, 'accountKind') || editCard?.accountKind || 'credit-card',
-        creditLimitCents: optionalCents(form, 'creditLimit'),
-        reportedBalanceCents: optionalCents(form, 'reportedBalance'),
-        reportedBalanceDate: get(form, 'reportedBalanceDate') || undefined,
-        reportedCarryingBalanceCents: optionalCents(form, 'reportedCarryingBalance'),
-        reportedCarryingBalanceDate: get(form, 'reportedCarryingBalanceDate') || undefined,
-        defaultFutureStatementCents: cents(form, 'defaultEstimate'),
-        estimatePolicy: get(form, 'estimatePolicy'),
-        paymentPolicy: get(form, 'paymentPolicy'),
-        fixedPaymentCents: optionalCents(form, 'fixedPayment'),
-        minimumPaymentCents: optionalCents(form, 'minimumPayment'),
-        aprBasisPoints: get(form, 'apr')
-          ? new Decimal(get(form, 'apr')).mul(100).toDecimalPlaces(0).toNumber()
-          : undefined,
-        promotionEndDate: get(form, 'promotionEndDate') || undefined,
-        paymentDayOfMonth: optionalInteger(form, 'paymentDay'),
-        statementCloseDayOfMonth: optionalInteger(form, 'statementCloseDay'),
-        status: get(form, 'cardStatus'),
-        closedOn: get(form, 'closedOn') || undefined,
-      },
-    } as UpsertManagedEntityRequest);
-    if (response.ok) {
+    const action = 'save-card';
+    if (!beginCardMutation(action)) return;
+    try {
+      const form = new FormData(event.currentTarget);
+      const existing = editCard
+        ? (makeEditRequest('credit-card', editCard).payload as Record<string, unknown>)
+        : {};
+      const response = await window.balanceBook.upsertRecord({
+        entityType: 'credit-card',
+        payload: {
+          ...existing,
+          id: editCard?.id ?? crypto.randomUUID(),
+          name: get(form, 'name'),
+          issuer: get(form, 'issuer') || undefined,
+          lastFour: get(form, 'lastFour') || undefined,
+          fundingAccountId: get(form, 'accountId'),
+          accountKind: get(form, 'accountKind') || editCard?.accountKind || 'credit-card',
+          creditLimitCents: optionalCents(form, 'creditLimit'),
+          reportedBalanceCents: optionalCents(form, 'reportedBalance'),
+          reportedBalanceDate: get(form, 'reportedBalanceDate') || undefined,
+          reportedCarryingBalanceCents: optionalCents(form, 'reportedCarryingBalance'),
+          reportedCarryingBalanceDate: get(form, 'reportedCarryingBalanceDate') || undefined,
+          defaultFutureStatementCents: cents(form, 'defaultEstimate'),
+          estimatePolicy: get(form, 'estimatePolicy'),
+          paymentPolicy: get(form, 'paymentPolicy'),
+          fixedPaymentCents: optionalCents(form, 'fixedPayment'),
+          minimumPaymentCents: optionalCents(form, 'minimumPayment'),
+          aprBasisPoints: get(form, 'apr')
+            ? new Decimal(get(form, 'apr')).mul(100).toDecimalPlaces(0).toNumber()
+            : undefined,
+          interestForecastEnabled: experimentalCardInterestForecastEnabled
+            ? form.get('interestForecastEnabled') === 'on'
+            : (editCard?.interestForecastEnabled ?? false),
+          promotionalCarryingBalance: form.get('promotionalCarryingBalance') === 'on',
+          promotionalAprBasisPoints: get(form, 'promotionalApr')
+            ? new Decimal(get(form, 'promotionalApr')).mul(100).toDecimalPlaces(0).toNumber()
+            : editCard?.promotionalAprBasisPoints,
+          promotionEndDate: get(form, 'promotionEndDate') || undefined,
+          paymentDayOfMonth: optionalInteger(form, 'paymentDay'),
+          statementCloseDayOfMonth: optionalInteger(form, 'statementCloseDay'),
+          status: get(form, 'cardStatus'),
+          closedOn: get(form, 'closedOn') || undefined,
+        },
+      } as UpsertManagedEntityRequest);
+      if (!response.ok) {
+        setError(response.error);
+        return;
+      }
       setRecords(response.value);
       setEditingCardId(null);
       setMessage(
         editCard ? 'Card terms updated.' : 'Credit card added. Add its current cycle next.',
       );
-      setError(null);
       await refreshCardSnapshot();
-    } else setError(response.error);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Credit card could not be saved.');
+    } finally {
+      finishCardMutation(action);
+    }
   };
 
   const saveCycle = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const response = await window.balanceBook.upsertRecord({
-      entityType: 'card-cycle',
-      payload: {
-        ...(editCycle ?? {}),
-        id: editCycle?.id ?? crypto.randomUUID(),
-        cardId: editCycle?.cardId ?? cycleCardId ?? get(form, 'cardId'),
-        opensOn: get(form, 'opensOn'),
-        closesOn: get(form, 'closesOn'),
-        dueOn: get(form, 'dueOn'),
-        paymentOn: get(form, 'paymentOn') || undefined,
-        state: get(form, 'cycleState'),
-        defaultEstimateCents: cents(form, 'defaultEstimate'),
-        actualActivityCents: cents(form, 'actualActivity'),
-        plannedActivityCents: cents(form, 'plannedActivity'),
-        lockedStatementCents: optionalCents(form, 'lockedStatement'),
-        projectionOverrideCents: optionalCents(form, 'projectionOverride'),
-        actualPaymentCents: optionalCents(form, 'actualPayment'),
-      },
-    } as UpsertManagedEntityRequest);
-    if (response.ok) {
+    const action = 'save-card-cycle';
+    if (!beginCardMutation(action)) return;
+    try {
+      const form = new FormData(event.currentTarget);
+      const response = await window.balanceBook.upsertRecord({
+        entityType: 'card-cycle',
+        payload: {
+          ...(editCycle ?? {}),
+          id: editCycle?.id ?? crypto.randomUUID(),
+          cardId: editCycle?.cardId ?? cycleCardId ?? get(form, 'cardId'),
+          opensOn: get(form, 'opensOn'),
+          closesOn: get(form, 'closesOn'),
+          dueOn: get(form, 'dueOn'),
+          paymentOn: get(form, 'paymentOn') || undefined,
+          state: get(form, 'cycleState'),
+          defaultEstimateCents: cents(form, 'defaultEstimate'),
+          actualActivityCents: cents(form, 'actualActivity'),
+          plannedActivityCents: cents(form, 'plannedActivity'),
+          lockedStatementCents: optionalCents(form, 'lockedStatement'),
+          projectionOverrideCents: optionalCents(form, 'projectionOverride'),
+          actualPaymentCents: optionalCents(form, 'actualPayment'),
+          actualPaymentAccountId: get(form, 'actualPaymentAccountId') || undefined,
+        },
+      } as UpsertManagedEntityRequest);
+      if (!response.ok) {
+        setError(response.error);
+        return;
+      }
       setRecords(response.value);
       setEditingCycleId(null);
       setCycleCardId(null);
       setMessage(editCycle ? 'Statement cycle updated.' : 'Statement cycle added.');
-      setError(null);
       await refreshCardSnapshot();
-    } else setError(response.error);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Statement cycle could not be saved.');
+    } finally {
+      finishCardMutation(action);
+    }
   };
 
   const scheduleCardPayment = async (event: FormEvent<HTMLFormElement>, card: CreditCard) => {
     event.preventDefault();
+    const action = 'save-scheduled-card-payment';
+    if (!beginCardMutation(action)) return;
     const formElement = event.currentTarget;
-    const form = new FormData(formElement);
-    const sourceCycleId = get(form, 'sourceCycleId');
-    const existingPayment = editingScheduledPaymentId
-      ? records.events.find((item) => item.id === editingScheduledPaymentId)
-      : undefined;
-    if (editingScheduledPaymentId && !existingPayment) {
-      setError('That scheduled payment is no longer available. Refresh and try again.');
-      return;
+    try {
+      const form = new FormData(formElement);
+      const sourceCycleId = get(form, 'sourceCycleId');
+      const existingPayment = editingScheduledPaymentId
+        ? records.events.find((item) => item.id === editingScheduledPaymentId)
+        : undefined;
+      if (editingScheduledPaymentId && !existingPayment) {
+        setError('That scheduled payment is no longer available. Refresh and try again.');
+        return;
+      }
+      if (
+        existingPayment?.recurrenceRule &&
+        existingPayment.recurrenceRule.frequency !== 'once' &&
+        !form.has('confirmRecurringSeriesEdit')
+      ) {
+        setError('Confirm that this change should update the entire recurring payment series.');
+        return;
+      }
+      const response = await window.balanceBook.upsertRecord(
+        scheduledCardPaymentRequest({
+          existing: existingPayment,
+          newId: crypto.randomUUID(),
+          accountId: get(form, 'accountId'),
+          date: get(form, 'date') as PlainDateString,
+          amountCents: cents(form, 'amount'),
+          label: get(form, 'label') || `${card.name} scheduled payment`,
+          sourceCycleId: sourceCycleId || undefined,
+          cardId: card.id,
+        }),
+      );
+      if (!response.ok) {
+        setError(response.error);
+        return;
+      }
+      setRecords(response.value);
+      setSchedulingPaymentCardId(null);
+      setEditingScheduledPaymentId(null);
+      setMessage(
+        existingPayment
+          ? `${card.name} payment updated. Its revised cash effect is now in the forecast.`
+          : `${card.name} payment scheduled. Its dated cash effect is now in the forecast.`,
+      );
+      formElement.reset();
+      await refreshCardSnapshot();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Card payment could not be saved.');
+    } finally {
+      finishCardMutation(action);
     }
-    const response = await window.balanceBook.upsertRecord(
-      scheduledCardPaymentRequest({
-        existing: existingPayment,
-        newId: crypto.randomUUID(),
-        accountId: get(form, 'accountId'),
-        date: get(form, 'date') as PlainDateString,
-        amountCents: cents(form, 'amount'),
-        label: get(form, 'label') || `${card.name} scheduled payment`,
-        sourceCycleId: sourceCycleId || undefined,
-        cardId: card.id,
-      }),
-    );
-    if (!response.ok) {
-      setError(response.error);
-      return;
-    }
-    setRecords(response.value);
-    setSchedulingPaymentCardId(null);
-    setEditingScheduledPaymentId(null);
-    setMessage(
-      existingPayment
-        ? `${card.name} payment updated. Its revised cash effect is now in the forecast.`
-        : `${card.name} payment scheduled. Its dated cash effect is now in the forecast.`,
-    );
-    setError(null);
-    formElement.reset();
-    await refreshCardSnapshot();
   };
 
   const recordStatementPayment = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const cycle = records.cardCycles.find((item) => item.id === recordingPaymentCycleId);
-    if (!cycle) {
-      setError('The statement cycle could not be found.');
-      return;
+    const action = 'record-statement-payment';
+    if (!beginCardMutation(action)) return;
+    try {
+      const form = new FormData(event.currentTarget);
+      const cycle = records.cardCycles.find((item) => item.id === recordingPaymentCycleId);
+      if (!cycle) {
+        setError('The statement cycle could not be found.');
+        return;
+      }
+      const paidCents = cents(form, 'actualPayment');
+      const response = await window.balanceBook.upsertRecord({
+        entityType: 'card-cycle',
+        payload: {
+          ...cycle,
+          state: 'paid',
+          paymentOn: get(form, 'paymentOn'),
+          actualPaymentCents: paidCents,
+          actualPaymentAccountId: get(form, 'actualPaymentAccountId'),
+        },
+      } as UpsertManagedEntityRequest);
+      if (!response.ok) {
+        setError(response.error);
+        return;
+      }
+      setRecords(response.value);
+      setRecordingPaymentCycleId(null);
+      const statementCents = cycle.lockedStatementCents ?? 0;
+      setMessage(
+        paidCents < statementCents
+          ? `Partial payment recorded. ${formatMoney(statementCents - paidCents)} now carries forward.`
+          : paidCents > statementCents
+            ? `Statement paid with ${formatMoney(paidCents - statementCents)} extra applied to the card balance.`
+            : 'Statement marked paid in full.',
+      );
+      await refreshCardSnapshot();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Statement payment could not be saved.');
+    } finally {
+      finishCardMutation(action);
     }
-    const response = await window.balanceBook.upsertRecord({
-      entityType: 'card-cycle',
-      payload: {
-        ...cycle,
-        state: 'paid',
-        paymentOn: get(form, 'paymentOn'),
-        actualPaymentCents: cents(form, 'actualPayment'),
-      },
-    } as UpsertManagedEntityRequest);
-    if (!response.ok) {
-      setError(response.error);
-      return;
-    }
-    setRecords(response.value);
-    setRecordingPaymentCycleId(null);
-    const paidCents = cents(form, 'actualPayment');
-    const statementCents = cycle.lockedStatementCents ?? 0;
-    setMessage(
-      paidCents < statementCents
-        ? `Partial payment recorded. ${formatMoney(statementCents - paidCents)} now carries forward.`
-        : paidCents > statementCents
-          ? `Statement paid with ${formatMoney(paidCents - statementCents)} extra applied to the card balance.`
-          : 'Statement marked paid in full.',
-    );
-    setError(null);
-    await refreshCardSnapshot();
   };
 
   const cancelScheduledCardPayment = async (payment: ForecastEvent): Promise<void> => {
-    const response = await window.balanceBook.upsertRecord(
-      makeEditRequest('forecast-event', { ...payment, status: 'cancelled' }),
-    );
-    if (!response.ok) {
-      setError(response.error);
-      return;
+    const action = 'cancel-scheduled-card-payment';
+    if (!beginCardMutation(action)) return;
+    try {
+      const response = await window.balanceBook.upsertRecord(
+        makeEditRequest('forecast-event', { ...payment, status: 'cancelled' }),
+      );
+      if (!response.ok) {
+        setError(response.error);
+        return;
+      }
+      setRecords(response.value);
+      if (editingScheduledPaymentId === payment.id) {
+        setEditingScheduledPaymentId(null);
+        setSchedulingPaymentCardId(null);
+      }
+      setConfirmingRecurringCancellationId(null);
+      setMessage(
+        payment.recurrenceRule && payment.recurrenceRule.frequency !== 'once'
+          ? `${payment.label} recurring series cancelled. Its remaining cash effects were removed from the forecast.`
+          : `${payment.label} cancelled. Its cash effect was removed from the forecast.`,
+      );
+      await refreshCardSnapshot();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Card payment could not be cancelled.');
+    } finally {
+      finishCardMutation(action);
     }
-    setRecords(response.value);
-    if (editingScheduledPaymentId === payment.id) {
-      setEditingScheduledPaymentId(null);
-      setSchedulingPaymentCardId(null);
-    }
-    setMessage(`${payment.label} cancelled. Its cash effect was removed from the forecast.`);
-    setError(null);
-    await refreshCardSnapshot();
   };
 
   const reactivateCard = async (card: CreditCard): Promise<void> => {
-    const request = makeEditRequest('credit-card', card);
-    const payload = request.payload as Record<string, unknown>;
-    payload.status = 'active';
-    payload.closedOn = undefined;
-    const response = await window.balanceBook.upsertRecord(request);
-    if (!response.ok) {
-      setError(response.error);
-      return;
+    const action = 'reactivate-card';
+    if (!beginCardMutation(action)) return;
+    try {
+      const request = makeEditRequest('credit-card', card);
+      const payload = request.payload as Record<string, unknown>;
+      payload.status = 'active';
+      payload.closedOn = undefined;
+      const response = await window.balanceBook.upsertRecord(request);
+      if (!response.ok) {
+        setError(response.error);
+        return;
+      }
+      setRecords(response.value);
+      setMessage(`${card.name} reactivated. New purchases and Spending Power are available again.`);
+      await refreshCardSnapshot();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Card could not be reactivated.');
+    } finally {
+      finishCardMutation(action);
     }
-    setRecords(response.value);
-    setMessage(`${card.name} reactivated. New purchases and Spending Power are available again.`);
-    setError(null);
-    await refreshCardSnapshot();
   };
 
   return (
     <>
       <div className={styles.header}>
-        <Title1 as="h1">Cards and revolving credit</Title1>
+        <Title1 as="h1">Credit cards</Title1>
         <Text>See what is due, what is being spent now, and what the forecast will pay next.</Text>
       </div>
       <section className={styles.summaryStrip} aria-label="Credit card summary">
@@ -6319,10 +7517,17 @@ export const CardsPage = (): React.JSX.Element => {
       )}
       <Card className={styles.panel}>
         <div className={styles.actions}>
-          <Button appearance="primary" onClick={() => startCardEdit('new')}>
+          <Button
+            appearance="primary"
+            disabled={pendingAction !== null}
+            onClick={() => startCardEdit('new')}
+          >
             Add card or credit line
           </Button>
-          <Button onClick={() => navigate('/records?type=credit-card')}>
+          <Button
+            disabled={pendingAction !== null}
+            onClick={() => navigate('/records?type=credit-card')}
+          >
             Advanced card records
           </Button>
         </div>
@@ -6337,6 +7542,8 @@ export const CardsPage = (): React.JSX.Element => {
           <form
             key={editCard?.id ?? 'new-card'}
             className={styles.form}
+            aria-label="Credit card editor"
+            aria-busy={pendingAction === 'save-card'}
             onSubmit={(event) => void saveCard(event)}
           >
             <div className={styles.sectionIntro}>
@@ -6348,6 +7555,7 @@ export const CardsPage = (): React.JSX.Element => {
                 individual statement cycles below.
               </Text>
             </div>
+            {error && <GuidedEditorFeedback message={null} error={error} />}
             <div className={styles.grid}>
               <Field label="Card name">
                 <Input name="name" required defaultValue={editCard?.name} />
@@ -6474,7 +7682,10 @@ export const CardsPage = (): React.JSX.Element => {
                   }
                 />
               </Field>
-              <Field label="APR (optional)">
+              <Field
+                label="Standard APR (optional)"
+                hint="Used only for estimating interest on a balance left unpaid after its due date."
+              >
                 <Input
                   name="apr"
                   inputMode="decimal"
@@ -6529,6 +7740,38 @@ export const CardsPage = (): React.JSX.Element => {
                   defaultValue={editCard?.reportedCarryingBalanceDate ?? ''}
                 />
               </Field>
+              <Checkbox
+                name="promotionalCarryingBalance"
+                defaultChecked={editCard?.promotionalCarryingBalance ?? false}
+                label="This card's entire carried balance has a promotional APR"
+                onChange={(_event, data) =>
+                  setPromotionalCarryingBalanceChoice(data.checked === true)
+                }
+              />
+              {promotionalCarryingBalanceChoice && (
+                <Field
+                  label="Promotional APR"
+                  hint="One rate for the whole carried balance. Enter 0.00 for a 0% promotion."
+                >
+                  <Input
+                    name="promotionalApr"
+                    inputMode="decimal"
+                    required
+                    defaultValue={
+                      editCard?.promotionalAprBasisPoints === undefined
+                        ? ''
+                        : (editCard.promotionalAprBasisPoints / 100).toFixed(2)
+                    }
+                  />
+                </Field>
+              )}
+              {experimentalCardInterestForecastEnabled && (
+                <Checkbox
+                  name="interestForecastEnabled"
+                  defaultChecked={editCard?.interestForecastEnabled ?? false}
+                  label="Include carried-balance interest in experimental forecasts for this card"
+                />
+              )}
               <Field
                 label={
                   paymentPolicyChoice === 'minimum'
@@ -6563,7 +7806,10 @@ export const CardsPage = (): React.JSX.Element => {
                   }
                 />
               </Field>
-              <Field label="Promotion ends (optional)">
+              <Field
+                label="Promotion ends (reference only)"
+                hint="Saved for your reference. This date does not add interest or change forecast payments automatically."
+              >
                 <Input
                   name="promotionEndDate"
                   type="date"
@@ -6572,10 +7818,17 @@ export const CardsPage = (): React.JSX.Element => {
               </Field>
             </div>
             <div className={styles.actions}>
-              <Button appearance="primary" type="submit">
-                Save card
+              <Button appearance="primary" type="submit" disabled={pendingAction !== null}>
+                {pendingAction === 'save-card' ? 'Saving card…' : 'Save card'}
               </Button>
-              <Button type="button" onClick={() => setEditingCardId(null)}>
+              <Button
+                type="button"
+                disabled={pendingAction !== null}
+                onClick={() => {
+                  setEditingCardId(null);
+                  setError(null);
+                }}
+              >
                 Cancel
               </Button>
             </div>
@@ -6583,14 +7836,23 @@ export const CardsPage = (): React.JSX.Element => {
         </Card>
       )}
       {editingCycleId && (
-        <Card className={styles.panel}>
+        <Card
+          ref={cycleEditorRef}
+          className={`${styles.panel} balance-editor-reveal`}
+          tabIndex={-1}
+          aria-labelledby="card-cycle-editor-title"
+        >
           <form
             key={editCycle?.id ?? `new-cycle-${cycleCardId ?? 'card'}`}
             className={styles.form}
+            aria-label="Statement cycle editor"
+            aria-busy={pendingAction === 'save-card-cycle'}
             onSubmit={(event) => void saveCycle(event)}
           >
             <div className={styles.sectionIntro}>
-              <Title2 as="h2">{editCycle ? 'Edit statement cycle' : 'Add statement cycle'}</Title2>
+              <Title2 id="card-cycle-editor-title" as="h2">
+                {editCycle ? 'Edit statement cycle' : 'Add statement cycle'}
+              </Title2>
               <Text>
                 A closed statement is the amount coming due. An open cycle is current spending and
                 must not be added to that already-closed statement.
@@ -6601,6 +7863,7 @@ export const CardsPage = (): React.JSX.Element => {
                 activity that is not already recorded as individual purchases.
               </Text>
             </div>
+            {error && <GuidedEditorFeedback message={null} error={error} />}
             {!editCycle && !cycleCardId && (
               <Field label="Credit card">
                 <Select name="cardId" required>
@@ -6709,27 +7972,52 @@ export const CardsPage = (): React.JSX.Element => {
                 />
               </Field>
               {cycleStateChoice === 'paid' ? (
-                <Field
-                  label="Actual statement payment (optional)"
-                  hint="Leave blank when the full locked statement was paid. Enter the exact amount for a partial payment."
-                >
-                  <Input
-                    name="actualPayment"
-                    inputMode="decimal"
-                    defaultValue={centsInput(editCycle?.actualPaymentCents)}
-                  />
-                </Field>
+                <>
+                  <Field
+                    label="Actual statement payment (optional)"
+                    hint="Leave blank when the full locked statement was paid. Enter the exact amount for a partial payment."
+                  >
+                    <Input
+                      name="actualPayment"
+                      inputMode="decimal"
+                      defaultValue={centsInput(editCycle?.actualPaymentCents)}
+                    />
+                  </Field>
+                  <Field
+                    label="Paid from"
+                    hint="This account receives the recorded cash outflow; future autopay still uses the card default."
+                  >
+                    <Select
+                      name="actualPaymentAccountId"
+                      defaultValue={
+                        editCycle?.actualPaymentAccountId ??
+                        records.cards.find(
+                          (candidate) => candidate.id === (editCycle?.cardId ?? cycleCardId),
+                        )?.fundingAccountId
+                      }
+                      required
+                    >
+                      {records.accounts.map((cashAccount) => (
+                        <option value={cashAccount.id} key={cashAccount.id}>
+                          {cashAccount.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                </>
               ) : null}
             </div>
             <div className={styles.actions}>
-              <Button appearance="primary" type="submit">
-                Save statement cycle
+              <Button appearance="primary" type="submit" disabled={pendingAction !== null}>
+                {pendingAction === 'save-card-cycle' ? 'Saving statement…' : 'Save statement cycle'}
               </Button>
               <Button
                 type="button"
+                disabled={pendingAction !== null}
                 onClick={() => {
                   setEditingCycleId(null);
                   setCycleCardId(null);
+                  setError(null);
                 }}
               >
                 Cancel
@@ -6745,7 +8033,6 @@ export const CardsPage = (): React.JSX.Element => {
         </Card>
       ) : (
         records.cards.map((card) => {
-          const account = records.accounts.find((item) => item.id === card.fundingAccountId);
           const hasCompleteCycleTiming =
             card.paymentDayOfMonth !== undefined && card.statementCloseDayOfMonth !== undefined;
           const cycles = displayedCardCycles
@@ -6781,459 +8068,705 @@ export const CardsPage = (): React.JSX.Element => {
             )
             .sort((left, right) => left.date.localeCompare(right.date));
           const debt = debtByCard.get(card.id)!;
+          const estimatedMonthlyInterestCents = estimatedMonthlyCardInterestCents({
+            card,
+            carryingBalanceCents: debt.carryingBalanceCents,
+          });
+          const carryingBalanceAprBasisPoints = effectiveCarryingBalanceAprBasisPoints(card);
+          const spendingPower = snapshot?.cardSpendingPower?.find(
+            (candidate) => candidate.cardId === card.id,
+          );
           const utilization = card.creditLimitCents
             ? cardUtilizationPresentation(debt.currentBalanceCents, card.creditLimitCents)
             : undefined;
           const editingScheduledPayment = editingScheduledPaymentId
             ? linkedManualPayments.find((payment) => payment.id === editingScheduledPaymentId)
             : undefined;
+          const editingRecurringPaymentSeries =
+            editingScheduledPayment?.recurrenceRule !== undefined &&
+            editingScheduledPayment.recurrenceRule.frequency !== 'once';
           return (
             <Card className={styles.panel} key={card.id}>
               <div className={styles.recordHeader}>
                 <div className={styles.compact}>
                   <Title2 as="h2">{card.name}</Title2>
                   <Text className={styles.muted}>
-                    {card.issuer ? `${card.issuer} · ` : ''}
-                    {card.lastFour ? `ending ${card.lastFour} · ` : ''}
-                    Paid from {account?.name ?? 'missing funding account'} ·{' '}
-                    {card.accountKind.replaceAll('-', ' ')} · Autopay:{' '}
-                    {card.paymentPolicy.replaceAll('-', ' ')}
-                    {card.aprBasisPoints === undefined
-                      ? ''
-                      : ` · ${(card.aprBasisPoints / 100).toFixed(2)}% APR`}
+                    {[card.issuer, card.lastFour ? `ending ${card.lastFour}` : undefined]
+                      .filter(Boolean)
+                      .join(' · ') || 'Card details available'}
                   </Text>
                 </div>
                 <div className={styles.actions}>
-                  <Button onClick={() => startCardEdit(card.id)}>Edit card</Button>
-                  {card.status === 'closed' ? (
-                    <Button onClick={() => void reactivateCard(card)}>Reactivate</Button>
-                  ) : (
-                    <Button
-                      onClick={() => {
-                        startCardEdit(card.id);
-                        setCardStatusChoice('closed');
-                      }}
-                    >
-                      Retire card
-                    </Button>
-                  )}
                   <Button
                     appearance="primary"
-                    onClick={() => {
-                      setCycleCardId(card.id);
-                      startCycleEdit('new');
-                    }}
+                    disabled={pendingAction !== null}
+                    aria-expanded={managedCardId === card.id}
+                    onClick={() =>
+                      setManagedCardId((current) => (current === card.id ? null : card.id))
+                    }
                   >
-                    {card.status === 'closed'
-                      ? 'Add final or historical statement'
-                      : 'Add statement cycle'}
-                  </Button>
-                  <Button
-                    onClick={() => {
-                      setEditingScheduledPaymentId(null);
-                      setSchedulingPaymentCardId((current) =>
-                        current === card.id ? null : card.id,
-                      );
-                    }}
-                  >
-                    Schedule payment
+                    {managedCardId === card.id ? 'Close' : 'Manage'}
                   </Button>
                 </div>
               </div>
-              {utilization !== undefined && (
-                <div className={styles.compact}>
-                  <div className={styles.recordHeader}>
-                    <Text className={styles.eyebrow}>Utilization</Text>
-                    <Text>
-                      <strong>{utilization.utilizationPercent.toFixed(1)}%</strong> ·{' '}
-                      {formatMoney(debt.currentBalanceCents)} of{' '}
-                      {formatMoney(card.creditLimitCents!)}
-                    </Text>
-                  </div>
-                  <div
-                    className={styles.progressTrack}
-                    role="progressbar"
-                    aria-label={`${card.name} utilization`}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={Math.round(utilization.barPercent)}
-                    aria-valuetext={`${utilization.utilizationPercent.toFixed(1)}% utilization`}
-                  >
-                    <span
-                      className={styles.progressFill}
-                      style={{ width: `${utilization.barPercent}%` }}
-                    />
-                  </div>
+              <div className={styles.recordGrid} aria-label={`${card.name} summary`}>
+                <div className={styles.recordCard}>
+                  <Text className={styles.eyebrow}>Safe to spend</Text>
+                  <Text className={styles.amount}>
+                    {spendingPower ? formatMoney(spendingPower.spendingPowerCents) : 'Unavailable'}
+                  </Text>
                 </div>
-              )}
-              {schedulingPaymentCardId === card.id && (
-                <form
-                  key={editingScheduledPayment?.id ?? `new-payment:${card.id}`}
-                  className={styles.inlineEditor}
-                  onSubmit={(event) => void scheduleCardPayment(event, card)}
+                <div className={styles.recordCard}>
+                  <Text className={styles.eyebrow}>Current balance</Text>
+                  <Text className={styles.amount}>{formatMoney(debt.currentBalanceCents)}</Text>
+                </div>
+                <div className={styles.recordCard}>
+                  <Text className={styles.eyebrow}>Last statement</Text>
+                  <Text className={styles.amount}>{formatMoney(debt.latestStatementCents)}</Text>
+                  <Text className={styles.muted}>
+                    {formatMoney(debt.amountCurrentlyDueCents)} still owed
+                  </Text>
+                </div>
+                <div className={styles.recordCard}>
+                  <Text className={styles.eyebrow}>Utilization</Text>
+                  <Text className={styles.amount}>
+                    {utilization ? `${utilization.utilizationPercent.toFixed(1)}%` : 'No limit'}
+                  </Text>
+                </div>
+                <div className={styles.recordCard}>
+                  <Text className={styles.eyebrow}>Due / reset</Text>
+                  <Text>
+                    {comingDue?.dueOn ?? 'No amount due'} ·{' '}
+                    {openCycle?.closesOn ?? 'Cycle timing unavailable'}
+                  </Text>
+                </div>
+                <div className={styles.recordCard}>
+                  <Text className={styles.eyebrow}>Next payment</Text>
+                  <Text>
+                    {linkedManualPayments.find(
+                      (payment) => compareDates(payment.date, asOfDate) >= 0,
+                    )?.date ??
+                      comingDue?.paymentOn ??
+                      comingDue?.dueOn ??
+                      'Not scheduled'}
+                  </Text>
+                </div>
+                <div
+                  className={styles.recordCard}
+                  aria-label={`${card.name} estimated monthly interest`}
                 >
-                  <div className={styles.sectionIntro}>
-                    <strong>
-                      {editingScheduledPayment
-                        ? 'Edit scheduled payment'
-                        : 'Schedule a future payment'}
-                    </strong>
-                    <Text className={styles.muted}>
-                      Add as many dated payments as needed. A payment linked to a statement replaces
-                      that portion of its forecasted autopay; an unlinked payment is additional.
-                    </Text>
-                  </div>
-                  <div className={styles.grid}>
-                    <Field label="Payment date">
-                      <Input
-                        name="date"
-                        type="date"
-                        min={asOfDate}
-                        defaultValue={editingScheduledPayment?.date}
-                        required
-                      />
-                    </Field>
-                    <Field label="Amount">
-                      <Input
-                        name="amount"
-                        inputMode="decimal"
-                        defaultValue={centsInput(editingScheduledPayment?.amountCents)}
-                        required
-                      />
-                    </Field>
-                    <Field label="Pay from">
-                      <Select
-                        name="accountId"
-                        defaultValue={editingScheduledPayment?.accountId ?? card.fundingAccountId}
-                        required
-                      >
-                        {records.accounts.map((cashAccount) => (
-                          <option value={cashAccount.id} key={cashAccount.id}>
-                            {cashAccount.name}
-                          </option>
-                        ))}
-                      </Select>
-                    </Field>
-                    <Field
-                      label="Statement (optional)"
-                      hint="Link it when this payment is meant to cover a specific statement."
+                  <Text className={styles.eyebrow}>Est. monthly interest</Text>
+                  <Text className={styles.amount}>
+                    {estimatedMonthlyInterestCents === undefined
+                      ? 'Not available'
+                      : formatMoney(estimatedMonthlyInterestCents)}
+                  </Text>
+                  <Text className={styles.muted}>
+                    {debt.carryingBalanceCents === 0
+                      ? 'No balance carried'
+                      : carryingBalanceAprBasisPoints === undefined
+                        ? 'Add an APR to estimate'
+                        : `${(carryingBalanceAprBasisPoints / 100).toFixed(2)}%${card.promotionalCarryingBalance ? ' promo' : ''} APR${experimentalCardInterestForecastEnabled && card.interestForecastEnabled ? ' · included in forecast' : ''}`}
+                  </Text>
+                </div>
+              </div>
+              {managedCardId === card.id && (
+                <div className={styles.stack}>
+                  <div className={styles.actions} aria-label={`${card.name} management actions`}>
+                    <Button
+                      disabled={pendingAction !== null}
+                      onClick={() => startCardEdit(card.id)}
                     >
-                      <Select
-                        name="sourceCycleId"
-                        defaultValue={editingScheduledPayment?.sourceRecordId ?? ''}
-                      >
-                        <option value="">Additional or not yet assigned</option>
-                        {cycles
-                          .filter(
-                            (cycle) =>
-                              cycle.state !== 'paid' ||
-                              cycle.id === editingScheduledPayment?.sourceRecordId,
-                          )
-                          .sort((left, right) => left.dueOn.localeCompare(right.dueOn))
-                          .map((cycle) => (
-                            <option value={cycle.id} key={cycle.id}>
-                              Due {cycle.dueOn} ·{' '}
-                              {formatMoney(
-                                cycle.lockedStatementCents ?? projectedCycleObligation(card, cycle),
-                              )}
-                            </option>
-                          ))}
-                      </Select>
-                    </Field>
-                    <Field label="Label (optional)">
-                      <Input
-                        name="label"
-                        defaultValue={
-                          editingScheduledPayment?.label ?? `${card.name} scheduled payment`
-                        }
-                      />
-                    </Field>
-                  </div>
-                  <div className={styles.actions}>
-                    <Button type="submit" appearance="primary">
-                      {editingScheduledPayment ? 'Save payment changes' : 'Add payment to forecast'}
+                      Edit card
                     </Button>
                     <Button
-                      type="button"
-                      onClick={() => {
-                        setSchedulingPaymentCardId(null);
-                        setEditingScheduledPaymentId(null);
-                      }}
+                      disabled={pendingAction !== null}
+                      onClick={() => startCycleEdit('new', card.id)}
                     >
-                      Cancel
+                      {card.status === 'closed' ? 'Add historical statement' : 'Add statement'}
                     </Button>
-                  </div>
-                </form>
-              )}
-              {card.status === 'closed' && (
-                <div role="status" className={styles.muted}>
-                  Retired {card.closedOn}. New purchases, baselines, and Spending Power are off;
-                  existing debt, statement history, and payoff cash remain tracked.
-                </div>
-              )}
-              {staleEstimatedCycle && (
-                <div role="alert" className={styles.error}>
-                  The cycle that closed {staleEstimatedCycle.closesOn} still has only an estimate.
-                  Its {formatMoney(projectedCycleObligation(card, staleEstimatedCycle))} baseline
-                  remains in the cash forecast until you enter the locked statement; no actual was
-                  invented.
-                </div>
-              )}
-              <div className={styles.recordGrid}>
-                <Card className={styles.recordCard}>
-                  <Text className={styles.eyebrow}>Latest closed statement</Text>
-                  <Text className={styles.amount}>
-                    {latestStatement
-                      ? latestStatement.lockedStatementCents === undefined
-                        ? 'Amount not recorded'
-                        : formatMoney(latestStatement.lockedStatementCents)
-                      : 'Not entered'}
-                  </Text>
-                  <Text className={styles.muted}>
-                    {latestStatement
-                      ? latestStatement.state === 'paid' &&
-                        latestStatement.actualPaymentCents !== undefined &&
-                        latestStatement.lockedStatementCents !== undefined &&
-                        latestStatement.actualPaymentCents < latestStatement.lockedStatementCents
-                        ? `Partial payment ${formatMoney(latestStatement.actualPaymentCents)} recorded ${latestStatement.paymentOn ?? latestStatement.dueOn}`
-                        : `${latestStatement.state === 'paid' ? 'Paid in full' : 'Due'} ${latestStatement.paymentOn ?? latestStatement.dueOn}`
-                      : 'Add the most recently closed statement.'}
-                  </Text>
-                  {comingDue && (
-                    <div className={styles.actions}>
-                      <Button onClick={() => setRecordingPaymentCycleId(comingDue.id)}>
-                        Mark statement paid
+                    <Button
+                      disabled={pendingAction !== null}
+                      onClick={() => startScheduledPaymentEdit(card.id)}
+                    >
+                      Schedule payment
+                    </Button>
+                    {card.status === 'closed' ? (
+                      <Button
+                        disabled={pendingAction !== null}
+                        onClick={() => void reactivateCard(card)}
+                      >
+                        Reactivate
                       </Button>
-                      <Button onClick={() => startCycleEdit(comingDue.id)}>Edit statement</Button>
-                    </div>
-                  )}
-                </Card>
-                <Card className={styles.recordCard}>
-                  <Text className={styles.eyebrow}>Amount currently due</Text>
-                  <Text className={styles.amount}>{formatMoney(debt.amountCurrentlyDueCents)}</Text>
-                  <Text className={styles.muted}>
-                    {debt.overdue
-                      ? 'Past its recorded due date; review the payment status.'
-                      : debt.amountCurrentlyDueCents > 0
-                        ? 'Statement debt that has not yet been recorded as paid.'
-                        : 'No statement amount currently due.'}
-                  </Text>
-                </Card>
-                <Card className={styles.recordCard}>
-                  <Text className={styles.eyebrow}>Current cycle spending recorded</Text>
-                  <Text className={styles.amount}>
-                    {openCycle ? formatMoney(openCycle.actualActivityCents) : 'Not entered'}
-                  </Text>
-                  <Text className={styles.muted}>
-                    {openCycle
-                      ? `${formatMoney(openCycle.plannedActivityCents)} additional planned or detailed · ${openCycleNeedsStatement ? `closed ${openCycle.closesOn}; enter the locked statement` : `closes ${openCycle.closesOn}`}`
-                      : 'Add the cycle that is still open.'}
-                  </Text>
-                  {openCycleNeedsStatement && (
-                    <Text className={styles.error}>
-                      This cycle is past its close date but has no locked statement yet. Its entered
-                      activity remains visible; no statement amount was invented.
-                    </Text>
-                  )}
-                  {openCycle && (
-                    <Button onClick={() => startCycleEdit(openCycle.id)}>
-                      Update current spending
-                    </Button>
-                  )}
-                </Card>
-                <Card className={styles.recordCard}>
-                  <Text className={styles.eyebrow}>Total current balance</Text>
-                  <Text className={styles.amount}>{formatMoney(debt.currentBalanceCents)}</Text>
-                  <Text className={styles.muted}>
-                    {debt.source === 'reported'
-                      ? `Issuer-reported${card.reportedBalanceDate ? ` as of ${card.reportedBalanceDate}` : ''}.`
-                      : 'Derived from the unpaid statement plus posted open-cycle activity.'}
-                  </Text>
-                  {debt.reportedBalanceHasUnresolvedSameCycleActivity && (
-                    <Text className={styles.warning}>
-                      Refresh the issuer balance: this dated snapshot overlaps an undated aggregate
-                      cycle total, so only later dated purchases can be rolled forward exactly.
-                    </Text>
-                  )}
-                </Card>
-                {debt.availableCreditCents !== undefined && (
-                  <Card className={styles.recordCard}>
-                    <Text className={styles.eyebrow}>Available credit</Text>
-                    <Text className={styles.amount}>{formatMoney(debt.availableCreditCents)}</Text>
-                    <Text className={styles.muted}>
-                      Issuer capacity after the current balance. This is not cash and does not
-                      increase safe-to-spend.
-                    </Text>
-                  </Card>
-                )}
-                <Card className={styles.recordCard}>
-                  <Text className={styles.eyebrow}>Balance carrying</Text>
-                  <Text className={styles.amount}>{formatMoney(debt.carryingBalanceCents)}</Text>
-                  <Text className={debt.carryingBalanceCents > 0 ? styles.error : styles.positive}>
-                    {debt.carryingBalanceCents === 0
-                      ? 'Paid in full — statement history remains visible.'
-                      : 'Unpaid past a due date or explicitly reported as carried.'}
-                  </Text>
-                  {debt.projectedCarryingBalanceCents !== debt.carryingBalanceCents && (
-                    <Text className={styles.muted}>
-                      Projected after the next payment:{' '}
-                      {formatMoney(debt.projectedCarryingBalanceCents)}
-                    </Text>
-                  )}
-                </Card>
-                <Card className={styles.recordCard}>
-                  <Text className={styles.eyebrow}>Next modeled statement</Text>
-                  <Text className={styles.amount}>
-                    {!futureCycle && !hasCompleteCycleTiming
-                      ? 'Timing incomplete'
-                      : formatMoney(
-                          futureCycle
-                            ? projectedCycleObligation(card, futureCycle)
-                            : card.defaultFutureStatementCents,
-                        )}
-                  </Text>
-                  <Text className={styles.muted}>
-                    {futureCycle
-                      ? `Due ${futureCycle.dueOn}`
-                      : hasCompleteCycleTiming
-                        ? `Uses ${card.estimatePolicy.replaceAll('-', ' ')} until a cycle is entered.`
-                        : 'No dates were inferred. Add the real close and payment timing when known.'}
-                  </Text>
-                  {futureCycle && (
-                    <Button onClick={() => startCycleEdit(futureCycle.id)}>Edit estimate</Button>
-                  )}
-                </Card>
-              </div>
-              {recordingPaymentCycleId &&
-                cycles.some((cycle) => cycle.id === recordingPaymentCycleId) &&
-                (() => {
-                  const paymentCycle = cycles.find(
-                    (cycle) => cycle.id === recordingPaymentCycleId,
-                  )!;
-                  return (
-                    <form className={styles.inlineEditor} onSubmit={recordStatementPayment}>
-                      <div className={styles.sectionIntro}>
-                        <strong>Record statement payment</strong>
-                        <Text className={styles.muted}>
-                          Forecasts continue to assume the configured autopay until you record what
-                          actually happened. Paying less than the statement creates card carry.
+                    ) : (
+                      <Button
+                        disabled={pendingAction !== null}
+                        onClick={() => {
+                          startCardEdit(card.id);
+                          setCardStatusChoice('closed');
+                        }}
+                      >
+                        Retire
+                      </Button>
+                    )}
+                  </div>
+                  {utilization !== undefined && (
+                    <div className={styles.compact}>
+                      <div className={styles.recordHeader}>
+                        <Text className={styles.eyebrow}>Utilization</Text>
+                        <Text>
+                          <strong>{utilization.utilizationPercent.toFixed(1)}%</strong> ·{' '}
+                          {formatMoney(debt.currentBalanceCents)} of{' '}
+                          {formatMoney(card.creditLimitCents!)}
                         </Text>
                       </div>
+                      <div
+                        className={styles.progressTrack}
+                        role="progressbar"
+                        aria-label={`${card.name} utilization`}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={Math.round(utilization.barPercent)}
+                        aria-valuetext={`${utilization.utilizationPercent.toFixed(1)}% utilization`}
+                      >
+                        <span
+                          className={styles.progressFill}
+                          style={{ width: `${utilization.barPercent}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {schedulingPaymentCardId === card.id && (
+                    <form
+                      ref={scheduledPaymentEditorRef}
+                      key={editingScheduledPayment?.id ?? `new-payment:${card.id}`}
+                      className={`${styles.inlineEditor} balance-editor-reveal`}
+                      tabIndex={-1}
+                      aria-labelledby={`scheduled-payment-editor-title-${card.id}`}
+                      aria-label={`${card.name} scheduled payment editor`}
+                      aria-busy={pendingAction === 'save-scheduled-card-payment'}
+                      onSubmit={(event) => void scheduleCardPayment(event, card)}
+                    >
+                      <div className={styles.sectionIntro}>
+                        <strong id={`scheduled-payment-editor-title-${card.id}`}>
+                          {editingScheduledPayment
+                            ? editingRecurringPaymentSeries
+                              ? 'Edit recurring payment series'
+                              : 'Edit scheduled payment'
+                            : 'Schedule a future payment'}
+                        </strong>
+                        <Text className={styles.muted}>
+                          {editingRecurringPaymentSeries
+                            ? `This record controls the entire ${incomeCadenceLabel(editingScheduledPayment!)} series. Every future occurrence will use the saved amount, account, and timing.`
+                            : 'Add as many dated payments as needed. A payment linked to a statement replaces that portion of its forecasted autopay; an unlinked payment is additional.'}
+                        </Text>
+                      </div>
+                      {error && <GuidedEditorFeedback message={null} error={error} />}
                       <div className={styles.grid}>
-                        <Field label="Paid on">
+                        <Field label="Payment date">
                           <Input
-                            name="paymentOn"
+                            name="date"
                             type="date"
-                            min={paymentCycle.closesOn}
-                            max={asOfDate}
-                            defaultValue={asOfDate}
+                            min={editingScheduledPayment ? undefined : asOfDate}
+                            defaultValue={editingScheduledPayment?.date}
                             required
                           />
                         </Field>
-                        <Field label="Amount paid">
+                        <Field label="Amount">
                           <Input
-                            name="actualPayment"
+                            name="amount"
                             inputMode="decimal"
-                            defaultValue={centsInput(paymentCycle.lockedStatementCents)}
+                            defaultValue={centsInput(editingScheduledPayment?.amountCents)}
                             required
+                          />
+                        </Field>
+                        <Field label="Pay from">
+                          <Select
+                            name="accountId"
+                            defaultValue={
+                              editingScheduledPayment?.accountId ?? card.fundingAccountId
+                            }
+                            required
+                          >
+                            {records.accounts.map((cashAccount) => (
+                              <option value={cashAccount.id} key={cashAccount.id}>
+                                {cashAccount.name}
+                              </option>
+                            ))}
+                          </Select>
+                        </Field>
+                        <Field
+                          label="Statement (optional)"
+                          hint="Link it when this payment is meant to cover a specific statement."
+                        >
+                          <Select
+                            name="sourceCycleId"
+                            defaultValue={editingScheduledPayment?.sourceRecordId ?? ''}
+                          >
+                            <option value="">Additional or not yet assigned</option>
+                            {cycles
+                              .filter(
+                                (cycle) =>
+                                  cycle.state !== 'paid' ||
+                                  cycle.id === editingScheduledPayment?.sourceRecordId,
+                              )
+                              .sort((left, right) => left.dueOn.localeCompare(right.dueOn))
+                              .map((cycle) => (
+                                <option value={cycle.id} key={cycle.id}>
+                                  Due {cycle.dueOn} ·{' '}
+                                  {formatMoney(
+                                    cycle.lockedStatementCents ??
+                                      projectedCycleObligation(card, cycle),
+                                  )}
+                                </option>
+                              ))}
+                          </Select>
+                        </Field>
+                        <Field label="Label (optional)">
+                          <Input
+                            name="label"
+                            defaultValue={
+                              editingScheduledPayment?.label ?? `${card.name} scheduled payment`
+                            }
                           />
                         </Field>
                       </div>
+                      {editingRecurringPaymentSeries && (
+                        <Checkbox
+                          name="confirmRecurringSeriesEdit"
+                          required
+                          label="Apply these changes to the entire recurring payment series"
+                        />
+                      )}
                       <div className={styles.actions}>
-                        <Button type="submit" appearance="primary">
-                          Mark statement paid
+                        <Button
+                          type="submit"
+                          appearance="primary"
+                          disabled={pendingAction !== null}
+                        >
+                          {pendingAction === 'save-scheduled-card-payment'
+                            ? 'Saving payment…'
+                            : editingScheduledPayment
+                              ? 'Save payment changes'
+                              : 'Add payment to forecast'}
                         </Button>
-                        <Button type="button" onClick={() => setRecordingPaymentCycleId(null)}>
+                        <Button
+                          type="button"
+                          disabled={pendingAction !== null}
+                          onClick={() => {
+                            setSchedulingPaymentCardId(null);
+                            setEditingScheduledPaymentId(null);
+                            setError(null);
+                          }}
+                        >
                           Cancel
                         </Button>
                       </div>
                     </form>
-                  );
-                })()}
-              {linkedManualPayments.length > 0 && (
-                <div className={styles.divider}>
-                  <div className={styles.sectionIntro}>
-                    <strong>Manual payment schedule</strong>
-                    <Text className={styles.muted}>
-                      These are dated cash records linked to this card. They are not treated as
-                      statement balances or added again by the card-cycle engine.
-                    </Text>
-                  </div>
-                  <div className={styles.rows}>
-                    {linkedManualPayments.map((payment) => (
-                      <div className={styles.row} key={payment.id}>
-                        <div>
-                          <strong>{payment.label}</strong>
-                          <br />
-                          <Text>
-                            {payment.date} · {payment.status}
-                          </Text>
-                        </div>
+                  )}
+                  {card.status === 'closed' && (
+                    <div role="status" className={styles.muted}>
+                      Retired {card.closedOn}. New purchases, baselines, and Spending Power are off;
+                      existing debt, statement history, and payoff cash remain tracked.
+                    </div>
+                  )}
+                  {staleEstimatedCycle && (
+                    <div role="alert" className={styles.error}>
+                      The cycle that closed {staleEstimatedCycle.closesOn} still has only an
+                      estimate. Its{' '}
+                      {formatMoney(projectedCycleObligation(card, staleEstimatedCycle))} baseline
+                      remains in the cash forecast until you enter the locked statement; no actual
+                      was invented.
+                    </div>
+                  )}
+                  <div className={styles.recordGrid}>
+                    <Card className={styles.recordCard}>
+                      <Text className={styles.eyebrow}>Latest closed statement</Text>
+                      <Text className={styles.amount}>
+                        {latestStatement
+                          ? latestStatement.lockedStatementCents === undefined
+                            ? 'Amount not recorded'
+                            : formatMoney(latestStatement.lockedStatementCents)
+                          : 'Not entered'}
+                      </Text>
+                      <Text className={styles.muted}>
+                        {latestStatement
+                          ? latestStatement.state === 'paid' &&
+                            latestStatement.actualPaymentCents !== undefined &&
+                            latestStatement.lockedStatementCents !== undefined &&
+                            latestStatement.actualPaymentCents <
+                              latestStatement.lockedStatementCents
+                            ? `Partial payment ${formatMoney(latestStatement.actualPaymentCents)} recorded ${latestStatement.paymentOn ?? latestStatement.dueOn}`
+                            : `${latestStatement.state === 'paid' ? 'Paid in full' : 'Due'} ${latestStatement.paymentOn ?? latestStatement.dueOn}`
+                          : 'Add the most recently closed statement.'}
+                      </Text>
+                      {latestStatement?.state === 'paid' && (
+                        <Text className={styles.muted}>
+                          Paid from{' '}
+                          {records.accounts.find(
+                            (cashAccount) =>
+                              cashAccount.id ===
+                              (latestStatement.actualPaymentAccountId ?? card.fundingAccountId),
+                          )?.name ?? 'missing cash account'}
+                        </Text>
+                      )}
+                      {comingDue && (
                         <div className={styles.actions}>
-                          <Text>{formatMoney(payment.amountCents)}</Text>
-                          {payment.status !== 'paid' &&
-                            compareDates(payment.date, asOfDate) >= 0 && (
-                              <>
-                                <Button
-                                  type="button"
-                                  onClick={() => {
-                                    setEditingScheduledPaymentId(payment.id);
-                                    setSchedulingPaymentCardId(card.id);
-                                    setMessage(null);
-                                    setError(null);
-                                  }}
-                                >
-                                  Edit payment
-                                </Button>
-                                <Button
-                                  type="button"
-                                  onClick={() => void cancelScheduledCardPayment(payment)}
-                                >
-                                  Cancel payment
-                                </Button>
-                              </>
+                          <Button
+                            disabled={pendingAction !== null}
+                            onClick={() => startStatementPaymentEdit(comingDue.id)}
+                          >
+                            Mark statement paid
+                          </Button>
+                          <Button
+                            disabled={pendingAction !== null}
+                            onClick={() => startCycleEdit(comingDue.id)}
+                          >
+                            Edit statement
+                          </Button>
+                        </div>
+                      )}
+                    </Card>
+                    <Card className={styles.recordCard}>
+                      <Text className={styles.eyebrow}>Amount currently due</Text>
+                      <Text className={styles.amount}>
+                        {formatMoney(debt.amountCurrentlyDueCents)}
+                      </Text>
+                      <Text className={styles.muted}>
+                        {debt.overdue
+                          ? 'Past its recorded due date; review the payment status.'
+                          : debt.amountCurrentlyDueCents > 0
+                            ? 'Statement debt that has not yet been recorded as paid.'
+                            : 'No statement amount currently due.'}
+                      </Text>
+                    </Card>
+                    <Card className={styles.recordCard}>
+                      <Text className={styles.eyebrow}>Current cycle spending recorded</Text>
+                      <Text className={styles.amount}>
+                        {openCycle ? formatMoney(openCycle.actualActivityCents) : 'Not entered'}
+                      </Text>
+                      <Text className={styles.muted}>
+                        {openCycle
+                          ? `${formatMoney(openCycle.plannedActivityCents)} additional planned or detailed · ${openCycleNeedsStatement ? `closed ${openCycle.closesOn}; enter the locked statement` : `closes ${openCycle.closesOn}`}`
+                          : 'Add the cycle that is still open.'}
+                      </Text>
+                      {openCycleNeedsStatement && (
+                        <Text className={styles.error}>
+                          This cycle is past its close date but has no locked statement yet. Its
+                          entered activity remains visible; no statement amount was invented.
+                        </Text>
+                      )}
+                      {openCycle && (
+                        <Button
+                          disabled={pendingAction !== null}
+                          onClick={() => startCycleEdit(openCycle.id)}
+                        >
+                          Update current spending
+                        </Button>
+                      )}
+                    </Card>
+                    <Card className={styles.recordCard}>
+                      <Text className={styles.eyebrow}>Total current balance</Text>
+                      <Text className={styles.amount}>{formatMoney(debt.currentBalanceCents)}</Text>
+                      <Text className={styles.muted}>
+                        {debt.source === 'reported'
+                          ? `Issuer-reported${card.reportedBalanceDate ? ` as of ${card.reportedBalanceDate}` : ''}.`
+                          : 'Derived from the unpaid statement plus posted open-cycle activity.'}
+                      </Text>
+                      {debt.reportedBalanceHasUnresolvedSameCycleActivity && (
+                        <Text className={styles.warning}>
+                          Refresh the issuer balance: this dated snapshot overlaps an undated
+                          aggregate cycle total, so only later dated purchases can be rolled forward
+                          exactly.
+                        </Text>
+                      )}
+                    </Card>
+                    {debt.availableCreditCents !== undefined && (
+                      <Card className={styles.recordCard}>
+                        <Text className={styles.eyebrow}>Available credit</Text>
+                        <Text className={styles.amount}>
+                          {formatMoney(debt.availableCreditCents)}
+                        </Text>
+                        <Text className={styles.muted}>
+                          Issuer capacity after the current balance. This is not cash and does not
+                          increase safe-to-spend.
+                        </Text>
+                      </Card>
+                    )}
+                    <Card className={styles.recordCard}>
+                      <Text className={styles.eyebrow}>Balance carrying</Text>
+                      <Text className={styles.amount}>
+                        {formatMoney(debt.carryingBalanceCents)}
+                      </Text>
+                      <Text
+                        className={debt.carryingBalanceCents > 0 ? styles.error : styles.positive}
+                      >
+                        {debt.carryingBalanceCents === 0
+                          ? 'Paid in full — statement history remains visible.'
+                          : 'Unpaid past a due date or explicitly reported as carried.'}
+                      </Text>
+                      {debt.projectedCarryingBalanceCents !== debt.carryingBalanceCents && (
+                        <Text className={styles.muted}>
+                          Projected after the next payment:{' '}
+                          {formatMoney(debt.projectedCarryingBalanceCents)}
+                        </Text>
+                      )}
+                    </Card>
+                    <Card className={styles.recordCard}>
+                      <Text className={styles.eyebrow}>Next modeled statement</Text>
+                      <Text className={styles.amount}>
+                        {!futureCycle && !hasCompleteCycleTiming
+                          ? 'Timing incomplete'
+                          : formatMoney(
+                              futureCycle
+                                ? projectedCycleObligation(card, futureCycle)
+                                : card.defaultFutureStatementCents,
                             )}
-                        </div>
-                      </div>
-                    ))}
+                      </Text>
+                      <Text className={styles.muted}>
+                        {futureCycle
+                          ? `Due ${futureCycle.dueOn}`
+                          : hasCompleteCycleTiming
+                            ? `Uses ${card.estimatePolicy.replaceAll('-', ' ')} until a cycle is entered.`
+                            : 'No dates were inferred. Add the real close and payment timing when known.'}
+                      </Text>
+                      {futureCycle && (
+                        <Button
+                          disabled={pendingAction !== null}
+                          onClick={() => startCycleEdit(futureCycle.id)}
+                        >
+                          Edit estimate
+                        </Button>
+                      )}
+                    </Card>
                   </div>
+                  {recordingPaymentCycleId &&
+                    cycles.some((cycle) => cycle.id === recordingPaymentCycleId) &&
+                    (() => {
+                      const paymentCycle = cycles.find(
+                        (cycle) => cycle.id === recordingPaymentCycleId,
+                      )!;
+                      return (
+                        <form
+                          ref={statementPaymentEditorRef}
+                          className={`${styles.inlineEditor} balance-editor-reveal`}
+                          tabIndex={-1}
+                          aria-labelledby={`statement-payment-editor-title-${paymentCycle.id}`}
+                          aria-label="Statement payment editor"
+                          aria-busy={pendingAction === 'record-statement-payment'}
+                          onSubmit={recordStatementPayment}
+                        >
+                          <div className={styles.sectionIntro}>
+                            <strong id={`statement-payment-editor-title-${paymentCycle.id}`}>
+                              Record statement payment
+                            </strong>
+                            <Text className={styles.muted}>
+                              Forecasts continue to assume the configured autopay until you record
+                              what actually happened. Paying less than the statement creates card
+                              carry.
+                            </Text>
+                          </div>
+                          {error && <GuidedEditorFeedback message={null} error={error} />}
+                          <div className={styles.grid}>
+                            <Field label="Paid on">
+                              <Input
+                                name="paymentOn"
+                                type="date"
+                                min={paymentCycle.closesOn}
+                                max={asOfDate}
+                                defaultValue={asOfDate}
+                                required
+                              />
+                            </Field>
+                            <Field label="Amount paid">
+                              <Input
+                                name="actualPayment"
+                                inputMode="decimal"
+                                defaultValue={centsInput(paymentCycle.lockedStatementCents)}
+                                required
+                              />
+                            </Field>
+                            <Field
+                              label="Paid from"
+                              hint="Only this account receives the recorded cash outflow."
+                            >
+                              <Select
+                                name="actualPaymentAccountId"
+                                defaultValue={
+                                  paymentCycle.actualPaymentAccountId ?? card.fundingAccountId
+                                }
+                                required
+                              >
+                                {records.accounts.map((cashAccount) => (
+                                  <option value={cashAccount.id} key={cashAccount.id}>
+                                    {cashAccount.name}
+                                  </option>
+                                ))}
+                              </Select>
+                            </Field>
+                          </div>
+                          <div className={styles.actions}>
+                            <Button
+                              type="submit"
+                              appearance="primary"
+                              disabled={pendingAction !== null}
+                            >
+                              {pendingAction === 'record-statement-payment'
+                                ? 'Recording payment…'
+                                : 'Mark statement paid'}
+                            </Button>
+                            <Button
+                              type="button"
+                              disabled={pendingAction !== null}
+                              onClick={() => {
+                                setRecordingPaymentCycleId(null);
+                                setError(null);
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </form>
+                      );
+                    })()}
+                  {linkedManualPayments.length > 0 && (
+                    <div className={styles.divider}>
+                      <div className={styles.sectionIntro}>
+                        <strong>Manual payment schedule</strong>
+                        <Text className={styles.muted}>
+                          These are dated cash records linked to this card. They are not treated as
+                          statement balances or added again by the card-cycle engine.
+                        </Text>
+                      </div>
+                      <div className={styles.rows}>
+                        {linkedManualPayments.map((payment) => (
+                          <div className={styles.row} key={payment.id}>
+                            <div>
+                              <strong>{payment.label}</strong>
+                              <br />
+                              <Text>
+                                {payment.date} · {payment.status}
+                                {payment.recurrenceRule &&
+                                payment.recurrenceRule.frequency !== 'once'
+                                  ? ` · ${incomeCadenceLabel(payment)} series`
+                                  : ''}
+                              </Text>
+                              {(payment.status === 'planned' || payment.status === 'scheduled') &&
+                                compareDates(payment.date, asOfDate) < 0 && (
+                                  <Text className={styles.warning}>
+                                    Past planned date — update or cancel this record.
+                                  </Text>
+                                )}
+                            </div>
+                            <div className={styles.actions}>
+                              <Text>{formatMoney(payment.amountCents)}</Text>
+                              {payment.status !== 'paid' && (
+                                <>
+                                  <Button
+                                    type="button"
+                                    disabled={pendingAction !== null}
+                                    onClick={() => startScheduledPaymentEdit(card.id, payment.id)}
+                                  >
+                                    {payment.recurrenceRule &&
+                                    payment.recurrenceRule.frequency !== 'once'
+                                      ? 'Edit entire series'
+                                      : 'Edit payment'}
+                                  </Button>
+                                  {payment.recurrenceRule &&
+                                  payment.recurrenceRule.frequency !== 'once' ? (
+                                    confirmingRecurringCancellationId === payment.id ? (
+                                      <>
+                                        <Button
+                                          type="button"
+                                          appearance="primary"
+                                          disabled={pendingAction !== null}
+                                          onClick={() => void cancelScheduledCardPayment(payment)}
+                                        >
+                                          Confirm cancel series
+                                        </Button>
+                                        <Button
+                                          type="button"
+                                          disabled={pendingAction !== null}
+                                          onClick={() => setConfirmingRecurringCancellationId(null)}
+                                        >
+                                          Keep series
+                                        </Button>
+                                      </>
+                                    ) : (
+                                      <Button
+                                        type="button"
+                                        disabled={pendingAction !== null}
+                                        onClick={() =>
+                                          setConfirmingRecurringCancellationId(payment.id)
+                                        }
+                                      >
+                                        Cancel entire series
+                                      </Button>
+                                    )
+                                  ) : (
+                                    <Button
+                                      type="button"
+                                      disabled={pendingAction !== null}
+                                      onClick={() => void cancelScheduledCardPayment(payment)}
+                                    >
+                                      Cancel payment
+                                    </Button>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <details className={styles.divider}>
+                    <summary>Older statement history ({history.length})</summary>
+                    {history.length === 0 ? (
+                      <p>
+                        <Text>No paid statements have been recorded.</Text>
+                      </p>
+                    ) : (
+                      <div className={styles.rows}>
+                        {history.map((cycle) => (
+                          <div className={styles.row} key={cycle.id}>
+                            <div>
+                              <strong>{cycle.closesOn}</strong>
+                              <br />
+                              <Text>
+                                Paid {cycle.paymentOn ?? cycle.dueOn} · due {cycle.dueOn} · from{' '}
+                                {records.accounts.find(
+                                  (cashAccount) =>
+                                    cashAccount.id ===
+                                    (cycle.actualPaymentAccountId ?? card.fundingAccountId),
+                                )?.name ?? 'missing cash account'}
+                              </Text>
+                            </div>
+                            <div className={styles.actions}>
+                              <Text>
+                                {cycle.lockedStatementCents === undefined
+                                  ? 'Amount not recorded'
+                                  : formatMoney(cycle.lockedStatementCents)}
+                              </Text>
+                              <Button
+                                disabled={pendingAction !== null}
+                                onClick={() => startCycleEdit(cycle.id)}
+                              >
+                                Edit
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </details>
+                  {reward && (
+                    <Text className={styles.muted}>
+                      Rewards tracked separately: {(reward.baseRateBasisPoints / 100).toFixed(2)}%{' '}
+                      {reward.rewardType} · {reward.treatment}
+                    </Text>
+                  )}
                 </div>
-              )}
-              <details className={styles.divider}>
-                <summary>Older statement history ({history.length})</summary>
-                {history.length === 0 ? (
-                  <p>
-                    <Text>No paid statements have been recorded.</Text>
-                  </p>
-                ) : (
-                  <div className={styles.rows}>
-                    {history.map((cycle) => (
-                      <div className={styles.row} key={cycle.id}>
-                        <div>
-                          <strong>{cycle.closesOn}</strong>
-                          <br />
-                          <Text>
-                            Paid {cycle.paymentOn ?? cycle.dueOn} · due {cycle.dueOn}
-                          </Text>
-                        </div>
-                        <div className={styles.actions}>
-                          <Text>
-                            {cycle.lockedStatementCents === undefined
-                              ? 'Amount not recorded'
-                              : formatMoney(cycle.lockedStatementCents)}
-                          </Text>
-                          <Button onClick={() => startCycleEdit(cycle.id)}>Edit</Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </details>
-              {reward && (
-                <Text className={styles.muted}>
-                  Rewards tracked separately: {(reward.baseRateBasisPoints / 100).toFixed(2)}%{' '}
-                  {reward.rewardType} · {reward.treatment}
-                </Text>
               )}
             </Card>
           );
@@ -7251,7 +8784,10 @@ export const LoansPage = (): React.JSX.Element => {
   const [editingLoanId, setEditingLoanId] = useState<string | 'new' | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const loanEditorRef = useEditorReveal<HTMLDivElement>(editingLoanId);
+  const [editorRevealRequest, setEditorRevealRequest] = useState(0);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [mutationLock] = useState(createImmediateActionLock);
+  const loanEditorRef = useEditorReveal<HTMLDivElement>(editingLoanId, editorRevealRequest);
   useEffect(() => {
     void Promise.all([loadRecords(), window.balanceBook.getForecast()])
       .then(([loaded, forecast]) => {
@@ -7338,179 +8874,195 @@ export const LoansPage = (): React.JSX.Element => {
     editingInferredFields.has(field) && formattedValue
       ? `Calculated: ${formattedValue}`
       : undefined;
+  const startLoanEdit = (loanId: string | 'new'): void => {
+    if (mutationLock.active() !== null) return;
+    setEditingLoanId(loanId);
+    setMessage(null);
+    setError(null);
+    setEditorRevealRequest((request) => request + 1);
+  };
   const saveLoan = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const recalculateInferredFields = form.get('recalculateInferredFields') === 'on';
-    const preservedCalculatedFields = new Set<LoanInferredField>();
-    const resolveField = <T,>(
-      field: LoanInferredField,
-      submitted: T | undefined,
-      stored: T | undefined,
-    ): T | undefined => {
-      const resolution = resolveLoanEditField({
-        field,
-        submitted,
-        stored,
-        inferredFields: editingInferredFields,
-        recalculate: recalculateInferredFields,
+    const action = 'save-loan';
+    if (!mutationLock.acquire(action)) return;
+    setPendingAction(action);
+    setMessage(null);
+    setError(null);
+    try {
+      const form = new FormData(event.currentTarget);
+      const recalculateInferredFields = form.get('recalculateInferredFields') === 'on';
+      const preservedCalculatedFields = new Set<LoanInferredField>();
+      const resolveField = <T,>(
+        field: LoanInferredField,
+        submitted: T | undefined,
+        stored: T | undefined,
+      ): T | undefined => {
+        const resolution = resolveLoanEditField({
+          field,
+          submitted,
+          stored,
+          inferredFields: editingInferredFields,
+          recalculate: recalculateInferredFields,
+        });
+        if (resolution.preservedCalculatedValue) preservedCalculatedFields.add(field);
+        return resolution.value;
+      };
+      const setup = solveInstallmentLoanSetup({
+        asOfDate: today,
+        principalCents: resolveField(
+          'principalCents',
+          optionalCents(form, 'principal'),
+          editingLoan?.principalCents,
+        ),
+        balanceDate: resolveField(
+          'balanceDate',
+          get(form, 'balanceDate') || undefined,
+          editingLoan?.balanceDate,
+        ),
+        accruedInterestCents: resolveField(
+          'accruedInterestCents',
+          optionalCents(form, 'accruedInterest'),
+          editingLoan?.accruedInterestCents,
+        ),
+        annualRateBasisPoints: resolveField(
+          'annualRateBasisPoints',
+          optionalBasisPoints(form, 'rate'),
+          editingLoan?.annualRateBasisPoints,
+        ),
+        accrualConvention: resolveField(
+          'accrualConvention',
+          (get(form, 'accrualConvention') as Loan['accrualConvention']) || undefined,
+          editingLoan?.accrualConvention,
+        ),
+        paymentCents: resolveField(
+          'paymentCents',
+          optionalCents(form, 'payment'),
+          editingLoan?.paymentCents,
+        ),
+        cashPaymentCents: resolveField(
+          'cashPaymentCents',
+          optionalCents(form, 'cashPayment'),
+          editingLoan?.cashPaymentCents,
+        ),
+        nextPaymentDate: resolveField(
+          'nextPaymentDate',
+          get(form, 'nextPaymentDate') || undefined,
+          editingLoan?.nextPaymentDate,
+        ),
+        maturityDate: resolveField(
+          'maturityDate',
+          get(form, 'maturityDate') || undefined,
+          editingLoan?.maturityDate,
+        ),
+        originalPrincipalCents: resolveField(
+          'originalPrincipalCents',
+          optionalCents(form, 'originalPrincipal'),
+          editingLoan?.originalPrincipalCents,
+        ),
+        originalDate: resolveField(
+          'originalDate',
+          get(form, 'originalDate') || undefined,
+          editingLoan?.originalDate,
+        ),
+        originalTermMonths: resolveField(
+          'originalTermMonths',
+          optionalInteger(form, 'originalTermMonths'),
+          editingLoan?.originalTermMonths,
+        ),
+        amortizationStructure:
+          (get(form, 'amortizationStructure') as Loan['amortizationStructure']) ||
+          'fully-amortizing',
+        expectedBalloonCents: resolveField(
+          'expectedBalloonCents',
+          optionalCents(form, 'expectedBalloon'),
+          editingLoan?.expectedBalloonCents,
+        ),
+        paymentFrequency: resolveField(
+          'paymentFrequency',
+          (get(form, 'paymentFrequency') as 'monthly' | 'biweekly') || undefined,
+          editingLoan?.paymentFrequency,
+        ),
       });
-      if (resolution.preservedCalculatedValue) preservedCalculatedFields.add(field);
-      return resolution.value;
-    };
-    const setup = solveInstallmentLoanSetup({
-      asOfDate: today,
-      principalCents: resolveField(
-        'principalCents',
-        optionalCents(form, 'principal'),
-        editingLoan?.principalCents,
-      ),
-      balanceDate: resolveField(
-        'balanceDate',
-        get(form, 'balanceDate') || undefined,
-        editingLoan?.balanceDate,
-      ),
-      accruedInterestCents: resolveField(
-        'accruedInterestCents',
-        optionalCents(form, 'accruedInterest'),
-        editingLoan?.accruedInterestCents,
-      ),
-      annualRateBasisPoints: resolveField(
-        'annualRateBasisPoints',
-        optionalBasisPoints(form, 'rate'),
-        editingLoan?.annualRateBasisPoints,
-      ),
-      accrualConvention: resolveField(
-        'accrualConvention',
-        (get(form, 'accrualConvention') as Loan['accrualConvention']) || undefined,
-        editingLoan?.accrualConvention,
-      ),
-      paymentCents: resolveField(
-        'paymentCents',
-        optionalCents(form, 'payment'),
-        editingLoan?.paymentCents,
-      ),
-      cashPaymentCents: resolveField(
-        'cashPaymentCents',
-        optionalCents(form, 'cashPayment'),
-        editingLoan?.cashPaymentCents,
-      ),
-      nextPaymentDate: resolveField(
-        'nextPaymentDate',
-        get(form, 'nextPaymentDate') || undefined,
-        editingLoan?.nextPaymentDate,
-      ),
-      maturityDate: resolveField(
-        'maturityDate',
-        get(form, 'maturityDate') || undefined,
-        editingLoan?.maturityDate,
-      ),
-      originalPrincipalCents: resolveField(
-        'originalPrincipalCents',
-        optionalCents(form, 'originalPrincipal'),
-        editingLoan?.originalPrincipalCents,
-      ),
-      originalDate: resolveField(
-        'originalDate',
-        get(form, 'originalDate') || undefined,
-        editingLoan?.originalDate,
-      ),
-      originalTermMonths: resolveField(
-        'originalTermMonths',
-        optionalInteger(form, 'originalTermMonths'),
-        editingLoan?.originalTermMonths,
-      ),
-      amortizationStructure:
-        (get(form, 'amortizationStructure') as Loan['amortizationStructure']) || 'fully-amortizing',
-      expectedBalloonCents: resolveField(
-        'expectedBalloonCents',
-        optionalCents(form, 'expectedBalloon'),
-        editingLoan?.expectedBalloonCents,
-      ),
-      paymentFrequency: resolveField(
-        'paymentFrequency',
-        (get(form, 'paymentFrequency') as 'monthly' | 'biweekly') || undefined,
-        editingLoan?.paymentFrequency,
-      ),
-    });
-    if (setup.status === 'incomplete') {
-      const easiest = setup.missingAlternatives[0];
-      setError(
-        easiest
-          ? `${easiest.label}: add ${easiest.missingFields.map(loanSetupFieldLabel).join(', ')}.`
-          : 'Add enough loan facts to calculate a current balance, APR, payment, and schedule.',
-      );
-      return;
-    }
-    if (setup.status === 'inconsistent') {
-      setError(
-        [
-          ...(preservedCalculatedFields.size > 0
-            ? [
-                'These edits conflict with previously calculated values. Replace the conflicting values or choose Recalculate calculated fields.',
-              ]
-            : []),
-          ...setup.diagnostics.inputErrors,
-          ...setup.diagnostics.contradictions,
-          ...setup.diagnostics.reconciliations
-            .filter((check) => check.outcome === 'conflict')
-            .map((check) => check.message),
-        ]
-          .filter((message, index, messages) => messages.indexOf(message) === index)
-          .join(' ') || 'The entered loan facts do not describe one consistent installment loan.',
-      );
-      return;
-    }
-    const resolved = setup.resolved;
-    if (
-      resolved.principalCents === undefined ||
-      resolved.annualRateBasisPoints === undefined ||
-      resolved.paymentCents === undefined ||
-      resolved.nextPaymentDate === undefined
-    ) {
-      setError('The loan schedule could not be resolved safely. Add another lender-provided fact.');
-      return;
-    }
-    const inferredFields = new Set([...setup.inferredFields, ...preservedCalculatedFields]);
-    const existing = editingLoan
-      ? (makeEditRequest('loan', editingLoan).payload as Record<string, unknown>)
-      : {};
-    const response = await window.balanceBook.upsertRecord({
-      entityType: 'loan',
-      payload: {
-        ...existing,
-        id: editingLoan?.id ?? crypto.randomUUID(),
-        name: get(form, 'name'),
-        lender: get(form, 'lender') || undefined,
-        loanType: get(form, 'loanType') || undefined,
-        principalCents: resolved.principalCents,
-        accruedInterestCents: resolved.accruedInterestCents,
-        balanceDate: resolved.balanceDate,
-        annualRateBasisPoints: resolved.annualRateBasisPoints,
-        accrualConvention: resolved.accrualConvention,
-        paymentCents: resolved.paymentCents,
-        cashPaymentCents: resolved.cashPaymentCents,
-        nextPaymentDate: resolved.nextPaymentDate,
-        maturityDate: resolved.maturityDate,
-        originalPrincipalCents: resolved.originalPrincipalCents,
-        originalDate: resolved.originalDate,
-        originalTermMonths: resolved.originalTermMonths,
-        amortizationStructure: resolved.amortizationStructure,
-        expectedBalloonCents: resolved.expectedBalloonCents,
-        inferredFields: [...inferredFields],
-        fundingAccountId: get(form, 'fundingAccountId'),
-        excludeFromEconomicNetWorthDoubleCount:
-          form.get('excludeFromEconomicNetWorthDoubleCount') === 'on',
-        paymentFrequency: resolved.paymentFrequency,
-        includeInCashForecast: editingLoanIsRefinanceManaged
-          ? editingLoan?.includeInCashForecast !== false
-          : form.get('includeInCashForecast') === 'on',
-        status: editingLoanIsRefinanceManaged
-          ? (editingLoan?.status ?? 'active')
-          : get(form, 'status'),
-      },
-    } as UpsertManagedEntityRequest);
-    if (response.ok) {
+      if (setup.status === 'incomplete') {
+        const easiest = setup.missingAlternatives[0];
+        setError(
+          easiest
+            ? `${easiest.label}: add ${easiest.missingFields.map(loanSetupFieldLabel).join(', ')}.`
+            : 'Add enough loan facts to calculate a current balance, APR, payment, and schedule.',
+        );
+        return;
+      }
+      if (setup.status === 'inconsistent') {
+        setError(
+          [
+            ...(preservedCalculatedFields.size > 0
+              ? [
+                  'These edits conflict with previously calculated values. Replace the conflicting values or choose Recalculate calculated fields.',
+                ]
+              : []),
+            ...setup.diagnostics.inputErrors,
+            ...setup.diagnostics.contradictions,
+            ...setup.diagnostics.reconciliations
+              .filter((check) => check.outcome === 'conflict')
+              .map((check) => check.message),
+          ]
+            .filter((message, index, messages) => messages.indexOf(message) === index)
+            .join(' ') || 'The entered loan facts do not describe one consistent installment loan.',
+        );
+        return;
+      }
+      const resolved = setup.resolved;
+      if (
+        resolved.principalCents === undefined ||
+        resolved.annualRateBasisPoints === undefined ||
+        resolved.paymentCents === undefined ||
+        resolved.nextPaymentDate === undefined
+      ) {
+        setError(
+          'The loan schedule could not be resolved safely. Add another lender-provided fact.',
+        );
+        return;
+      }
+      const inferredFields = new Set([...setup.inferredFields, ...preservedCalculatedFields]);
+      const existing = editingLoan
+        ? (makeEditRequest('loan', editingLoan).payload as Record<string, unknown>)
+        : {};
+      const response = await window.balanceBook.upsertRecord({
+        entityType: 'loan',
+        payload: {
+          ...existing,
+          id: editingLoan?.id ?? crypto.randomUUID(),
+          name: get(form, 'name'),
+          lender: get(form, 'lender') || undefined,
+          loanType: get(form, 'loanType') || undefined,
+          principalCents: resolved.principalCents,
+          accruedInterestCents: resolved.accruedInterestCents,
+          balanceDate: resolved.balanceDate,
+          annualRateBasisPoints: resolved.annualRateBasisPoints,
+          accrualConvention: resolved.accrualConvention,
+          paymentCents: resolved.paymentCents,
+          cashPaymentCents: resolved.cashPaymentCents,
+          nextPaymentDate: resolved.nextPaymentDate,
+          maturityDate: resolved.maturityDate,
+          originalPrincipalCents: resolved.originalPrincipalCents,
+          originalDate: resolved.originalDate,
+          originalTermMonths: resolved.originalTermMonths,
+          amortizationStructure: resolved.amortizationStructure,
+          expectedBalloonCents: resolved.expectedBalloonCents,
+          inferredFields: [...inferredFields],
+          fundingAccountId: get(form, 'fundingAccountId'),
+          excludeFromEconomicNetWorthDoubleCount:
+            form.get('excludeFromEconomicNetWorthDoubleCount') === 'on',
+          paymentFrequency: resolved.paymentFrequency,
+          includeInCashForecast: editingLoanIsRefinanceManaged
+            ? editingLoan?.includeInCashForecast !== false
+            : form.get('includeInCashForecast') === 'on',
+          status: editingLoanIsRefinanceManaged
+            ? (editingLoan?.status ?? 'active')
+            : get(form, 'status'),
+        },
+      } as UpsertManagedEntityRequest);
+      if (!response.ok) throw new Error(response.error);
       setRecords(response.value);
       setEditingLoanId(null);
       setMessage(
@@ -7522,8 +9074,12 @@ export const LoansPage = (): React.JSX.Element => {
             ? 'Loan updated.'
             : 'Loan added.',
       );
-      setError(null);
-    } else setError(response.error);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Loan could not be saved.');
+    } finally {
+      mutationLock.release(action);
+      setPendingAction(null);
+    }
   };
   return (
     <>
@@ -7553,14 +9109,14 @@ export const LoansPage = (): React.JSX.Element => {
           </Text>
         </Card>
       </section>
-      {(message || error) && (
+      {(message || (error && !editingLoanId)) && (
         <Card className={styles.panel}>
           {message && (
             <div role="status" className={styles.positive}>
               {message}
             </div>
           )}
-          {error && (
+          {error && !editingLoanId && (
             <div role="alert" className={styles.error}>
               {error}
             </div>
@@ -7568,9 +9124,18 @@ export const LoansPage = (): React.JSX.Element => {
         </Card>
       )}
       <Card className={styles.panel}>
-        <Button appearance="primary" onClick={() => setEditingLoanId('new')}>
-          Add loan
-        </Button>
+        <div className={styles.actions}>
+          <Button
+            appearance="primary"
+            disabled={pendingAction !== null}
+            onClick={() => startLoanEdit('new')}
+          >
+            Add loan
+          </Button>
+          <Button appearance="subtle" onClick={() => navigate('/refinance')}>
+            Refinance and loan history
+          </Button>
+        </div>
       </Card>
       {editingLoanId && (
         <Card
@@ -7582,6 +9147,8 @@ export const LoansPage = (): React.JSX.Element => {
           <form
             key={editingLoan?.id ?? 'new-loan'}
             className={styles.form}
+            aria-label="Loan editor"
+            aria-busy={pendingAction === 'save-loan'}
             onSubmit={(event) => void saveLoan(event)}
           >
             <Title2 id="loan-editor-title" as="h2">
@@ -7594,6 +9161,7 @@ export const LoansPage = (): React.JSX.Element => {
               Contradictory values are never silently accepted. On an existing loan, a blank
               calculated field keeps its prior dated value unless you explicitly recalculate it.
             </Text>
+            {error && <GuidedEditorFeedback message={null} error={error} />}
             <div className={styles.grid}>
               <Field label="Loan name">
                 <Input name="name" required defaultValue={editingLoan?.name} />
@@ -7883,10 +9451,17 @@ export const LoansPage = (): React.JSX.Element => {
               label="Exclude a second subtraction from economic net worth"
             />
             <div className={styles.actions}>
-              <Button appearance="primary" type="submit">
-                Calculate and save loan
+              <Button appearance="primary" type="submit" disabled={pendingAction !== null}>
+                {pendingAction === 'save-loan' ? 'Saving loan…' : 'Calculate and save loan'}
               </Button>
-              <Button type="button" onClick={() => setEditingLoanId(null)}>
+              <Button
+                type="button"
+                disabled={pendingAction !== null}
+                onClick={() => {
+                  setEditingLoanId(null);
+                  setError(null);
+                }}
+              >
                 Cancel
               </Button>
             </div>
@@ -7953,10 +9528,12 @@ export const LoansPage = (): React.JSX.Element => {
                 <Title2 as="h2">{loan.name}</Title2>
                 <div className={styles.actions}>
                   {!lifecycleIsLocked && (
-                    <Button onClick={() => setEditingLoanId(loan.id)}>Edit loan</Button>
-                  )}
-                  {lifecycleIsLocked && (originPlan || retirementPlan) && (
-                    <Button onClick={() => navigate('/refinance')}>Review refinance history</Button>
+                    <Button
+                      disabled={pendingAction !== null}
+                      onClick={() => startLoanEdit(loan.id)}
+                    >
+                      Edit loan
+                    </Button>
                   )}
                   {refinanceCandidateIds.has(loan.id) && (
                     <Button
@@ -8224,6 +9801,7 @@ export const LoansPage = (): React.JSX.Element => {
 export const ReceivablesPage = (): React.JSX.Element => {
   const styles = useCoreStyles();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [records, setRecords] = useState<ManagedRecordsDto | null>(null);
   const [asOfDate, setAsOfDate] = useState(Temporal.Now.plainDateISO().toString());
   const [editingReceivableId, setEditingReceivableId] = useState<string | 'new' | null>(null);
@@ -8241,11 +9819,18 @@ export const ReceivablesPage = (): React.JSX.Element => {
   const [settlementOffsetDayCount, setSettlementOffsetDayCount] = useState(2);
   const [includeInCashForecast, setIncludeInCashForecast] = useState(false);
   const [settlementReceivableId, setSettlementReceivableId] = useState('');
+  const [settlementMode, setSettlementMode] = useState<'specific' | 'automatic'>('specific');
   const receivableActionRef = useRef<'save' | 'settle' | null>(null);
   const [receivableAction, setReceivableAction] = useState<'save' | 'settle' | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const receivableEditorRef = useEditorReveal<HTMLDivElement>(editingReceivableId);
+  const [errorContext, setErrorContext] = useState<'editor' | 'settlement' | null>(null);
+  const [editorRevealRequest, setEditorRevealRequest] = useState(0);
+  const appliedReceivableLinkRef = useRef<string | null>(null);
+  const receivableEditorRef = useEditorReveal<HTMLDivElement>(
+    editingReceivableId,
+    editorRevealRequest,
+  );
   useEffect(() => {
     void Promise.all([loadRecords(), window.balanceBook.getForecast()])
       .then(([loaded, forecast]) => {
@@ -8254,6 +9839,23 @@ export const ReceivablesPage = (): React.JSX.Element => {
       })
       .catch((caught: Error) => setError(caught.message));
   }, []);
+  useEffect(() => {
+    const receivableId = searchParams.get('receivable');
+    if (
+      !records ||
+      !receivableId ||
+      appliedReceivableLinkRef.current === receivableId ||
+      !records.receivables.some((receivable) => receivable.id === receivableId)
+    ) {
+      return;
+    }
+    appliedReceivableLinkRef.current = receivableId;
+    setSettlementReceivableId(receivableId);
+    window.setTimeout(
+      () => document.getElementById('receive-money-owed')?.scrollIntoView({ block: 'center' }),
+      0,
+    );
+  }, [records, searchParams]);
   if (!records)
     return error ? (
       <div role="alert" className={styles.error}>
@@ -8295,6 +9897,7 @@ export const ReceivablesPage = (): React.JSX.Element => {
       setExpectedReceiptDate(nextExpectedDate);
       setError(null);
     } catch (caught) {
+      setErrorContext('editor');
       setError(caught instanceof Error ? caught.message : 'Unable to calculate the first receipt.');
     }
   };
@@ -8307,6 +9910,7 @@ export const ReceivablesPage = (): React.JSX.Element => {
     updateExpectedDateFromBill(nextAnchorId, settlementOffsetDirection, settlementOffsetDayCount);
   };
   const beginReceivableEdit = (receivableId: string | 'new') => {
+    if (receivableActionRef.current) return;
     const receivable = records.receivables.find((candidate) => candidate.id === receivableId);
     setReceiptTimingMode(
       receivable?.settlementAnchorEventId
@@ -8322,6 +9926,10 @@ export const ReceivablesPage = (): React.JSX.Element => {
     setSettlementOffsetDayCount(Math.abs(receivable?.settlementOffsetDays ?? -2));
     setIncludeInCashForecast(receivable ? receivable.includeInCashForecast !== false : false);
     setEditingReceivableId(receivableId);
+    setMessage(null);
+    setError(null);
+    setErrorContext(null);
+    setEditorRevealRequest((request) => request + 1);
   };
   const receivableReplayStartDate =
     records.accounts.map((account) => account.balanceAsOf).sort()[0] ?? today;
@@ -8513,7 +10121,9 @@ export const ReceivablesPage = (): React.JSX.Element => {
     if (receivableActionRef.current) return;
     receivableActionRef.current = 'save';
     setReceivableAction('save');
+    setMessage(null);
     setError(null);
+    setErrorContext('editor');
     try {
       const form = new FormData(event.currentTarget);
       const expectedDate = get(form, 'expectedDate');
@@ -8615,19 +10225,32 @@ export const ReceivablesPage = (): React.JSX.Element => {
     receivableActionRef.current = 'settle';
     setReceivableAction('settle');
     const formElement = event.currentTarget;
+    setMessage(null);
     setError(null);
+    setErrorContext('settlement');
     try {
       const form = new FormData(formElement);
-      const response = await window.balanceBook.recordReceivableSettlement({
-        receivableId: get(form, 'receivableId'),
-        amountCents: cents(form, 'amount'),
-        date: get(form, 'date'),
-        occurrenceDate: get(form, 'occurrenceDate') || undefined,
-        destinationAccountId: get(form, 'destinationAccountId'),
-      });
+      const response =
+        settlementMode === 'automatic'
+          ? await window.balanceBook.recordUnattributedReceivableSettlement({
+              amountCents: cents(form, 'amount'),
+              date: get(form, 'date'),
+              destinationAccountId: get(form, 'destinationAccountId'),
+            })
+          : await window.balanceBook.recordReceivableSettlement({
+              receivableId: get(form, 'receivableId'),
+              amountCents: cents(form, 'amount'),
+              date: get(form, 'date'),
+              occurrenceDate: get(form, 'occurrenceDate') || undefined,
+              destinationAccountId: get(form, 'destinationAccountId'),
+            });
       if (response.ok) {
         setRecords(response.value);
-        setMessage('Funds released once to the selected account and removed from Money Owed.');
+        setMessage(
+          settlementMode === 'automatic'
+            ? 'Money received was deposited once and applied automatically to the oldest open balances.'
+            : 'Funds released once to the selected account and removed from Money Owed.',
+        );
         formElement.reset();
       } else setError(response.error);
     } catch (caught) {
@@ -8641,20 +10264,16 @@ export const ReceivablesPage = (): React.JSX.Element => {
     <>
       <div className={styles.header}>
         <Title1 as="h1">Money owed to you</Title1>
-        <Text>
-          Keep today&apos;s Settle Up balance separate from future recurring amounts. A recurring
-          amount becomes owed on its scheduled date; it becomes cash only when you release it to a
-          checking account.
-        </Text>
+        <Text>Track what&apos;s owed now, what will become owed, and when cash is received.</Text>
       </div>
-      {(message || error) && (
+      {(message || (error && errorContext === null)) && (
         <Card className={styles.panel}>
           {message && (
             <div role="status" className={styles.positive}>
               {message}
             </div>
           )}
-          {error && (
+          {error && errorContext === null && (
             <div role="alert" className={styles.error}>
               {error}
             </div>
@@ -8689,7 +10308,11 @@ export const ReceivablesPage = (): React.JSX.Element => {
       </section>
       <Card className={styles.panel}>
         <div className={styles.actions}>
-          <Button appearance="primary" onClick={() => beginReceivableEdit('new')}>
+          <Button
+            appearance="primary"
+            disabled={receivableAction !== null}
+            onClick={() => beginReceivableEdit('new')}
+          >
             Add money owed or recurring receipt
           </Button>
           <Button onClick={() => navigate('/records?type=receivable')}>
@@ -8707,6 +10330,8 @@ export const ReceivablesPage = (): React.JSX.Element => {
           <form
             key={editingReceivable?.id ?? 'new-receivable'}
             className={styles.form}
+            aria-label="Money-owed editor"
+            aria-busy={receivableAction === 'save'}
             onSubmit={(event) => void saveReceivable(event)}
           >
             <div className={styles.sectionIntro}>
@@ -8719,6 +10344,9 @@ export const ReceivablesPage = (): React.JSX.Element => {
                 when each future amount becomes owed.
               </Text>
             </div>
+            {error && errorContext === 'editor' && (
+              <GuidedEditorFeedback message={null} error={error} />
+            )}
             <div className={styles.grid}>
               <Field label="Who owes you">
                 <Input name="source" required defaultValue={editingReceivable?.source} />
@@ -9088,7 +10716,15 @@ export const ReceivablesPage = (): React.JSX.Element => {
               <Button appearance="primary" type="submit" disabled={receivableAction !== null}>
                 {receivableAction === 'save' ? 'Saving…' : 'Save money-owed record'}
               </Button>
-              <Button type="button" onClick={() => setEditingReceivableId(null)}>
+              <Button
+                type="button"
+                disabled={receivableAction !== null}
+                onClick={() => {
+                  setEditingReceivableId(null);
+                  setError(null);
+                  setErrorContext(null);
+                }}
+              >
                 Cancel
               </Button>
             </div>
@@ -9096,7 +10732,7 @@ export const ReceivablesPage = (): React.JSX.Element => {
         </Card>
       )}
       {settleableReceivables.length > 0 && (
-        <Card className={styles.panel}>
+        <Card className={styles.panel} id="receive-money-owed">
           <div className={styles.sectionIntro}>
             <Title2 as="h2">Record money received</Title2>
             <Text>
@@ -9104,24 +10740,57 @@ export const ReceivablesPage = (): React.JSX.Element => {
               account that received it. The owed balance falls and cash rises exactly once.
             </Text>
           </div>
-          <form className={styles.form} onSubmit={(event) => void settle(event)}>
+          <div className={styles.actions} role="group" aria-label="How to apply money received">
+            <Button
+              type="button"
+              appearance={settlementMode === 'specific' ? 'primary' : 'subtle'}
+              aria-pressed={settlementMode === 'specific'}
+              onClick={() => setSettlementMode('specific')}
+            >
+              Choose an item
+            </Button>
+            <Button
+              type="button"
+              appearance={settlementMode === 'automatic' ? 'primary' : 'subtle'}
+              aria-pressed={settlementMode === 'automatic'}
+              onClick={() => setSettlementMode('automatic')}
+            >
+              Apply automatically
+            </Button>
+          </div>
+          {settlementMode === 'automatic' && (
+            <Text className={styles.muted}>
+              No transaction selection needed. The app applies the receipt to the oldest open Money
+              Owed balances first and records the internal allocations for audit history.
+            </Text>
+          )}
+          <form
+            className={styles.form}
+            aria-busy={receivableAction === 'settle'}
+            onSubmit={(event) => void settle(event)}
+          >
+            {error && errorContext === 'settlement' && (
+              <GuidedEditorFeedback message={null} error={error} />
+            )}
             <div className={styles.grid}>
-              <Field label="Balance or recurring receipt">
-                <Select
-                  name="receivableId"
-                  value={settlementReceivable?.id ?? ''}
-                  onChange={(_, data) => setSettlementReceivableId(data.value)}
-                >
-                  {settleableReceivables.map((receivable) => (
-                    <option value={receivable.id} key={receivable.id}>
-                      {receivable.source}: {receivable.description} ·{' '}
-                      {(currentOwedById.get(receivable.id) ?? receivable.remainingAmountCents) > 0
-                        ? `${formatMoney(currentOwedById.get(receivable.id) ?? receivable.remainingAmountCents)} owed now`
-                        : `${formatMoney(receivable.recurringAmountCents ?? 0)} each occurrence`}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
+              {settlementMode === 'specific' && (
+                <Field label="Balance or recurring receipt">
+                  <Select
+                    name="receivableId"
+                    value={settlementReceivable?.id ?? ''}
+                    onChange={(_, data) => setSettlementReceivableId(data.value)}
+                  >
+                    {settleableReceivables.map((receivable) => (
+                      <option value={receivable.id} key={receivable.id}>
+                        {receivable.source}: {receivable.description} ·{' '}
+                        {(currentOwedById.get(receivable.id) ?? receivable.remainingAmountCents) > 0
+                          ? `${formatMoney(currentOwedById.get(receivable.id) ?? receivable.remainingAmountCents)} owed now`
+                          : `${formatMoney(receivable.recurringAmountCents ?? 0)} each occurrence`}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              )}
               <Field label="Amount received">
                 <Input name="amount" inputMode="decimal" required />
               </Field>
@@ -9131,9 +10800,13 @@ export const ReceivablesPage = (): React.JSX.Element => {
               <Field label="Release into">
                 <Select
                   name="destinationAccountId"
-                  key={`${settlementReceivable?.id ?? 'none'}-destination`}
+                  key={`${settlementMode}-${settlementReceivable?.id ?? 'none'}-destination`}
                   defaultValue={
-                    settlementReceivable?.destinationAccountId ?? records.accounts[0]?.id ?? ''
+                    settlementMode === 'specific'
+                      ? (settlementReceivable?.destinationAccountId ??
+                        records.accounts[0]?.id ??
+                        '')
+                      : (records.accounts[0]?.id ?? '')
                   }
                   required
                 >
@@ -9144,28 +10817,34 @@ export const ReceivablesPage = (): React.JSX.Element => {
                   ))}
                 </Select>
               </Field>
-              {settlementReceivable && hasRecurringReceivableSchedule(settlementReceivable) && (
-                <Field
-                  label="Installment this receipt settles"
-                  hint="Choose the scheduled installment explicitly when cash arrives early, late, or in partial amounts."
-                >
-                  <Select
-                    key={settlementReceivable.id}
-                    name="occurrenceDate"
-                    defaultValue={defaultSettlementOccurrence}
-                    required
+              {settlementMode === 'specific' &&
+                settlementReceivable &&
+                hasRecurringReceivableSchedule(settlementReceivable) && (
+                  <Field
+                    label="Installment this receipt settles"
+                    hint="Choose the scheduled installment explicitly when cash arrives early, late, or in partial amounts."
                   >
-                    {settlementOccurrences.map((date) => (
-                      <option key={date} value={date}>
-                        Scheduled for {date}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              )}
+                    <Select
+                      key={settlementReceivable.id}
+                      name="occurrenceDate"
+                      defaultValue={defaultSettlementOccurrence}
+                      required
+                    >
+                      {settlementOccurrences.map((date) => (
+                        <option key={date} value={date}>
+                          Scheduled for {date}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                )}
             </div>
             <Button appearance="primary" type="submit" disabled={receivableAction !== null}>
-              {receivableAction === 'settle' ? 'Releasing…' : 'Release to checking'}
+              {receivableAction === 'settle'
+                ? 'Recording…'
+                : settlementMode === 'automatic'
+                  ? 'Record and apply'
+                  : 'Release to checking'}
             </Button>
           </form>
         </Card>
@@ -9282,7 +10961,10 @@ export const ReceivablesPage = (): React.JSX.Element => {
                       . These explain the reimbursement and do not create extra cash.
                     </Text>
                   )}
-                  <Button onClick={() => beginReceivableEdit(receivable.id)}>
+                  <Button
+                    disabled={receivableAction !== null}
+                    onClick={() => beginReceivableEdit(receivable.id)}
+                  >
                     Edit open balance
                   </Button>
                 </Card>
@@ -9293,14 +10975,14 @@ export const ReceivablesPage = (): React.JSX.Element => {
       </Card>
       <Card className={styles.panel}>
         <div className={styles.sectionIntro}>
-          <Title2 as="h2">Recurring future receivables</Title2>
+          <Title2 as="h2">Recurring money owed</Title2>
           <Text>
             These simple schedules are not part of today&apos;s Settle Up balance. Each occurrence
             becomes Money Owed on its date, then waits for you to release it to checking.
           </Text>
         </div>
         {recurringReceivables.length === 0 ? (
-          <Text>No recurring future receivables.</Text>
+          <Text>No recurring amounts have been added.</Text>
         ) : (
           <div className={styles.recordGrid}>
             {recurringReceivables.map((receivable) => {
@@ -9352,8 +11034,11 @@ export const ReceivablesPage = (): React.JSX.Element => {
                         : formatMoney(receivable.userEconomicShareCents)}
                     </Text>
                   )}
-                  <Button onClick={() => beginReceivableEdit(receivable.id)}>
-                    Edit recurring receivable
+                  <Button
+                    disabled={receivableAction !== null}
+                    onClick={() => beginReceivableEdit(receivable.id)}
+                  >
+                    Edit recurring amount
                   </Button>
                 </Card>
               );
@@ -9365,8 +11050,8 @@ export const ReceivablesPage = (): React.JSX.Element => {
         <div className={styles.sectionIntro}>
           <Title2 as="h2">Future owed-balance changes</Title2>
           <Text>
-            These schedules explain when a shared cost becomes newly owed. They change the
-            receivable balance only and never add cash by themselves.
+            These schedules explain when a shared cost becomes newly owed. They change Money Owed
+            only and never add cash by themselves.
           </Text>
         </div>
         {accruingReceivables.length === 0 ? (
@@ -9385,7 +11070,10 @@ export const ReceivablesPage = (): React.JSX.Element => {
                   First increase {receivable.accrualDate ?? 'date missing'} · affects money owed,
                   not cash
                 </Text>
-                <Button onClick={() => beginReceivableEdit(receivable.id)}>
+                <Button
+                  disabled={receivableAction !== null}
+                  onClick={() => beginReceivableEdit(receivable.id)}
+                >
                   Edit balance schedule
                 </Button>
               </Card>
@@ -9439,7 +11127,10 @@ export const NetWorthPage = (): React.JSX.Element => {
   const [editingAssetId, setEditingAssetId] = useState<string | 'new' | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const assetEditorRef = useEditorReveal<HTMLDivElement>(editingAssetId);
+  const [editorRevealRequest, setEditorRevealRequest] = useState(0);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [mutationLock] = useState(createImmediateActionLock);
+  const assetEditorRef = useEditorReveal<HTMLDivElement>(editingAssetId, editorRevealRequest);
   useEffect(() => {
     void Promise.all([loadRecords(), window.balanceBook.getForecast()])
       .then(([loadedRecords, forecast]) => {
@@ -9538,72 +11229,98 @@ export const NetWorthPage = (): React.JSX.Element => {
   const persistedEditingAsset = editingAsset
     ? records.assets.find((asset) => asset.id === editingAsset.id)
     : undefined;
+  const startAssetEdit = (assetId: string | 'new'): void => {
+    if (mutationLock.active() !== null) return;
+    setEditingAssetId(assetId);
+    setMessage(null);
+    setError(null);
+    setEditorRevealRequest((request) => request + 1);
+  };
   const saveAsset = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const existing = persistedEditingAsset
-      ? (makeEditRequest('asset', persistedEditingAsset).payload as Record<string, unknown>)
-      : {};
-    const enteredLinkedLiabilityId = get(form, 'linkedLiabilityId') || undefined;
-    const linkedLiabilityId =
-      persistedEditingAsset && enteredLinkedLiabilityId === editingAsset?.linkedLiabilityId
-        ? persistedEditingAsset.linkedLiabilityId
-        : enteredLinkedLiabilityId;
-    const response = await window.balanceBook.upsertRecord({
-      entityType: 'asset',
-      payload: {
-        ...existing,
-        id: editingAsset?.id ?? crypto.randomUUID(),
-        name: get(form, 'name'),
-        type: get(form, 'assetType'),
-        valueCents: cents(form, 'value'),
-        valuationDate: get(form, 'valuationDate'),
-        contributionAmountCents: optionalCents(form, 'contributionAmount'),
-        contributionRateBasisPoints: optionalBasisPoints(form, 'contributionRate'),
-        employerMatchBasisPoints: optionalBasisPoints(form, 'employerMatch'),
-        restrictionStatus: get(form, 'restrictionStatus') || undefined,
-        linkedLiabilityId,
-        includedInNetWorth: form.get('includedInNetWorth') === 'on',
-        includedInLiquidity: form.get('includedInLiquidity') === 'on',
-      },
-    } as UpsertManagedEntityRequest);
-    if (response.ok) {
+    const action = 'save-asset';
+    if (!mutationLock.acquire(action)) return;
+    setPendingAction(action);
+    setMessage(null);
+    setError(null);
+    try {
+      const form = new FormData(event.currentTarget);
+      const existing = persistedEditingAsset
+        ? (makeEditRequest('asset', persistedEditingAsset).payload as Record<string, unknown>)
+        : {};
+      const enteredLinkedLiabilityId = get(form, 'linkedLiabilityId') || undefined;
+      const linkedLiabilityId =
+        persistedEditingAsset && enteredLinkedLiabilityId === editingAsset?.linkedLiabilityId
+          ? persistedEditingAsset.linkedLiabilityId
+          : enteredLinkedLiabilityId;
+      const response = await window.balanceBook.upsertRecord({
+        entityType: 'asset',
+        payload: {
+          ...existing,
+          id: editingAsset?.id ?? crypto.randomUUID(),
+          name: get(form, 'name'),
+          type: get(form, 'assetType'),
+          valueCents: cents(form, 'value'),
+          valuationDate: get(form, 'valuationDate'),
+          annualGrowthRateBasisPoints: optionalBasisPoints(form, 'annualGrowthRate'),
+          contributionGrossAnnualIncomeCents: optionalCents(form, 'grossAnnualIncome'),
+          contributionAmountCents: optionalCents(form, 'contributionAmount'),
+          contributionRateBasisPoints: optionalBasisPoints(form, 'contributionRate'),
+          employerMatchBasisPoints: optionalBasisPoints(form, 'employerMatch'),
+          restrictionStatus: get(form, 'restrictionStatus') || undefined,
+          linkedLiabilityId,
+          includedInNetWorth: form.get('includedInNetWorth') === 'on',
+          includedInLiquidity: form.get('includedInLiquidity') === 'on',
+        },
+      } as UpsertManagedEntityRequest);
+      if (!response.ok) throw new Error(response.error);
       setRecords(response.value);
       setEditingAssetId(null);
       setMessage(editingAsset ? 'Asset updated.' : 'Asset added to net worth.');
-      setError(null);
-    } else setError(response.error);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Asset could not be saved.');
+    } finally {
+      mutationLock.release(action);
+      setPendingAction(null);
+    }
   };
   const removeAsset = async (assetId: string) => {
-    if (!window.confirm('Delete this asset?')) return;
-    const response = await window.balanceBook.deleteRecord({
-      entityType: 'asset',
-      entityId: assetId,
-      confirmed: true,
-    });
-    if (response.ok) {
+    const action = `delete-asset:${assetId}`;
+    if (!mutationLock.acquire(action)) return;
+    setPendingAction(action);
+    setMessage(null);
+    setError(null);
+    try {
+      if (!window.confirm('Delete this asset?')) return;
+      const response = await window.balanceBook.deleteRecord({
+        entityType: 'asset',
+        entityId: assetId,
+        confirmed: true,
+      });
+      if (!response.ok) throw new Error(response.error);
       setRecords(response.value);
       setMessage('Asset deleted.');
-      setError(null);
-    } else setError(response.error);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Asset could not be deleted.');
+    } finally {
+      mutationLock.release(action);
+      setPendingAction(null);
+    }
   };
   return (
     <>
       <div className={styles.header}>
         <Title1 as="h1">Net worth</Title1>
-        <Text>
-          Add investments, vehicles, property, and other assets here. Cash is managed through cash
-          accounts; noncash assets improve net worth but are not spending money by default.
-        </Text>
+        <Text>Track noncash assets and investments. Cash stays in Cash Forecast.</Text>
       </div>
-      {(message || error) && (
+      {(message || (error && !editingAssetId)) && (
         <Card className={styles.panel}>
           {message && (
             <div role="status" className={styles.positive}>
               {message}
             </div>
           )}
-          {error && (
+          {error && !editingAssetId && (
             <div role="alert" className={styles.error}>
               {error}
             </div>
@@ -9616,15 +11333,15 @@ export const NetWorthPage = (): React.JSX.Element => {
           <Text className={styles.value}>{formatMoney(result.liquidNetPositionCents)}</Text>
         </Card>
         <Card className={styles.metric}>
-          <Text>Contractual net worth</Text>
+          <Text>Net worth</Text>
           <Text className={styles.value}>{formatMoney(result.contractualNetWorthCents)}</Text>
         </Card>
         <Card className={styles.metric}>
-          <Text>Economic net worth</Text>
+          <Text>Adjusted net worth</Text>
           <Text className={styles.value}>{formatMoney(result.economicNetWorthCents)}</Text>
         </Card>
         <Card className={styles.metric}>
-          <Text>Contractual liabilities</Text>
+          <Text>Total recorded debt</Text>
           <Text className={styles.value}>{formatMoney(result.contractualLiabilitiesCents)}</Text>
           <Text className={styles.muted}>
             Installment{' '}
@@ -9652,13 +11369,17 @@ export const NetWorthPage = (): React.JSX.Element => {
         <div className={styles.sectionIntro}>
           <Title2 as="h2">What the totals mean</Title2>
           <Text>
-            Liquid position uses cash and only assets explicitly marked liquid. Contractual net
-            worth then adds included assets and open receivables and subtracts loan obligations.
-            Economic net worth applies each loan's double-count treatment.
+            Available position uses cash and only assets marked available now. Net worth adds
+            included assets and Money Owed, then subtracts recorded debt. Adjusted net worth avoids
+            counting a linked loan twice when its value is already reflected elsewhere.
           </Text>
         </div>
         <div className={styles.actions}>
-          <Button appearance="primary" onClick={() => setEditingAssetId('new')}>
+          <Button
+            appearance="primary"
+            disabled={pendingAction !== null}
+            onClick={() => startAssetEdit('new')}
+          >
             Add asset or investment
           </Button>
           <Button onClick={() => navigate('/records?type=cash-account')}>
@@ -9676,11 +11397,14 @@ export const NetWorthPage = (): React.JSX.Element => {
           <form
             key={editingAsset?.id ?? 'new-asset'}
             className={styles.form}
+            aria-label="Asset editor"
+            aria-busy={pendingAction === 'save-asset'}
             onSubmit={(event) => void saveAsset(event)}
           >
             <Title2 id="asset-editor-title" as="h2">
               {editingAsset ? `Edit ${editingAsset.name}` : 'Add an asset'}
             </Title2>
+            {error && <GuidedEditorFeedback message={null} error={error} />}
             <div className={styles.grid}>
               <Field label="Asset name">
                 <Input name="name" required defaultValue={editingAsset?.name} />
@@ -9710,14 +11434,44 @@ export const NetWorthPage = (): React.JSX.Element => {
                   }
                 />
               </Field>
-              <Field label="Contribution amount (optional)">
+              <Field
+                label="Expected annual return % (optional)"
+                hint="Used for projected net worth with daily compounding. This is an estimate, not a guaranteed return."
+              >
+                <Input
+                  name="annualGrowthRate"
+                  inputMode="decimal"
+                  defaultValue={
+                    editingAsset?.annualGrowthRateBasisPoints === undefined
+                      ? ''
+                      : (editingAsset.annualGrowthRateBasisPoints / 100).toFixed(2)
+                  }
+                />
+              </Field>
+              <Field
+                label="Gross annual pay for this estimate (optional)"
+                hint="Your contribution and employer match percentages use this amount. Take-home cash is not reduced again."
+              >
+                <Input
+                  name="grossAnnualIncome"
+                  inputMode="decimal"
+                  defaultValue={centsInput(editingAsset?.contributionGrossAnnualIncomeCents)}
+                />
+              </Field>
+              <Field
+                label="Monthly contribution amount (optional)"
+                hint="Use this for a fixed contribution not already represented by the gross-income percentages."
+              >
                 <Input
                   name="contributionAmount"
                   inputMode="decimal"
                   defaultValue={centsInput(editingAsset?.contributionAmountCents)}
                 />
               </Field>
-              <Field label="Contribution rate % (optional)">
+              <Field
+                label="Your contribution % of gross pay (optional)"
+                hint="Added to the investment forecast without reducing cash because paycheck deposits already represent take-home pay."
+              >
                 <Input
                   name="contributionRate"
                   inputMode="decimal"
@@ -9728,7 +11482,10 @@ export const NetWorthPage = (): React.JSX.Element => {
                   }
                 />
               </Field>
-              <Field label="Employer match % (optional)">
+              <Field
+                label="Employer match % of gross pay (optional)"
+                hint="The employer-funded amount is added separately to projected investment value."
+              >
                 <Input
                   name="employerMatch"
                   inputMode="decimal"
@@ -9773,13 +11530,20 @@ export const NetWorthPage = (): React.JSX.Element => {
             <Checkbox
               name="includedInLiquidity"
               defaultChecked={editingAsset?.includedInLiquidity ?? false}
-              label="Treat as immediately available liquidity (uncommon; do not use for ordinary investments)"
+              label="Count as cash available now (uncommon; leave off for ordinary investments)"
             />
             <div className={styles.actions}>
-              <Button appearance="primary" type="submit">
-                Save asset
+              <Button appearance="primary" type="submit" disabled={pendingAction !== null}>
+                {pendingAction === 'save-asset' ? 'Saving asset…' : 'Save asset'}
               </Button>
-              <Button type="button" onClick={() => setEditingAssetId(null)}>
+              <Button
+                type="button"
+                disabled={pendingAction !== null}
+                onClick={() => {
+                  setEditingAssetId(null);
+                  setError(null);
+                }}
+              >
                 Cancel
               </Button>
             </div>
@@ -9830,8 +11594,8 @@ export const NetWorthPage = (): React.JSX.Element => {
         <div className={styles.sectionIntro}>
           <Title2 as="h2">Noncash assets and investments</Title2>
           <Text>
-            Keep values current and dated. These affect net worth; they affect liquidity only when
-            explicitly marked immediately available.
+            Keep values current and dated. These affect net worth; they affect available cash only
+            when you explicitly mark them available now.
           </Text>
         </div>
         {effectiveAssets.length === 0 ? (
@@ -9846,24 +11610,41 @@ export const NetWorthPage = (): React.JSX.Element => {
                 <Text className={styles.muted}>
                   Value as of {asset.valuationDate} ·{' '}
                   {asset.includedInNetWorth ? 'included in net worth' : 'tracked only'} ·{' '}
-                  {asset.includedInLiquidity ? 'included in liquidity' : 'noncash'}
+                  {asset.includedInLiquidity ? 'available now' : 'noncash'}
                 </Text>
                 {(asset.contributionAmountCents !== undefined ||
+                  asset.contributionGrossAnnualIncomeCents !== undefined ||
                   asset.contributionRateBasisPoints !== undefined ||
-                  asset.employerMatchBasisPoints !== undefined) && (
+                  asset.employerMatchBasisPoints !== undefined ||
+                  asset.annualGrowthRateBasisPoints !== undefined) && (
                   <Text className={styles.muted}>
+                    Forecast assumptions:{' '}
+                    {asset.annualGrowthRateBasisPoints === undefined
+                      ? 'no growth entered'
+                      : `${(asset.annualGrowthRateBasisPoints / 100).toFixed(2)}% expected annual return`}
+                    {asset.contributionGrossAnnualIncomeCents === undefined
+                      ? ''
+                      : ` · ${formatMoney(asset.contributionGrossAnnualIncomeCents)} gross income`}
+                    {' · '}
                     Contributions:{' '}
                     {asset.contributionAmountCents === undefined
-                      ? 'amount not entered'
-                      : formatMoney(asset.contributionAmountCents)}
+                      ? 'no fixed amount'
+                      : `${formatMoney(asset.contributionAmountCents)} monthly`}
                     {asset.contributionRateBasisPoints === undefined
                       ? ''
-                      : ` · ${(asset.contributionRateBasisPoints / 100).toFixed(2)}%`}
+                      : ` · ${(asset.contributionRateBasisPoints / 100).toFixed(2)}% employee`}
                     {asset.employerMatchBasisPoints === undefined
                       ? ''
                       : ` · ${(asset.employerMatchBasisPoints / 100).toFixed(2)}% employer match`}
                   </Text>
                 )}
+                {asset.contributionGrossAnnualIncomeCents === undefined &&
+                  ((asset.contributionRateBasisPoints ?? 0) > 0 ||
+                    (asset.employerMatchBasisPoints ?? 0) > 0) && (
+                    <Text className={styles.warning}>
+                      Add gross annual pay to include percentage contributions in the forecast.
+                    </Text>
+                  )}
                 <Text className={styles.muted}>
                   Access: {asset.restrictionStatus?.replaceAll('-', ' ') ?? 'not entered'} · Linked
                   liability:{' '}
@@ -9872,8 +11653,18 @@ export const NetWorthPage = (): React.JSX.Element => {
                     'none'}
                 </Text>
                 <div className={styles.actions}>
-                  <Button onClick={() => setEditingAssetId(asset.id)}>Edit asset</Button>
-                  <Button onClick={() => void removeAsset(asset.id)}>Delete</Button>
+                  <Button
+                    disabled={pendingAction !== null}
+                    onClick={() => startAssetEdit(asset.id)}
+                  >
+                    Edit asset
+                  </Button>
+                  <Button
+                    disabled={pendingAction !== null}
+                    onClick={() => void removeAsset(asset.id)}
+                  >
+                    Delete
+                  </Button>
                 </div>
               </Card>
             ))}
@@ -9884,7 +11675,7 @@ export const NetWorthPage = (): React.JSX.Element => {
         <Title2 as="h2">Included record counts</Title2>
         <p>
           {records.accounts.length} cash accounts · {records.assets.length} assets ·{' '}
-          {records.receivables.length} receivables · {records.loans.length} loans
+          {records.receivables.length} Money Owed records · {records.loans.length} loans
         </p>
       </Card>
     </>
@@ -9904,6 +11695,8 @@ export const ReconciliationPage = (): React.JSX.Element => {
   const [forecastBalanceOverridden, setForecastBalanceOverridden] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mutationLock] = useState(createImmediateActionLock);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
   useEffect(() => {
     void Promise.all([loadRecords(), window.balanceBook.getForecast()])
       .then(([loadedRecords, forecast]) => {
@@ -9952,9 +11745,20 @@ export const ReconciliationPage = (): React.JSX.Element => {
       ),
     ),
   );
-  const updateEventStatus = async (event: ForecastEvent, status: ForecastEvent['status']) => {
+  const beginMutation = (action: string): boolean => {
+    if (!mutationLock.acquire(action)) return false;
+    setPendingAction(action);
     setError(null);
     setMessage(null);
+    return true;
+  };
+  const finishMutation = (action: string): void => {
+    mutationLock.release(action);
+    setPendingAction(null);
+  };
+  const updateEventStatus = async (event: ForecastEvent, status: ForecastEvent['status']) => {
+    const action = `event-status:${event.id}`;
+    if (!beginMutation(action)) return;
     try {
       const response = await window.balanceBook.upsertRecord(
         makeEditRequest('forecast-event', {
@@ -9981,45 +11785,67 @@ export const ReconciliationPage = (): React.JSX.Element => {
       setMessage('Event status and the displayed forecast are now up to date.');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Event status could not be updated.');
+    } finally {
+      finishMutation(action);
     }
   };
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const forecast = cents(form, 'forecast');
-    const actual = cents(form, 'actual');
-    setError(null);
-    setMessage(null);
-    const response = await window.balanceBook.upsertRecord({
-      entityType: 'reconciliation',
-      payload: {
-        id: crypto.randomUUID(),
-        accountId: get(form, 'accountId'),
-        date: get(form, 'date'),
-        forecastBalanceCents: forecast,
-        actualBalanceCents: actual,
-        varianceCents: actual - forecast,
-        resolution: get(form, 'resolution') as 'unresolved' | 'explained' | 'adjusted',
-        note: get(form, 'note') || undefined,
-      },
-    });
-    if (response.ok) {
+    const action = 'save-reconciliation';
+    if (!beginMutation(action)) return;
+    try {
+      const form = new FormData(event.currentTarget);
+      const forecast = cents(form, 'forecast');
+      const actual = cents(form, 'actual');
+      const response = await window.balanceBook.upsertRecord({
+        entityType: 'reconciliation',
+        payload: {
+          id: crypto.randomUUID(),
+          accountId: get(form, 'accountId'),
+          date: get(form, 'date'),
+          forecastBalanceCents: forecast,
+          actualBalanceCents: actual,
+          varianceCents: actual - forecast,
+          resolution: get(form, 'resolution') as 'unresolved' | 'explained' | 'adjusted',
+          note: get(form, 'note') || undefined,
+        },
+      });
+      if (!response.ok) throw new Error(response.error);
       setRecords(response.value);
       setMessage(
         'Balance check saved. It preserves the comparison but does not move cash or rewrite the forecast.',
       );
-    } else setError(response.error);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Balance check could not be saved.');
+    } finally {
+      finishMutation(action);
+    }
   };
   return (
     <>
       <div className={styles.header}>
-        <Title1 as="h1">Reconciliation</Title1>
+        <Title1 as="h1">Financial check-in</Title1>
         <Text>
-          A compact source-of-truth check for today. Use the manual balance check only when a bank
-          or issuer disagrees with the model.
+          A quick check of today&apos;s balances. Use the manual comparison only when a bank or card
+          issuer disagrees with the forecast.
         </Text>
       </div>
-      <section className={styles.summaryStrip} aria-label="Current reconciliation facts">
+      {message && (
+        <div role="status" aria-live="polite" className={styles.positive}>
+          {message}
+        </div>
+      )}
+      {error && (
+        <div role="alert" className={styles.error}>
+          {error}
+        </div>
+      )}
+      {pendingAction?.startsWith('event-status:') && (
+        <div role="status" aria-live="polite" className={styles.dataActionStatus}>
+          Updating the event and its forecast impact…
+        </div>
+      )}
+      <section className={styles.summaryStrip} aria-label="Current balance-check facts">
         {records.accounts.map((account) => {
           const modeled = snapshot?.cashAccounts?.find((item) => item.id === account.id);
           return (
@@ -10093,17 +11919,11 @@ export const ReconciliationPage = (): React.JSX.Element => {
       <details className={styles.disclosure}>
         <summary>Compare an actual balance</summary>
         <div>
-          <form className={styles.form} onSubmit={(event) => void submit(event)}>
-            {message && (
-              <div role="status" className={styles.positive}>
-                {message}
-              </div>
-            )}
-            {error && (
-              <div role="alert" className={styles.error}>
-                {error}
-              </div>
-            )}
+          <form
+            className={styles.form}
+            aria-busy={pendingAction === 'save-reconciliation'}
+            onSubmit={(event) => void submit(event)}
+          >
             <div className={styles.grid}>
               <Field label="Account">
                 <Select
@@ -10151,8 +11971,8 @@ export const ReconciliationPage = (): React.JSX.Element => {
                 />
               </Field>
               <Field
-                label="Expected modeled balance"
-                hint="Prefilled from the expected forecast for this account and date. You can override it to preserve the exact number you compared."
+                label="Forecast balance"
+                hint="Prefilled from the expected forecast for this account and date. You can change it to the exact number you compared."
               >
                 <Input
                   name="forecast"
@@ -10185,8 +12005,8 @@ export const ReconciliationPage = (): React.JSX.Element => {
             <Field label="Note (optional)">
               <Textarea name="note" />
             </Field>
-            <Button appearance="primary" type="submit">
-              Save reconciliation
+            <Button appearance="primary" type="submit" disabled={pendingAction !== null}>
+              {pendingAction === 'save-reconciliation' ? 'Saving…' : 'Save balance check'}
             </Button>
           </form>
         </div>
@@ -10199,7 +12019,7 @@ export const ReconciliationPage = (): React.JSX.Element => {
           ) : (
             records.reconciliations.map((item) => (
               <p key={item.id}>
-                <strong>{item.date}</strong> · variance {formatMoney(item.varianceCents)} ·{' '}
+                <strong>{item.date}</strong> · difference {formatMoney(item.varianceCents)} ·{' '}
                 {reconciliationResolutionLabel(item.resolution)}
               </p>
             ))
@@ -10254,6 +12074,7 @@ export const ReconciliationPage = (): React.JSX.Element => {
                   <Select
                     aria-label={`Status for ${event.label}`}
                     value={event.status}
+                    disabled={pendingAction !== null}
                     onChange={(_, data) =>
                       void updateEventStatus(event, data.value as ForecastEvent['status'])
                     }
@@ -10285,7 +12106,17 @@ export const dataActionProgressMessage = (action: DataAction): string =>
     reset: 'Resetting the active profile financial data...',
   })[action];
 
-export const DataPage = (): React.JSX.Element => {
+export const DataPage = ({
+  session,
+  systemDark,
+  onSession,
+  initialSection = 'appearance',
+}: {
+  session: SessionDto;
+  systemDark: boolean;
+  onSession: (session: SessionDto) => void;
+  initialSection?: SettingsSection;
+}): React.JSX.Element => {
   const styles = useCoreStyles();
   const [records, setRecords] = useState<ManagedRecordsDto>();
   const [policyLoaded, setPolicyLoaded] = useState(false);
@@ -10293,6 +12124,9 @@ export const DataPage = (): React.JSX.Element => {
   const [policyError, setPolicyError] = useState<string | null>(null);
   const [accountMessage, setAccountMessage] = useState<string | null>(null);
   const [accountError, setAccountError] = useState<string | null>(null);
+  const [preferenceMessage, setPreferenceMessage] = useState<string | null>(null);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
+  const [preferenceBusy, setPreferenceBusy] = useState(false);
   const [password, setPassword] = useState('');
   const [backupPasswordConfirmation, setBackupPasswordConfirmation] = useState('');
   const [confirmReplace, setConfirmReplace] = useState(false);
@@ -10301,6 +12135,27 @@ export const DataPage = (): React.JSX.Element => {
   const [error, setError] = useState<string | null>(null);
   const activeDataActionRef = useRef<DataAction | null>(null);
   const [activeDataAction, setActiveDataAction] = useState<DataAction | null>(null);
+  const [pageMutationLock] = useState(createImmediateActionLock);
+  const [pendingSettingsAction, setPendingSettingsAction] = useState<string | null>(null);
+  const [settingsSelection, setSettingsSelection] = useState<{
+    routeSection: SettingsSection;
+    selectedSection: SettingsSection;
+  }>(() => ({ routeSection: initialSection, selectedSection: initialSection }));
+  const settingsSection =
+    settingsSelection.routeSection === initialSection
+      ? settingsSelection.selectedSection
+      : initialSection;
+  const [openAccountSettingsId, setOpenAccountSettingsId] = useState<string | null>(null);
+  const [settingsQuery, setSettingsQuery] = useState('');
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatusDto | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const settingsSearchResults = searchSettings(settingsQuery);
+  const openSettingsSearchResult = (result: SettingsSearchEntry): void => {
+    setSettingsSelection({ routeSection: initialSection, selectedSection: result.section });
+    setSettingsQuery('');
+    setOpenAccountSettingsId(null);
+  };
   useEffect(() => {
     void window.balanceBook
       .listRecords()
@@ -10314,6 +12169,31 @@ export const DataPage = (): React.JSX.Element => {
         setPolicyLoaded(true);
       });
   }, []);
+  useEffect(() => {
+    if (settingsSection !== 'updates') return;
+    let active = true;
+    const stopListening = window.balanceBook.onUpdateStatus((status) => {
+      if (active) setUpdateStatus(status);
+    });
+    void window.balanceBook
+      .getUpdateStatus()
+      .then((result) => {
+        if (!active) return;
+        if (result.ok) setUpdateStatus(result.value);
+        else setUpdateError(result.error);
+      })
+      .catch((caught: unknown) => {
+        if (active) {
+          setUpdateError(
+            caught instanceof Error ? caught.message : 'Update status could not be loaded.',
+          );
+        }
+      });
+    return () => {
+      active = false;
+      stopListening();
+    };
+  }, [settingsSection]);
   const policy = records?.policy;
   const liquidAccounts = (records?.accounts ?? []).filter((account) => account.includedInLiquidity);
   const accountHardFloorTotalCents = liquidAccounts.reduce(
@@ -10341,65 +12221,237 @@ export const DataPage = (): React.JSX.Element => {
     preferredCandidates.length === 0
       ? undefined
       : Math.max(effectiveHardFloorCents, ...preferredCandidates);
+  const beginSettingsMutation = (action: string): boolean => {
+    if (!pageMutationLock.acquire(action)) return false;
+    setPendingSettingsAction(action);
+    return true;
+  };
+  const finishSettingsMutation = (action: string): void => {
+    pageMutationLock.release(action);
+    setPendingSettingsAction(null);
+  };
+  const updatePreferences = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const action = 'preferences';
+    if (!beginSettingsMutation(action)) return;
+    setPreferenceBusy(true);
+    setPreferenceMessage(null);
+    setPreferenceError(null);
+    const form = new FormData(event.currentTarget);
+    try {
+      const theme = get(form, 'theme') as SessionDto['themePreference'];
+      if (theme !== session.themePreference) {
+        const themeResult = await window.balanceBook.setTheme({ theme });
+        if (!themeResult.ok) throw new Error(themeResult.error);
+      }
+      const result = await window.balanceBook.setPreferences({
+        ...session.preferences,
+        overviewForecastMode:
+          get(form, 'overviewForecastMode') === 'conservative' ? 'conservative' : 'expected',
+        compactLayout: form.get('compactLayout') === 'on',
+        reduceMotion: form.get('reduceMotion') === 'on',
+        sidebarCollapsed: form.get('sidebarCollapsed') === 'on',
+        showOverviewDailySummary: form.get('showOverviewDailySummary') === 'on',
+        showOverviewUpcomingEvents: form.get('showOverviewUpcomingEvents') === 'on',
+        showOverviewWiderPicture: form.get('showOverviewWiderPicture') === 'on',
+      });
+      if (!result.ok) throw new Error(result.error);
+      onSession(result.value);
+      setPreferenceMessage('Experience preferences saved.');
+    } catch (caught) {
+      try {
+        const currentSession = await window.balanceBook.getSession();
+        if (currentSession.ok && currentSession.value) onSession(currentSession.value);
+      } catch {
+        // The original settings error remains the actionable message.
+      }
+      setPreferenceError(
+        caught instanceof Error ? caught.message : 'Experience preferences could not be saved.',
+      );
+    } finally {
+      setPreferenceBusy(false);
+      finishSettingsMutation(action);
+    }
+  };
+  const updateFeatureVisibility = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const action = 'features';
+    if (!beginSettingsMutation(action)) return;
+    setPreferenceBusy(true);
+    setPreferenceMessage(null);
+    setPreferenceError(null);
+    const form = new FormData(event.currentTarget);
+    try {
+      const result = await window.balanceBook.setPreferences({
+        ...session.preferences,
+        showIncomeTools: form.get('showIncomeTools') === 'on',
+        showBills: form.get('showBills') === 'on',
+        showCreditCards: form.get('showCreditCards') === 'on',
+        showLoans: form.get('showLoans') === 'on',
+        showMoneyOwed: form.get('showMoneyOwed') === 'on',
+        showAssetsAndNetWorth: form.get('showAssetsAndNetWorth') === 'on',
+      });
+      if (!result.ok) throw new Error(result.error);
+      onSession(result.value);
+      setPreferenceMessage(
+        'Visible sections updated. Saved records and forecasts were not changed.',
+      );
+    } catch (caught) {
+      setPreferenceError(
+        caught instanceof Error ? caught.message : 'Visible sections could not be saved.',
+      );
+    } finally {
+      setPreferenceBusy(false);
+      finishSettingsMutation(action);
+    }
+  };
+  const updateExperimentalCardInterest = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const action = 'experimental-card-interest';
+    if (!beginSettingsMutation(action)) return;
+    setPreferenceBusy(true);
+    setPreferenceMessage(null);
+    setPreferenceError(null);
+    const form = new FormData(event.currentTarget);
+    try {
+      const result = await window.balanceBook.setPreferences({
+        ...session.preferences,
+        experimentalCardInterestForecastEnabled:
+          form.get('experimentalCardInterestForecastEnabled') === 'on',
+      });
+      if (!result.ok) throw new Error(result.error);
+      onSession(result.value);
+      setPreferenceMessage('Experimental card-interest setting saved.');
+    } catch (caught) {
+      setPreferenceError(
+        caught instanceof Error
+          ? caught.message
+          : 'The experimental card-interest setting could not be saved.',
+      );
+    } finally {
+      setPreferenceBusy(false);
+      finishSettingsMutation(action);
+    }
+  };
+  const updateChannel = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      const form = new FormData(event.currentTarget);
+      const result = await window.balanceBook.setPreferences({
+        ...session.preferences,
+        updateChannel: form.get('updateChannel') === 'stable' ? 'stable' : 'beta',
+      });
+      if (!result.ok) throw new Error(result.error);
+      onSession(result.value);
+      const statusResult = await window.balanceBook.getUpdateStatus();
+      if (!statusResult.ok) throw new Error(statusResult.error);
+      setUpdateStatus(statusResult.value);
+    } catch (caught) {
+      setUpdateError(
+        caught instanceof Error ? caught.message : 'Update channel could not be saved.',
+      );
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+  const runUpdateAction = async (action: 'check' | 'defer' | 'restart'): Promise<void> => {
+    setUpdateBusy(true);
+    setUpdateError(null);
+    try {
+      const result =
+        action === 'check'
+          ? await window.balanceBook.checkForUpdates()
+          : action === 'defer'
+            ? await window.balanceBook.deferUpdate()
+            : await window.balanceBook.restartForUpdate();
+      if (!result.ok) throw new Error(result.error);
+      setUpdateStatus(result.value);
+    } catch (caught) {
+      setUpdateError(caught instanceof Error ? caught.message : 'The update action failed.');
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
   const updatePolicy = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const action = 'policy';
+    if (!beginSettingsMutation(action)) return;
     setPolicyMessage(null);
     setPolicyError(null);
-    const form = new FormData(event.currentTarget);
-    const preferred = get(form, 'preferredFloor').trim();
-    const result = await window.balanceBook.updateCashPolicy({
-      hardConsolidatedFloorCents: cents(form, 'hardFloor'),
-      preferredConsolidatedFloorCents: preferred ? dollarsToCents(preferred) : undefined,
-      horizonDays: Number(get(form, 'horizonDays')),
-      includeConfirmedReceivablesConservatively:
-        form.get('includeConfirmedReceivablesConservatively') === 'on',
-    });
-    if (result.ok) {
+    try {
+      const form = new FormData(event.currentTarget);
+      const preferred = get(form, 'preferredFloor').trim();
+      const result = await window.balanceBook.updateCashPolicy({
+        hardConsolidatedFloorCents: cents(form, 'hardFloor'),
+        preferredConsolidatedFloorCents: preferred ? dollarsToCents(preferred) : undefined,
+        horizonDays: Number(get(form, 'horizonDays')),
+        includeConfirmedReceivablesConservatively:
+          form.get('includeConfirmedReceivablesConservatively') === 'on',
+      });
+      if (!result.ok) throw new Error(result.error);
       setRecords(result.value);
-      setPolicyMessage('Forecast guardrails updated. The dashboard has been recalculated.');
-    } else setPolicyError(result.error);
+      setPolicyMessage('Forecast safety settings updated. The dashboard has been recalculated.');
+    } catch (caught) {
+      setPolicyError(
+        caught instanceof Error ? caught.message : 'Forecast safety settings could not be saved.',
+      );
+    } finally {
+      finishSettingsMutation(action);
+    }
   };
   const updateAccountProtection = async (
     account: ManagedRecordsDto['accounts'][number],
     event: FormEvent<HTMLFormElement>,
   ) => {
     event.preventDefault();
+    const action = `account:${account.id}`;
+    if (!beginSettingsMutation(action)) return;
     setAccountMessage(null);
     setAccountError(null);
-    const form = new FormData(event.currentTarget);
-    const hardFloorCents = optionalCents(form, 'accountHardFloor');
-    const preferredFloorCents = optionalCents(form, 'accountPreferredFloor');
-    if (preferredFloorCents !== undefined && preferredFloorCents < (hardFloorCents ?? 0)) {
-      setAccountError(`${account.name}: preferred buffer cannot be below its minimum.`);
-      return;
-    }
-    const result = await window.balanceBook.upsertRecord({
-      entityType: 'cash-account',
-      payload: {
-        id: account.id,
-        name: account.name,
-        type: account.type,
-        openingBalanceCents: account.openingBalanceCents,
-        availableBalanceCents: account.availableBalanceCents,
-        balanceAsOf: account.balanceAsOf,
-        notes: account.notes,
-        hardFloorCents,
-        preferredFloorCents,
-        transferDelayDays: Math.trunc(number(form, 'accountTransferDelay')),
-        includedInLiquidity: form.get('accountIncludedInLiquidity') === 'on',
-        canFundOtherAccounts: form.get('accountCanFund') === 'on',
-        showOnOverview: form.get('accountShowOnOverview') === 'on',
-      },
-    });
-    if (result.ok) {
+    try {
+      const form = new FormData(event.currentTarget);
+      const hardFloorCents = optionalCents(form, 'accountHardFloor');
+      const preferredFloorCents = optionalCents(form, 'accountPreferredFloor');
+      if (preferredFloorCents !== undefined && preferredFloorCents < (hardFloorCents ?? 0)) {
+        throw new Error(`${account.name}: preferred buffer cannot be below its minimum.`);
+      }
+      const result = await window.balanceBook.upsertRecord({
+        entityType: 'cash-account',
+        payload: {
+          id: account.id,
+          name: account.name,
+          type: account.type,
+          openingBalanceCents: account.openingBalanceCents,
+          availableBalanceCents: account.availableBalanceCents,
+          balanceAsOf: account.balanceAsOf,
+          notes: account.notes,
+          hardFloorCents,
+          preferredFloorCents,
+          transferDelayDays: Math.trunc(number(form, 'accountTransferDelay')),
+          includedInLiquidity: form.get('accountIncludedInLiquidity') === 'on',
+          canFundOtherAccounts: form.get('accountCanFund') === 'on',
+          showOnOverview: form.get('accountShowOnOverview') === 'on',
+        },
+      });
+      if (!result.ok) throw new Error(result.error);
       setRecords(result.value);
       setAccountMessage(
         `${account.name} protection updated. Global minimum and funding guidance were recalculated.`,
       );
-    } else setAccountError(result.error);
+    } catch (caught) {
+      setAccountError(
+        caught instanceof Error ? caught.message : `${account.name} protection could not be saved.`,
+      );
+    } finally {
+      finishSettingsMutation(action);
+    }
   };
   const performDataAction = async (action: DataAction, operation: () => Promise<void>) => {
     if (activeDataActionRef.current !== null) return;
+    const lockAction = `data:${action}`;
+    if (!pageMutationLock.acquire(lockAction)) return;
     activeDataActionRef.current = action;
     setActiveDataAction(action);
     setError(null);
@@ -10411,6 +12463,7 @@ export const DataPage = (): React.JSX.Element => {
     } finally {
       activeDataActionRef.current = null;
       setActiveDataAction(null);
+      pageMutationLock.release(lockAction);
     }
   };
   const run = async (action: Exclude<DataAction, 'reset'>) => {
@@ -10428,13 +12481,20 @@ export const DataPage = (): React.JSX.Element => {
         setMessage('Canceled. No files changed.');
         return;
       }
-      if (action === 'restore') {
-        const refreshed = await window.balanceBook.listRecords();
+      if (action === 'restore' || action === 'import') {
+        const [refreshed, refreshedSession] = await Promise.all([
+          window.balanceBook.listRecords(),
+          window.balanceBook.getSession(),
+        ]);
         if (!refreshed.ok) throw new Error(refreshed.error);
+        if (!refreshedSession.ok) throw new Error(refreshedSession.error);
         setRecords(refreshed.value);
+        if (refreshedSession.value) onSession(refreshedSession.value);
         setConfirmReplace(false);
         setMessage(
-          'Portable profile restored. Your local sign-in password stayed unchanged; forecasts now use the restored records.',
+          action === 'restore'
+            ? 'Portable profile restored. Your local sign-in password stayed unchanged; forecasts now use the restored records.'
+            : `${result.value.itemCount} item(s) imported. Settings and forecasts now use the imported records.`,
         );
       } else if (action === 'backup') {
         setMessage(
@@ -10443,7 +12503,6 @@ export const DataPage = (): React.JSX.Element => {
       } else {
         setMessage(`${result.value.itemCount} item(s) written or restored.`);
       }
-      if (action === 'import') setConfirmReplace(false);
       setPassword('');
       setBackupPasswordConfirmation('');
     });
@@ -10458,349 +12517,784 @@ export const DataPage = (): React.JSX.Element => {
     });
   };
   const dataActionBusy = activeDataAction !== null;
+  const settingsMutationBusy = pendingSettingsAction !== null;
   return (
     <>
       <div className={styles.header}>
         <Title1 as="h1">Settings</Title1>
         <Text>
-          Balance Book {window.balanceBook.appVersion} is local-first, has no bank connection,
-          telemetry, cloud dependency, or automatic financial action. Forecasts are models, not
-          guarantees.
+          Version {window.balanceBook.appVersion} · Local only · No bank connection or telemetry.
+          Forecasts are estimates, not guarantees.
         </Text>
       </div>
-      <Card className={styles.panel}>
-        <Title2 as="h2">Forecast guardrails</Title2>
-        <Text>
-          Account minimums below automatically build your global protected floor. Use these
-          consolidated values only when you want an additional whole-portfolio reserve. Changing
-          either layer recalculates Overview, Cash Forecast, and Spending Power without changing any
-          transaction.
-        </Text>
-        {!policyLoaded ? (
-          <LoadingSkeleton label="Loading forecast guardrails" variant="inline-form" />
-        ) : !records && policyError ? (
-          <div role="alert" className={styles.error}>
-            {policyError}
+      <Field className={styles.settingsSearch} label="Search settings">
+        <Input
+          type="search"
+          value={settingsQuery}
+          placeholder="Try “cards,” “backup,” “minimum,” or “updates”"
+          onChange={(_event, data) => setSettingsQuery(data.value)}
+        />
+      </Field>
+      {settingsQuery.trim() !== '' && (
+        <Card className={styles.settingsSearchResults} aria-label="Settings search results">
+          <Text>
+            <strong>
+              {settingsSearchResults.length} result
+              {settingsSearchResults.length === 1 ? '' : 's'}
+            </strong>
+          </Text>
+          {settingsSearchResults.length === 0 ? (
+            <Text>No settings match that search. Try a shorter phrase.</Text>
+          ) : (
+            settingsSearchResults.map((result) => (
+              <Button
+                className={styles.settingsSearchResult}
+                appearance="subtle"
+                key={result.id}
+                onClick={() => openSettingsSearchResult(result)}
+              >
+                <strong>{result.title}</strong>
+                <Text size={200}>{result.description}</Text>
+              </Button>
+            ))
+          )}
+        </Card>
+      )}
+      <TabList
+        className={styles.settingsTabs}
+        selectedValue={settingsSection}
+        aria-label="Settings category"
+        onTabSelect={(_event, data) => {
+          const selectedSection = data.value as SettingsSection;
+          setSettingsSelection({ routeSection: initialSection, selectedSection });
+          if (selectedSection !== 'accounts') setOpenAccountSettingsId(null);
+        }}
+      >
+        <Tab value="appearance">Appearance</Tab>
+        <Tab value="features">Visible sections</Tab>
+        <Tab value="forecast">Forecast and safety</Tab>
+        <Tab value="accounts">Accounts</Tab>
+        <Tab value="updates">Updates</Tab>
+        <Tab value="data">Data and backup</Tab>
+        <Tab value="security">Security and reset</Tab>
+      </TabList>
+      {settingsSection === 'appearance' && (
+        <Card className={styles.panel} aria-labelledby="experience-settings-title">
+          <div className={styles.sectionIntro}>
+            <Title2 id="experience-settings-title" as="h2">
+              Appearance and Overview
+            </Title2>
+            <Text>Choose how Balance Book looks and what you see first.</Text>
           </div>
-        ) : policy ? (
-          <form key={JSON.stringify(policy)} className={styles.form} onSubmit={updatePolicy}>
-            {policyMessage && (
-              <div role="status" className={styles.positive}>
-                {policyMessage}
+          {preferenceMessage && (
+            <div role="status" className={styles.positive}>
+              {preferenceMessage}
+            </div>
+          )}
+          {preferenceError && (
+            <div role="alert" className={styles.error}>
+              {preferenceError}
+            </div>
+          )}
+          <form
+            key={`${session.themePreference}:${JSON.stringify(session.preferences)}`}
+            className={styles.form}
+            aria-busy={pendingSettingsAction === 'preferences'}
+            onSubmit={(event) => void updatePreferences(event)}
+          >
+            <div className={styles.preferenceGrid}>
+              <div className={styles.preferenceGroup}>
+                <strong>Appearance</strong>
+                <Field label="Theme">
+                  <Select
+                    name="theme"
+                    aria-label="Theme"
+                    defaultValue={session.themePreference}
+                    disabled={settingsMutationBusy || dataActionBusy}
+                  >
+                    <option value="system">System ({systemDark ? 'Dark' : 'Light'} now)</option>
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                  </Select>
+                </Field>
+                <Checkbox
+                  name="compactLayout"
+                  defaultChecked={session.preferences.compactLayout}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label="Use compact spacing"
+                />
+                <Checkbox
+                  name="reduceMotion"
+                  defaultChecked={session.preferences.reduceMotion}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label="Reduce animations and motion"
+                />
+                <Checkbox
+                  name="sidebarCollapsed"
+                  defaultChecked={session.preferences.sidebarCollapsed}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label="Keep desktop navigation collapsed"
+                />
               </div>
-            )}
-            {policyError && (
+              <div className={styles.preferenceGroup}>
+                <strong>Overview defaults</strong>
+                <Field label="Default forecast view">
+                  <Select
+                    name="overviewForecastMode"
+                    defaultValue={session.preferences.overviewForecastMode}
+                    disabled={settingsMutationBusy || dataActionBusy}
+                  >
+                    <option value="expected">Expected</option>
+                    <option value="conservative">Conservative</option>
+                  </Select>
+                </Field>
+                <Checkbox
+                  name="showOverviewDailySummary"
+                  defaultChecked={session.preferences.showOverviewDailySummary}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label="Show daily summary"
+                />
+                <Checkbox
+                  name="showOverviewUpcomingEvents"
+                  defaultChecked={session.preferences.showOverviewUpcomingEvents}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label="Show upcoming cash events"
+                />
+                <Checkbox
+                  name="showOverviewWiderPicture"
+                  defaultChecked={session.preferences.showOverviewWiderPicture}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label="Show wider financial picture"
+                />
+              </div>
+            </div>
+            <Text size={200} className={styles.muted}>
+              Account visibility is set per account below. Safety warnings remain visible; card
+              runway follows the Credit cards visibility setting.
+            </Text>
+            <Button
+              appearance="primary"
+              type="submit"
+              disabled={settingsMutationBusy || dataActionBusy}
+            >
+              {preferenceBusy ? 'Saving…' : 'Save experience'}
+            </Button>
+          </form>
+        </Card>
+      )}
+      {settingsSection === 'features' && (
+        <Card className={styles.panel} aria-labelledby="visible-sections-title">
+          <div className={styles.sectionIntro}>
+            <Title2 id="visible-sections-title" as="h2">
+              Visible sections
+            </Title2>
+            <Text>Keep the workspace focused on the parts of your finances you actually use.</Text>
+          </div>
+          {preferenceMessage && (
+            <div role="status" className={styles.positive}>
+              {preferenceMessage}
+            </div>
+          )}
+          {preferenceError && (
+            <div role="alert" className={styles.error}>
+              {preferenceError}
+            </div>
+          )}
+          <form
+            key={`features:${JSON.stringify(session.preferences)}`}
+            className={styles.form}
+            aria-busy={pendingSettingsAction === 'features'}
+            onSubmit={(event) => void updateFeatureVisibility(event)}
+          >
+            <div className={styles.preferenceGrid}>
+              <div className={styles.preferenceGroup}>
+                <Checkbox
+                  name="showIncomeTools"
+                  defaultChecked={session.preferences.showIncomeTools}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label={financialFeatureLabels.income}
+                />
+                <Checkbox
+                  name="showBills"
+                  defaultChecked={session.preferences.showBills}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label={financialFeatureLabels.bills}
+                />
+                <Checkbox
+                  name="showCreditCards"
+                  defaultChecked={session.preferences.showCreditCards}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label={financialFeatureLabels['credit-cards']}
+                />
+              </div>
+              <div className={styles.preferenceGroup}>
+                <Checkbox
+                  name="showLoans"
+                  defaultChecked={session.preferences.showLoans}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label={financialFeatureLabels.loans}
+                />
+                <Checkbox
+                  name="showMoneyOwed"
+                  defaultChecked={session.preferences.showMoneyOwed}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label={financialFeatureLabels['money-owed']}
+                />
+                <Checkbox
+                  name="showAssetsAndNetWorth"
+                  defaultChecked={session.preferences.showAssetsAndNetWorth}
+                  disabled={settingsMutationBusy || dataActionBusy}
+                  label={financialFeatureLabels.assets}
+                />
+              </div>
+            </div>
+            <details>
+              <summary>What happens when a section is hidden?</summary>
+              <Text>
+                Hiding changes navigation and day-to-day screens only. Existing records stay in your
+                local profile, remain in history and backups, and continue to affect forecasts. Turn
+                the section back on here whenever you need it.
+              </Text>
+            </details>
+            <Button
+              appearance="primary"
+              type="submit"
+              disabled={settingsMutationBusy || dataActionBusy}
+            >
+              {preferenceBusy ? 'Saving…' : 'Save visible sections'}
+            </Button>
+          </form>
+        </Card>
+      )}
+      {settingsSection === 'updates' && (
+        <Card className={styles.panel} aria-labelledby="application-updates-title">
+          <div className={styles.sectionIntro}>
+            <Title2 id="application-updates-title" as="h2">
+              Application updates
+            </Title2>
+            <Text>Choose which releases you receive and check whenever you want.</Text>
+          </div>
+          {updateError && (
+            <div role="alert" className={styles.error}>
+              {updateError}
+            </div>
+          )}
+          {!updateStatus ? (
+            <LoadingSkeleton label="Loading update status" variant="inline-form" />
+          ) : (
+            <>
+              <div className={styles.preferenceGrid}>
+                <div className={styles.preferenceGroup}>
+                  <Text size={200}>Installed version</Text>
+                  <strong>{updateStatus.currentVersion}</strong>
+                  <Text size={200}>Status</Text>
+                  <strong>{updateStatus.message}</strong>
+                  {updateStatus.checkedAt && (
+                    <Text size={200}>
+                      Last checked {new Date(updateStatus.checkedAt).toLocaleString()}
+                    </Text>
+                  )}
+                  {updateStatus.releaseNotes && <Text size={200}>{updateStatus.releaseNotes}</Text>}
+                </div>
+                <form
+                  className={styles.preferenceGroup}
+                  onSubmit={(event) => void updateChannel(event)}
+                >
+                  <Field
+                    label="Release channel"
+                    hint="Beta receives tested previews first. Stable waits for the broadly recommended release."
+                  >
+                    <Select
+                      name="updateChannel"
+                      defaultValue={session.preferences.updateChannel}
+                      disabled={updateBusy}
+                    >
+                      <option value="beta">Beta</option>
+                      <option value="stable">Stable</option>
+                    </Select>
+                  </Field>
+                  <Button type="submit" disabled={updateBusy}>
+                    Save channel
+                  </Button>
+                </form>
+              </div>
+              <div className={styles.actions}>
+                <Button
+                  appearance="primary"
+                  disabled={
+                    updateBusy ||
+                    !updateStatus.enabled ||
+                    ['checking', 'downloading', 'installing'].includes(updateStatus.state)
+                  }
+                  onClick={() => void runUpdateAction('check')}
+                >
+                  {updateStatus.state === 'checking'
+                    ? 'Checking…'
+                    : updateStatus.state === 'downloading'
+                      ? 'Downloading…'
+                      : 'Check for updates'}
+                </Button>
+                {['ready', 'deferred'].includes(updateStatus.state) && (
+                  <Button
+                    appearance="primary"
+                    disabled={updateBusy}
+                    onClick={() => void runUpdateAction('restart')}
+                  >
+                    Update and restart
+                  </Button>
+                )}
+                {updateStatus.state === 'ready' && (
+                  <Button disabled={updateBusy} onClick={() => void runUpdateAction('defer')}>
+                    Restart later
+                  </Button>
+                )}
+              </div>
+              {!updateStatus.enabled && (
+                <Text size={200} className={styles.muted}>
+                  This owner-testing build does not contact an update server. Automatic updates are
+                  enabled only in a signed public build.
+                </Text>
+              )}
+            </>
+          )}
+        </Card>
+      )}
+      {settingsSection === 'forecast' && (
+        <>
+          <Card className={styles.panel}>
+            <Title2 as="h2">Forecast safety settings</Title2>
+            <details>
+              <summary>How these settings affect forecasts</summary>
+              <Text>
+                Account minimums build the global protected floor. Consolidated overrides add a
+                portfolio-wide reserve. Either change recalculates Overview, Cash Forecast, and
+                Spending Power without changing transactions.
+              </Text>
+            </details>
+            {!policyLoaded ? (
+              <LoadingSkeleton label="Loading forecast safety settings" variant="inline-form" />
+            ) : !records && policyError ? (
               <div role="alert" className={styles.error}>
                 {policyError}
               </div>
-            )}
-            <div className={styles.grid}>
-              <Field
-                label="Consolidated minimum override"
-                hint="The app uses whichever is higher: this override or the sum of included account minimums."
+            ) : policy ? (
+              <form
+                key={JSON.stringify(policy)}
+                className={styles.form}
+                aria-busy={pendingSettingsAction === 'policy'}
+                onSubmit={(event) => void updatePolicy(event)}
               >
-                <Input
-                  name="hardFloor"
-                  inputMode="decimal"
-                  required
-                  defaultValue={(policy.hardConsolidatedFloorCents / 100).toFixed(2)}
+                {policyMessage && (
+                  <div role="status" className={styles.positive}>
+                    {policyMessage}
+                  </div>
+                )}
+                {policyError && (
+                  <div role="alert" className={styles.error}>
+                    {policyError}
+                  </div>
+                )}
+                <div className={styles.grid}>
+                  <Field
+                    label="Consolidated minimum override"
+                    hint="The app uses whichever is higher: this override or the sum of included account minimums."
+                  >
+                    <Input
+                      name="hardFloor"
+                      inputMode="decimal"
+                      required
+                      defaultValue={(policy.hardConsolidatedFloorCents / 100).toFixed(2)}
+                    />
+                  </Field>
+                  <Field
+                    label="Consolidated preferred override (optional)"
+                    hint="A portfolio-wide comfort buffer above the protected minimum."
+                  >
+                    <Input
+                      name="preferredFloor"
+                      inputMode="decimal"
+                      defaultValue={
+                        policy.preferredConsolidatedFloorCents === undefined
+                          ? ''
+                          : (policy.preferredConsolidatedFloorCents / 100).toFixed(2)
+                      }
+                    />
+                  </Field>
+                  <Field label="Forecast horizon in days">
+                    <Input
+                      name="horizonDays"
+                      type="number"
+                      min="1"
+                      max="730"
+                      required
+                      defaultValue={String(policy.horizonDays)}
+                    />
+                  </Field>
+                </div>
+                <Checkbox
+                  name="includeConfirmedReceivablesConservatively"
+                  defaultChecked={policy.includeConfirmedReceivablesConservatively}
+                  label="Include confirmed money-received schedules in the conservative cash forecast"
                 />
-              </Field>
-              <Field
-                label="Consolidated preferred override (optional)"
-                hint="A portfolio-wide comfort buffer above the protected minimum."
-              >
-                <Input
-                  name="preferredFloor"
-                  inputMode="decimal"
-                  defaultValue={
-                    policy.preferredConsolidatedFloorCents === undefined
-                      ? ''
-                      : (policy.preferredConsolidatedFloorCents / 100).toFixed(2)
-                  }
-                />
-              </Field>
-              <Field label="Forecast horizon in days">
-                <Input
-                  name="horizonDays"
-                  type="number"
-                  min="1"
-                  max="730"
-                  required
-                  defaultValue={String(policy.horizonDays)}
-                />
-              </Field>
-            </div>
-            <Checkbox
-              name="includeConfirmedReceivablesConservatively"
-              defaultChecked={policy.includeConfirmedReceivablesConservatively}
-              label="Include confirmed money-received schedules in the conservative cash forecast"
-            />
-            <Button appearance="primary" type="submit">
-              Save forecast guardrails
-            </Button>
-          </form>
-        ) : (
-          <Text>Complete first forecast setup before editing guardrails.</Text>
-        )}
-      </Card>
-      <Card className={styles.panel}>
-        <div className={styles.sectionIntro}>
-          <Title2 as="h2">Account protection and transfer timing</Title2>
-          <Text>
-            Set the balance each account must stay above. Included account minimums automatically
-            populate the global protected floor; preferred buffers drive the earlier warning line.
-            Transfer lead time tells funding guidance how soon money must leave a source account.
-          </Text>
-        </div>
-        {accountMessage && (
-          <div role="status" className={styles.positive}>
-            {accountMessage}
-          </div>
-        )}
-        {accountError && (
-          <div role="alert" className={styles.error}>
-            {accountError}
-          </div>
-        )}
-        {records ? (
-          <>
-            <section className={styles.metrics} aria-label="Effective cash protection">
-              <Card className={styles.metric}>
-                <Text className={styles.eyebrow}>Included account minimums</Text>
-                <Text className={styles.value}>{formatMoney(accountHardFloorTotalCents)}</Text>
-                <Text>{liquidAccounts.length} liquid account(s)</Text>
-              </Card>
-              <Card className={styles.metric}>
-                <Text className={styles.eyebrow}>Consolidated override</Text>
-                <Text className={styles.value}>
-                  {formatMoney(policy?.hardConsolidatedFloorCents ?? 0)}
-                </Text>
-                <Text>The higher layer wins</Text>
-              </Card>
-              <Card className={styles.metric}>
-                <Text className={styles.eyebrow}>Effective global minimum</Text>
-                <Text className={styles.value}>{formatMoney(effectiveHardFloorCents)}</Text>
-                <Text>
-                  Preferred warning{' '}
-                  {effectivePreferredFloorCents === undefined
-                    ? 'not set'
-                    : formatMoney(effectivePreferredFloorCents)}
-                </Text>
-              </Card>
-            </section>
-            <div className={styles.recordGrid}>
-              {records.accounts.map((account) => (
-                <form
-                  key={`${account.id}:${account.hardFloorCents ?? ''}:${account.preferredFloorCents ?? ''}:${account.transferDelayDays}:${account.includedInLiquidity}:${account.canFundOtherAccounts}:${account.showOnOverview}`}
-                  aria-label={`${account.name} protection settings`}
-                  className={styles.formSection}
-                  onSubmit={(event) => void updateAccountProtection(account, event)}
+                <Button
+                  appearance="primary"
+                  type="submit"
+                  disabled={settingsMutationBusy || dataActionBusy}
                 >
-                  <div className={styles.compact}>
-                    <strong>{account.name}</strong>
-                    <Text className={styles.muted}>
-                      {formatMoney(account.openingBalanceCents)} as of {account.balanceAsOf}
-                    </Text>
-                  </div>
-                  <div className={styles.grid}>
-                    <Field
-                      label="Account minimum"
-                      hint="The balance this account should never cross."
-                    >
-                      <Input
-                        name="accountHardFloor"
-                        inputMode="decimal"
-                        min="0"
-                        defaultValue={centsInput(account.hardFloorCents)}
-                        placeholder="0.00"
-                      />
-                    </Field>
-                    <Field
-                      label="Preferred buffer"
-                      hint="Optional earlier warning; cannot be below the minimum."
-                    >
-                      <Input
-                        name="accountPreferredFloor"
-                        inputMode="decimal"
-                        min="0"
-                        defaultValue={centsInput(account.preferredFloorCents)}
-                        placeholder="Optional"
-                      />
-                    </Field>
-                    <Field
-                      label="Transfer lead time (days)"
-                      hint="Calendar days required before money can arrive elsewhere."
-                    >
-                      <Input
-                        name="accountTransferDelay"
-                        type="number"
-                        min="0"
-                        max="30"
-                        step="1"
-                        required
-                        defaultValue={String(account.transferDelayDays)}
-                      />
-                    </Field>
-                  </div>
-                  <div className={styles.stack}>
-                    <Checkbox
-                      name="accountIncludedInLiquidity"
-                      defaultChecked={account.includedInLiquidity}
-                      label="Include in liquid cash and the global minimum"
-                    />
-                    <Checkbox
-                      name="accountCanFund"
-                      defaultChecked={account.canFundOtherAccounts}
-                      label="Allow transfer recommendations to use this account"
-                    />
-                    <Checkbox
-                      name="accountShowOnOverview"
-                      defaultChecked={account.showOnOverview}
-                      label="Show this account in the Overview cash-account list"
-                    />
-                    <Text size={200} className={styles.muted}>
-                      Display only. Hidden accounts still affect forecasts, card runway, protected
-                      minimums, and any funding warning that needs your attention.
-                    </Text>
-                  </div>
-                  <Button appearance="primary" type="submit">
-                    Save {account.name}
-                  </Button>
-                </form>
-              ))}
+                  {pendingSettingsAction === 'policy' ? 'Saving…' : 'Save forecast safety settings'}
+                </Button>
+              </form>
+            ) : (
+              <Text>Complete first forecast setup before editing safety settings.</Text>
+            )}
+          </Card>
+          <Card className={styles.panel} aria-labelledby="experimental-card-interest-title">
+            <div className={styles.sectionIntro}>
+              <Title2 id="experimental-card-interest-title" as="h2">
+                Experimental card interest
+              </Title2>
+              <Text>
+                Optionally add one monthly interest estimate to unpaid card balances. Recorded
+                statements remain authoritative, and promotional rates stay card-specific.
+              </Text>
             </div>
-          </>
-        ) : policyLoaded ? (
-          <Text>Account protection could not be loaded. Reopen Settings to retry.</Text>
-        ) : (
-          <LoadingSkeleton label="Loading account protection" variant="inline-form" />
-        )}
-      </Card>
-      <Card className={styles.panel}>
-        <Title2 as="h2">Privacy boundary</Title2>
-        <Text>
-          The local password separates profiles inside the app. It does not protect data from a
-          Windows administrator. The live database stays in the private app-data directory; manual
-          portable backups are encrypted.
-        </Text>
-        <div className={styles.actions}>
-          <Button onClick={() => (window.location.hash = '#/setup')}>Review setup</Button>
-          <Button onClick={() => (window.location.hash = '#/records')}>
-            Workbook import review and records
-          </Button>
-        </div>
-      </Card>
-      <fieldset
-        className={styles.dataActionArea}
-        disabled={dataActionBusy}
-        aria-busy={dataActionBusy}
-        aria-label="Backup, restore, export, import, and reset actions"
-      >
-        {activeDataAction && (
-          <div
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-            className={styles.dataActionStatus}
-          >
-            {dataActionProgressMessage(activeDataAction)}
-          </div>
-        )}
-        {error && (
-          <div role="alert" className={styles.error}>
-            {error}
-          </div>
-        )}
-        {message && (
-          <div role="status" className={styles.positive}>
-            {message}
-          </div>
-        )}
-        <Card className={styles.panel}>
-          <Title2 as="h2">Backup, restore, and export</Title2>
-          <div className={styles.form}>
-            <Text>
-              A portable backup contains this profile's financial records, setup draft, preferences,
-              audit history, and workbook lineage. It never contains the local sign-in password. On
-              a new computer, create a new local password first, then restore with the separate
-              backup password.
-            </Text>
-            <Field label="Backup password (separate from sign-in)">
-              <Input
-                type="password"
-                autoComplete="new-password"
-                value={password}
-                onChange={(_, data) => setPassword(data.value)}
-              />
-            </Field>
-            <Field
-              label="Confirm backup password"
-              validationMessage={
-                backupPasswordConfirmation && password !== backupPasswordConfirmation
-                  ? 'Backup passwords do not match'
-                  : undefined
-              }
+            {preferenceMessage && (
+              <div role="status" className={styles.positive}>
+                {preferenceMessage}
+              </div>
+            )}
+            {preferenceError && (
+              <div role="alert" className={styles.error}>
+                {preferenceError}
+              </div>
+            )}
+            <form
+              key={`experimental-card-interest:${session.preferences.experimentalCardInterestForecastEnabled}`}
+              className={styles.form}
+              aria-busy={pendingSettingsAction === 'experimental-card-interest'}
+              onSubmit={(event) => void updateExperimentalCardInterest(event)}
             >
-              <Input
-                type="password"
-                autoComplete="new-password"
-                value={backupPasswordConfirmation}
-                onChange={(_, data) => setBackupPasswordConfirmation(data.value)}
+              <Checkbox
+                name="experimentalCardInterestForecastEnabled"
+                defaultChecked={session.preferences.experimentalCardInterestForecastEnabled}
+                disabled={settingsMutationBusy || dataActionBusy}
+                label="Include card interest in forecasts (experimental)"
               />
-            </Field>
-            <div className={styles.actions}>
+              <Text size={200} className={styles.muted}>
+                Off by default. When enabled, choose the cards to include from Accounts → Credit
+                cards. Cards with no carried balance add $0.00.
+              </Text>
               <Button
                 appearance="primary"
-                disabled={password.length < 12 || password !== backupPasswordConfirmation}
-                onClick={() => void run('backup')}
+                type="submit"
+                disabled={settingsMutationBusy || dataActionBusy}
               >
-                Create encrypted backup
+                {pendingSettingsAction === 'experimental-card-interest'
+                  ? 'Saving…'
+                  : 'Save experimental setting'}
               </Button>
-              <Button onClick={() => void run('export')}>Export JSON and CSV</Button>
-            </div>
-            <Title2 as="h2">Restore</Title2>
+            </form>
+          </Card>
+        </>
+      )}
+      {settingsSection === 'accounts' && (
+        <Card className={styles.panel}>
+          <div className={styles.sectionIntro}>
+            <Title2 as="h2">Account protection and transfer timing</Title2>
             <Text>
-              Restore validates the entire encrypted profile before a single transaction replaces
-              the active profile. A local pre-restore recovery backup is created automatically. Your
-              account name and local sign-in password do not change.
+              Set the balance each account must stay above. Included account minimums automatically
+              populate the global protected floor; preferred buffers drive the earlier warning line.
+              Transfer lead time tells funding guidance how soon money must leave a source account.
             </Text>
-            <Checkbox
-              checked={confirmReplace}
-              onChange={(_, data) => setConfirmReplace(Boolean(data.checked))}
-              label="I understand this replaces the active profile's records"
-            />
-            <Button
-              disabled={password.length < 12 || !confirmReplace}
-              onClick={() => void run('restore')}
-            >
-              Choose encrypted backup to restore
-            </Button>
-            <Button disabled={!confirmReplace} onClick={() => void run('import')}>
-              Choose JSON export to import
+          </div>
+          {accountMessage && (
+            <div role="status" className={styles.positive}>
+              {accountMessage}
+            </div>
+          )}
+          {accountError && (
+            <div role="alert" className={styles.error}>
+              {accountError}
+            </div>
+          )}
+          {records ? (
+            <>
+              <section className={styles.metrics} aria-label="Effective cash protection">
+                <Card className={styles.metric}>
+                  <Text className={styles.eyebrow}>Included account minimums</Text>
+                  <Text className={styles.value}>{formatMoney(accountHardFloorTotalCents)}</Text>
+                  <Text>{liquidAccounts.length} liquid account(s)</Text>
+                </Card>
+                <Card className={styles.metric}>
+                  <Text className={styles.eyebrow}>Consolidated override</Text>
+                  <Text className={styles.value}>
+                    {formatMoney(policy?.hardConsolidatedFloorCents ?? 0)}
+                  </Text>
+                  <Text>The higher layer wins</Text>
+                </Card>
+                <Card className={styles.metric}>
+                  <Text className={styles.eyebrow}>Effective global minimum</Text>
+                  <Text className={styles.value}>{formatMoney(effectiveHardFloorCents)}</Text>
+                  <Text>
+                    Preferred warning{' '}
+                    {effectivePreferredFloorCents === undefined
+                      ? 'not set'
+                      : formatMoney(effectivePreferredFloorCents)}
+                  </Text>
+                </Card>
+              </section>
+              <div className={styles.recordGrid}>
+                {records.accounts.map((account) => (
+                  <div
+                    key={`${account.id}:${account.hardFloorCents ?? ''}:${account.preferredFloorCents ?? ''}:${account.transferDelayDays}:${account.includedInLiquidity}:${account.canFundOtherAccounts}:${account.showOnOverview}`}
+                    className={styles.formSection}
+                  >
+                    <div className={styles.recordHeader}>
+                      <div className={styles.compact}>
+                        <strong>{account.name}</strong>
+                        <Text className={styles.muted}>
+                          Minimum {formatMoney(account.hardFloorCents ?? 0)} · transfer lead{' '}
+                          {account.transferDelayDays} day
+                          {account.transferDelayDays === 1 ? '' : 's'}
+                        </Text>
+                      </div>
+                      <Button
+                        size="small"
+                        appearance="subtle"
+                        onClick={() =>
+                          setOpenAccountSettingsId((current) =>
+                            current === account.id ? null : account.id,
+                          )
+                        }
+                      >
+                        {openAccountSettingsId === account.id ? 'Close' : 'Manage'}
+                      </Button>
+                    </div>
+                    {openAccountSettingsId === account.id && (
+                      <form
+                        aria-label={`${account.name} protection settings`}
+                        className={styles.form}
+                        aria-busy={pendingSettingsAction === `account:${account.id}`}
+                        onSubmit={(event) => void updateAccountProtection(account, event)}
+                      >
+                        <div className={styles.grid}>
+                          <Field
+                            label="Account minimum"
+                            hint="The balance this account should never cross."
+                          >
+                            <Input
+                              name="accountHardFloor"
+                              inputMode="decimal"
+                              min="0"
+                              defaultValue={centsInput(account.hardFloorCents)}
+                              placeholder="0.00"
+                            />
+                          </Field>
+                          <Field
+                            label="Preferred buffer"
+                            hint="Optional earlier warning; cannot be below the minimum."
+                          >
+                            <Input
+                              name="accountPreferredFloor"
+                              inputMode="decimal"
+                              min="0"
+                              defaultValue={centsInput(account.preferredFloorCents)}
+                              placeholder="Optional"
+                            />
+                          </Field>
+                          <Field
+                            label="Transfer lead time (days)"
+                            hint="Calendar days required before money can arrive elsewhere."
+                          >
+                            <Input
+                              name="accountTransferDelay"
+                              type="number"
+                              min="0"
+                              max="30"
+                              step="1"
+                              required
+                              defaultValue={String(account.transferDelayDays)}
+                            />
+                          </Field>
+                        </div>
+                        <div className={styles.stack}>
+                          <Checkbox
+                            name="accountIncludedInLiquidity"
+                            defaultChecked={account.includedInLiquidity}
+                            label="Include in liquid cash and the global minimum"
+                          />
+                          <Checkbox
+                            name="accountCanFund"
+                            defaultChecked={account.canFundOtherAccounts}
+                            label="Allow transfer recommendations to use this account"
+                          />
+                          <Checkbox
+                            name="accountShowOnOverview"
+                            defaultChecked={account.showOnOverview}
+                            label="Show this account in the Overview cash-account list"
+                          />
+                          <details>
+                            <summary>What hiding changes</summary>
+                            <Text size={200} className={styles.muted}>
+                              Display only. Hidden accounts still affect forecasts, card runway,
+                              protected minimums, and funding warnings.
+                            </Text>
+                          </details>
+                        </div>
+                        <Button
+                          appearance="primary"
+                          type="submit"
+                          disabled={settingsMutationBusy || dataActionBusy}
+                        >
+                          {pendingSettingsAction === `account:${account.id}`
+                            ? `Saving ${account.name}…`
+                            : `Save ${account.name}`}
+                        </Button>
+                      </form>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : policyLoaded ? (
+            <Text>Account protection could not be loaded. Reopen Settings to retry.</Text>
+          ) : (
+            <LoadingSkeleton label="Loading account protection" variant="inline-form" />
+          )}
+        </Card>
+      )}
+      {settingsSection === 'data' && (
+        <Card className={styles.panel}>
+          <Title2 as="h2">Privacy boundary</Title2>
+          <Text>
+            The local password separates profiles inside the app. It does not protect data from a
+            Windows administrator. The live database stays in the private app-data directory; manual
+            portable backups are encrypted.
+          </Text>
+          <div className={styles.actions}>
+            <Button onClick={() => (window.location.hash = '#/setup')}>Review setup</Button>
+            <Button onClick={() => (window.location.hash = '#/records')}>
+              Workbook import review and records
             </Button>
           </div>
         </Card>
-        <Card className={styles.panel}>
-          <Title2 as="h2">Reset active profile financial data</Title2>
-          <Text>
-            This guarded audit action permanently removes this profile's financial records and
-            import lineage. The profile and password remain available for a fresh setup.
-          </Text>
-          <Field label="Type DELETE ACTIVE PROFILE DATA to continue">
-            <Input
-              value={resetConfirmation}
-              onChange={(_, data) => setResetConfirmation(data.value)}
-            />
-          </Field>
-          <Button
-            disabled={resetConfirmation !== 'DELETE ACTIVE PROFILE DATA'}
-            onClick={() => void reset()}
-          >
-            Reset active profile data
-          </Button>
-        </Card>
-      </fieldset>
+      )}
+      {(settingsSection === 'data' || settingsSection === 'security') && (
+        <fieldset
+          className={styles.dataActionArea}
+          disabled={dataActionBusy || settingsMutationBusy}
+          aria-busy={dataActionBusy}
+          aria-label="Backup, restore, export, import, and reset actions"
+        >
+          {activeDataAction && (
+            <div
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              className={styles.dataActionStatus}
+            >
+              {dataActionProgressMessage(activeDataAction)}
+            </div>
+          )}
+          {error && (
+            <div role="alert" className={styles.error}>
+              {error}
+            </div>
+          )}
+          {message && (
+            <div role="status" className={styles.positive}>
+              {message}
+            </div>
+          )}
+          {settingsSection === 'data' && (
+            <Card className={styles.panel}>
+              <Title2 as="h2">Backup, restore, and export</Title2>
+              <div className={styles.form}>
+                <Text>
+                  A portable backup contains this profile's financial records, setup draft,
+                  preferences, audit history, and workbook lineage. It never contains the local
+                  sign-in password. On a new computer, create a new local password first, then
+                  restore with the separate backup password.
+                </Text>
+                <Field label="Backup password (separate from sign-in)">
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    value={password}
+                    onChange={(_, data) => setPassword(data.value)}
+                  />
+                </Field>
+                <Field
+                  label="Confirm backup password"
+                  validationMessage={
+                    backupPasswordConfirmation && password !== backupPasswordConfirmation
+                      ? 'Backup passwords do not match'
+                      : undefined
+                  }
+                >
+                  <Input
+                    type="password"
+                    autoComplete="new-password"
+                    value={backupPasswordConfirmation}
+                    onChange={(_, data) => setBackupPasswordConfirmation(data.value)}
+                  />
+                </Field>
+                <div className={styles.actions}>
+                  <Button
+                    appearance="primary"
+                    disabled={password.length < 12 || password !== backupPasswordConfirmation}
+                    onClick={() => void run('backup')}
+                  >
+                    Create encrypted backup
+                  </Button>
+                  <Button onClick={() => void run('export')}>Export JSON and CSV</Button>
+                </div>
+                <Title2 as="h2">Restore</Title2>
+                <Text>
+                  Restore validates the entire encrypted profile before a single transaction
+                  replaces the active profile. A local pre-restore recovery backup is created
+                  automatically. Your account name and local sign-in password do not change.
+                </Text>
+                <Checkbox
+                  checked={confirmReplace}
+                  onChange={(_, data) => setConfirmReplace(Boolean(data.checked))}
+                  label="I understand this replaces the active profile's records"
+                />
+                <Button
+                  disabled={password.length < 12 || !confirmReplace}
+                  onClick={() => void run('restore')}
+                >
+                  Choose encrypted backup to restore
+                </Button>
+                <Button disabled={!confirmReplace} onClick={() => void run('import')}>
+                  Choose JSON export to import
+                </Button>
+              </div>
+            </Card>
+          )}
+          {settingsSection === 'security' && (
+            <Card className={styles.panel}>
+              <Title2 as="h2">Reset active profile financial data</Title2>
+              <Text>
+                This guarded audit action permanently removes this profile's financial records and
+                import lineage. The profile and password remain available for a fresh setup.
+              </Text>
+              <Field label="Type DELETE ACTIVE PROFILE DATA to continue">
+                <Input
+                  value={resetConfirmation}
+                  onChange={(_, data) => setResetConfirmation(data.value)}
+                />
+              </Field>
+              <Button
+                disabled={resetConfirmation !== 'DELETE ACTIVE PROFILE DATA'}
+                onClick={() => void reset()}
+              >
+                Reset active profile data
+              </Button>
+            </Card>
+          )}
+        </fieldset>
+      )}
     </>
   );
 };

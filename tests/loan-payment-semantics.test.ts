@@ -436,6 +436,53 @@ describe('loan payment cash-draft reconciliation', () => {
     ]);
   });
 
+  it('prevents stale linked instructions from leaking cash while preserving unlinked legacy cash', () => {
+    const futureExtra = loanPayment({
+      id: 'future-extra-principal',
+      date: '2026-01-20',
+      status: 'scheduled',
+    });
+    const cashFor = (candidateLoan: typeof loan, events: ForecastEvent[]) =>
+      materializeForecastEvents({
+        accounts: [account, otherAccount],
+        events,
+        cards: [],
+        cardCycles: [],
+        loans: [candidateLoan],
+        startDate: '2026-01-02',
+        endDate: '2026-01-31',
+      }).filter((event) => event.kind === 'loan-payment');
+
+    expect(cashFor(loanSchema.parse({ ...loan, status: 'paid-off' }), [futureExtra])).toEqual([]);
+    expect(
+      cashFor(loanSchema.parse({ ...loan, includeInCashForecast: false }), [futureExtra]),
+    ).toEqual([]);
+
+    const staleAccountOverride = loanPayment({
+      id: 'stale-account-override',
+      accountId: otherAccount.id,
+      date: '2026-01-15',
+      amountCents: 20_000,
+      status: 'scheduled',
+      loanPaymentTreatment: 'scheduled-draft-override',
+    });
+    expect(
+      cashFor(loan, [staleAccountOverride]).map((event) => ({
+        accountId: event.accountId,
+        amountCents: event.amountCents,
+        date: event.date,
+      })),
+    ).toEqual([{ accountId: account.id, amountCents: 20_000, date: '2026-01-15' }]);
+
+    const unlinkedLegacy = loanPayment({
+      id: 'unlinked-legacy-payment',
+      sourceRecordId: undefined,
+    });
+    expect(cashFor(loan, [unlinkedLegacy]).some((event) => event.id === unlinkedLegacy.id)).toBe(
+      true,
+    );
+  });
+
   it('rejects payroll deductions and non-cash methods at the input contract', () => {
     const payload = {
       id: 'invalid-payroll-loan-payment',
@@ -537,6 +584,283 @@ describe('loan payment persistence and validation', () => {
     expect(() =>
       store.upsertManagedEntity('user-a', 'forecast-event', withoutUserId(payroll)),
     ).toThrow(/cash-account outflow/i);
+  });
+
+  it('atomically moves only future linked payment instructions when the funding account changes', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'user-a', displayName: 'User A', username: 'user-a' }]);
+    for (const cash of [account, otherAccount]) {
+      store.upsertManagedEntity('user-a', 'cash-account', withoutUserId(cash));
+    }
+    store.updateCashFloorPolicy('user-a', {
+      hardConsolidatedFloorCents: 0,
+      horizonDays: 90,
+      includeConfirmedReceivablesConservatively: true,
+    });
+    store.upsertManagedEntity('user-a', 'loan', withoutUserId(loan));
+
+    const historicalDraft = loanPayment({
+      id: 'historical-draft',
+      date: '2026-01-15',
+      amountCents: 20_000,
+      status: 'paid',
+      loanPaymentTreatment: 'scheduled-draft-override',
+    });
+    const futureDraft = loanPayment({
+      id: 'future-draft',
+      date: '2026-02-15',
+      amountCents: 20_000,
+      status: 'scheduled',
+      loanPaymentTreatment: 'scheduled-draft-override',
+    });
+    const futureExtra = loanPayment({
+      id: 'future-extra',
+      date: '2026-02-20',
+      status: 'scheduled',
+    });
+    for (const event of [historicalDraft, futureDraft, futureExtra]) {
+      store.upsertManagedEntity('user-a', 'forecast-event', withoutUserId(event));
+    }
+
+    store.upsertManagedEntity(
+      'user-a',
+      'loan',
+      withoutUserId(loanSchema.parse({ ...loan, fundingAccountId: otherAccount.id })),
+      { asOfDate: '2026-01-20' },
+    );
+
+    const records = store.getManagedRecords('user-a');
+    const eventById = new Map(records.events.map((event) => [event.id, event]));
+    expect(eventById.get(historicalDraft.id)?.accountId).toBe(account.id);
+    expect(eventById.get(futureDraft.id)?.accountId).toBe(otherAccount.id);
+    expect(eventById.get(futureExtra.id)?.accountId).toBe(otherAccount.id);
+
+    const futureCash = materializeForecastEvents({
+      accounts: records.accounts,
+      events: records.events,
+      cards: [],
+      cardCycles: [],
+      loans: records.loans,
+      startDate: '2026-01-21',
+      endDate: '2026-02-28',
+    })
+      .filter((event) => event.kind === 'loan-payment')
+      .sort((left, right) => left.date.localeCompare(right.date));
+    expect(
+      futureCash.map((event) => ({
+        accountId: event.accountId,
+        amountCents: event.amountCents,
+        date: event.date,
+      })),
+    ).toEqual([
+      { accountId: otherAccount.id, amountCents: 20_000, date: '2026-02-15' },
+      { accountId: otherAccount.id, amountCents: 30_000, date: '2026-02-20' },
+    ]);
+
+    const audit = store.raw
+      .prepare(
+        "SELECT payload_json AS payloadJson FROM audit_events WHERE user_id = ? AND entity_type = 'loan' AND entity_id = ? AND action = 'upsert' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get('user-a', loan.id) as { payloadJson: string };
+    const cascade = (
+      JSON.parse(audit.payloadJson) as {
+        loanPaymentInstructionCascadeSummary: {
+          count: number;
+          sample: Array<{ action: string; eventId: string }>;
+          sha256: string;
+        };
+      }
+    ).loanPaymentInstructionCascadeSummary;
+    expect(cascade.count).toBe(2);
+    expect(cascade.sample).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: 'move', eventId: futureDraft.id }),
+        expect.objectContaining({ action: 'move', eventId: futureExtra.id }),
+      ]),
+    );
+    expect(cascade.sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('splits a recurring instruction at the effective date so past and future accounts stay true', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'user-a', displayName: 'User A', username: 'user-a' }]);
+    for (const cash of [account, otherAccount]) {
+      store.upsertManagedEntity('user-a', 'cash-account', withoutUserId(cash));
+    }
+    store.updateCashFloorPolicy('user-a', {
+      hardConsolidatedFloorCents: 0,
+      horizonDays: 90,
+      includeConfirmedReceivablesConservatively: true,
+    });
+    store.upsertManagedEntity('user-a', 'loan', withoutUserId(loan));
+    const recurringDraft = loanPayment({
+      id: 'recurring-account-draft',
+      date: '2026-01-15',
+      amountCents: 20_000,
+      status: 'scheduled',
+      loanPaymentTreatment: 'scheduled-draft-override',
+      recurrenceRule: { frequency: 'monthly', dayOfMonth: 15, interval: 1 },
+      recurrenceEndDate: '2026-03-15',
+    });
+    store.upsertManagedEntity('user-a', 'forecast-event', withoutUserId(recurringDraft));
+
+    store.upsertManagedEntity(
+      'user-a',
+      'loan',
+      withoutUserId(loanSchema.parse({ ...loan, fundingAccountId: otherAccount.id })),
+      { asOfDate: '2026-01-20' },
+    );
+
+    const records = store.getManagedRecords('user-a');
+    const linked = records.events.filter(
+      (event) => event.kind === 'loan-payment' && event.sourceRecordId === loan.id,
+    );
+    expect(linked).toHaveLength(2);
+    expect(linked).toContainEqual(
+      expect.objectContaining({
+        id: recurringDraft.id,
+        accountId: account.id,
+        date: '2026-01-15',
+        recurrenceEndDate: '2026-01-20',
+      }),
+    );
+    expect(linked).toContainEqual(
+      expect.objectContaining({
+        accountId: otherAccount.id,
+        date: '2026-02-15',
+        recurrenceEndDate: '2026-03-15',
+      }),
+    );
+
+    const futureCash = materializeForecastEvents({
+      accounts: records.accounts,
+      events: records.events,
+      cards: [],
+      cardCycles: [],
+      loans: records.loans,
+      startDate: '2026-01-21',
+      endDate: '2026-03-31',
+    })
+      .filter((event) => event.kind === 'loan-payment')
+      .sort((left, right) => left.date.localeCompare(right.date));
+    expect(futureCash.map((event) => [event.date, event.accountId, event.amountCents])).toEqual([
+      ['2026-02-15', otherAccount.id, 20_000],
+      ['2026-03-15', otherAccount.id, 20_000],
+    ]);
+  });
+
+  it('rejects an incompatible schedule edit without partially changing the loan or its drafts', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'user-a', displayName: 'User A', username: 'user-a' }]);
+    store.upsertManagedEntity('user-a', 'cash-account', withoutUserId(account));
+    store.updateCashFloorPolicy('user-a', {
+      hardConsolidatedFloorCents: 0,
+      horizonDays: 90,
+      includeConfirmedReceivablesConservatively: true,
+    });
+    store.upsertManagedEntity('user-a', 'loan', withoutUserId(loan));
+    const futureDraft = loanPayment({
+      id: 'future-contractual-draft',
+      date: '2026-02-15',
+      amountCents: 20_000,
+      status: 'scheduled',
+      loanPaymentTreatment: 'scheduled-draft-override',
+    });
+    store.upsertManagedEntity('user-a', 'forecast-event', withoutUserId(futureDraft));
+
+    expect(() =>
+      store.upsertManagedEntity(
+        'user-a',
+        'loan',
+        withoutUserId(loanSchema.parse({ ...loan, nextPaymentDate: '2026-01-20' })),
+        { asOfDate: '2026-01-20' },
+      ),
+    ).toThrow(/edit or cancel that future payment instruction first/i);
+    expect(() =>
+      store.upsertManagedEntity(
+        'user-a',
+        'loan',
+        withoutUserId(loanSchema.parse({ ...loan, paymentFrequency: 'biweekly' })),
+        { asOfDate: '2026-01-20' },
+      ),
+    ).toThrow(/edit or cancel that future payment instruction first/i);
+
+    const records = store.getManagedRecords('user-a');
+    expect(records.loans.find((candidate) => candidate.id === loan.id)?.nextPaymentDate).toBe(
+      loan.nextPaymentDate,
+    );
+    expect(records.events.find((event) => event.id === futureDraft.id)).toMatchObject({
+      accountId: account.id,
+      date: futureDraft.date,
+    });
+  });
+
+  it('stops replacement-loan cash instructions immediately when a refinance is cancelled', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'user-a', displayName: 'User A', username: 'user-a' }]);
+    store.upsertManagedEntity('user-a', 'cash-account', withoutUserId(account));
+    store.updateCashFloorPolicy('user-a', {
+      hardConsolidatedFloorCents: 0,
+      horizonDays: 90,
+      includeConfirmedReceivablesConservatively: true,
+    });
+    store.upsertManagedEntity('user-a', 'loan', withoutUserId(loan));
+    const replacement = loanSchema.parse({
+      ...loan,
+      id: 'replacement-loan',
+      name: 'Replacement loan',
+      principalCents: 80_000,
+      balanceDate: '2026-02-01',
+      originalPrincipalCents: 80_000,
+      originalDate: '2026-02-01',
+      nextPaymentDate: '2026-03-01',
+    });
+    store.commitRefinancePlan(
+      'user-a',
+      {
+        id: 'cancelled-refinance',
+        name: 'Cancelled refinance',
+        closingDate: '2026-02-01',
+        payoffDate: '2026-02-01',
+        firstPaymentDate: '2026-03-01',
+        payoffs: [{ sourceLoanId: loan.id, payoffAmountCents: 80_000 }],
+        replacementLoan: withoutUserId(replacement),
+        principalCashContributionCents: 0,
+        closingCostsCents: 0,
+        financedFeesCents: 0,
+        excessProceedsCents: 0,
+      },
+      '2026-01-20',
+    );
+    const replacementDraft = loanPayment({
+      id: 'replacement-future-draft',
+      sourceRecordId: replacement.id,
+      date: '2026-03-01',
+      amountCents: 20_000,
+      status: 'scheduled',
+      loanPaymentTreatment: 'scheduled-draft-override',
+    });
+    store.upsertManagedEntity('user-a', 'forecast-event', withoutUserId(replacementDraft));
+
+    expect(
+      store.cancelCommittedRefinancePlan('user-a', 'cancelled-refinance', '2026-01-20').status,
+    ).toBe('cancelled');
+    const records = store.getManagedRecords('user-a');
+    expect(records.loans.find((candidate) => candidate.id === replacement.id)).toMatchObject({
+      includeInCashForecast: false,
+      status: 'paid-off',
+    });
+    expect(
+      materializeForecastEvents({
+        accounts: records.accounts,
+        events: records.events,
+        cards: [],
+        cardCycles: [],
+        loans: records.loans,
+        startDate: '2026-01-21',
+        endDate: '2026-03-31',
+      }).filter((event) => event.sourceRecordId === replacement.id),
+    ).toEqual([]);
   });
 
   it('migrates v22 rows to the safe scheduled-draft default', () => {

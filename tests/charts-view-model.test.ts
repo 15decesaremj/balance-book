@@ -199,7 +199,29 @@ describe('charts view model', () => {
       ]),
     );
     expect(model.availabilityNotes.join(' ')).toMatch(/does not backfill missing/i);
-    expect(model.availabilityNotes.join(' ')).toMatch(/no market-return history/i);
+    expect(model.availabilityNotes.join(' ')).toMatch(
+      /explicit growth.*assets without assumptions remain flat/i,
+    );
+
+    const modelWithInvestmentAssumptions = buildChartsViewModel({
+      records: managedRecordsSchema.parse({
+        ...records,
+        assets: records.assets.map((candidate) => ({
+          ...candidate,
+          annualGrowthRateBasisPoints: 1_000,
+          contributionGrossAnnualIncomeCents: 1_000_000,
+          contributionRateBasisPoints: 400,
+          employerMatchBasisPoints: 400,
+        })),
+      }),
+      forecast,
+      asOfDate: '2026-07-01',
+    });
+    const projectedInvestment = modelWithInvestmentAssumptions.series
+      .find((series) => series.id === 'asset:asset-a')!
+      .points.find((point) => point.date === '2026-09-30')!;
+    expect(projectedInvestment.cents).toBeGreaterThan(50_000);
+    expect(projectedInvestment.provenance).toBe('modeled');
 
     const loanSeries = model.series.find((series) => series.id === `loan:${loan.id}`)!;
     const currentLoan = loanSeries.points.find((point) => point.date === '2026-07-01')!;

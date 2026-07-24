@@ -12,40 +12,48 @@ The application is designed for conservative guidance, not available-credit maxi
 
 Balance Book is planning software, not a bank, lender, credit decision, or substitute for individualized financial advice. Its guidance depends on the completeness and timing of the records and assumptions entered by the user.
 
+## Download for Windows
+
+The reviewed public source is published at [github.com/15decesaremj/balance-book](https://github.com/15decesaremj/balance-book). The signed Windows beta download will appear on the [Releases page](https://github.com/15decesaremj/balance-book/releases) only after the trusted publisher certificate and fresh-install gates pass. Until then, there is no endorsed public installer; do not download an unsigned copy from another location.
+
 ## Local-first by design
 
 - Data is stored in a local SQLite database.
-- There is no telemetry, advertising, cloud backend, bank connection, remote content, or automatic money movement.
+- There is no telemetry, advertising, cloud backend, bank connection, or automatic money movement. A signed public build contacts only the documented GitHub-hosted update feed and release asset when checking for software updates; local owner-test builds keep that network path disabled.
 - Multiple application profiles are isolated by ownership checks and local passwords.
-- Portable V2 backups are password-encrypted and can be restored under a different local sign-in identity.
+- Portable V3 backups are password-encrypted and can be restored under a different local sign-in identity; strict V2 backups remain readable with current experience defaults.
 - JSON/CSV exports are plaintext and are intended for private analysis, not recovery.
 
 The local sign-in password is an application privacy boundary. The live database is not encrypted at rest and is not protected from a Windows administrator, malware, or another process running as the same Windows user. See [SECURITY.md](SECURITY.md) and the [threat model](docs/THREAT_MODEL.md).
 
-## V1 capabilities
+## Capabilities
 
 - Daily expected and protected cash forecasts by account and in total
 - Reconciled total-position Spending Power by card, with separate cash/account funding guidance
 - Statement, cycle, payment-policy, reward, and historical card records
 - A per-card revolving-debt view that keeps statement due, current-cycle activity, total current balance, available credit, and balance carrying separate; a paid-in-full card can retain statement history while carrying zero
+- Estimated monthly interest only when a balance is actually carrying, with ordinary and whole-balance promotional APR controls; optional forecast accrual is experimental, double-gated, and off by default
 - Effective-dated card and line-of-credit retirement/reactivation: new spending and Spending Power stop on the closure date while existing debt, final statements, payment cash, and history remain visible
 - Flexible installment-loan setup from complete or partial lender facts, with labeled calculations, monthly or biweekly amortization, fully amortizing and balloon/bullet structures, dated principal/interest allocation, projected payoff, and separate total-cash-versus-debt-service amounts
 - Explicit regular-draft overrides and additional-principal payments, with extra principal reducing debt, interest, and payoff timing without replacing the normal draft
 - Editable income, raise, bonus, bill, transfer, loan, receivable, asset, and guardrail surfaces, including atomic split-paycheck routing with preserved destination order and per-account early-deposit timing
 - Effective-dated committed refinance planning for one or multiple payoff loans, with separate closing, payoff, and first-payment dates; financed and cash-paid fees; bank cash contributions and excess-proceeds routing; automatic secured-asset carry-forward; reversible pre-close cancellation; durable history; and later stacked refinances
 - Timed funding recommendations that account for transfer lead times and protected source capacity
+- Conservative net monthly free cash flow from the weakest rolling three-month average in a clean future year, including known scheduled card payments without counting later payoff improvements
 - Individual and combined what-if scenarios
 - Contractual, economic, and liquid-position net-worth views
 - Forecast-versus-actual reconciliation and audit history
 - Guided onboarding plus an advanced canonical Financial Records library
+- Applicability questions that skip and hide unused money tools without deleting their records, plus searchable Settings to turn any section back on
+- User-selectable Beta or Stable update channels, safe restart checks, a verified pre-update SQLite recovery snapshot, and a one-time post-update confirmation in signed public builds
 - Validated local import, encrypted backup/restore, and private export, including committed refinance plans, immutable offer snapshots, and payoff/collateral lineage
 - Dark-first responsive interface with keyboard and automated accessibility coverage
 
 ## Install
 
-The 1.1.2 V1 feature line targets Windows 11 x64. The installer is self-contained; end users do not need development tools or a separate database server.
+The 2.0.7 feature line targets Windows 11 x64. The installer is self-contained; end users do not need development tools or a separate database server.
 
-No signed public binary is claimed yet. Local unsigned Squirrel candidates have been built and tested on the owner's Windows profile, but they remain owner-testing artifacts rather than public releases. An unsigned installer may trigger Windows SmartScreen or **Unknown publisher**. Public distribution remains gated on valid Authenticode signing, a sanitized clean-history remote source mirror, fresh-disposable-profile lifecycle testing, and the checklist in [PUBLIC_RELEASE_READINESS.md](docs/PUBLIC_RELEASE_READINESS.md).
+No signed public binary is claimed yet. Local unsigned Squirrel candidates have been built and tested on the owner's Windows profile, but they remain owner-testing artifacts rather than public releases. An unsigned installer may trigger Windows SmartScreen or **Unknown publisher**. Public distribution remains gated on valid Authenticode signing, fresh-disposable-profile lifecycle testing, and the checklist in [PUBLIC_RELEASE_READINESS.md](docs/PUBLIC_RELEASE_READINESS.md).
 
 Read [INSTALLATION.md](docs/INSTALLATION.md) before installing or upgrading. Read [BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) before moving data to another machine.
 
@@ -67,7 +75,7 @@ pnpm verify           # formatting, lint, types, tests, privacy, package, and El
 pnpm privacy:check    # scan the current tracked tree for prohibited private content
 pnpm build            # create an unpacked Windows application under out/
 pnpm make             # create Electron Forge installer and ZIP artifacts
-pnpm release:windows  # run the maintained V1 Windows release workflow
+pnpm release:windows  # run the maintained Windows release workflow
 ```
 
 The calculation engine, domain rules, database, and renderer are separate workspace packages. Financial behavior uses exact integer cents and timezone-free calendar dates. The spreadsheet importer is optional local onboarding tooling; application calculations do not depend on a spreadsheet at runtime.

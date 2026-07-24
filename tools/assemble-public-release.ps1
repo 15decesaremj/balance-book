@@ -16,6 +16,8 @@ param(
   [string] $ExpectedPublisher,
   [Parameter(Mandatory = $true)]
   [string] $ExpectedPublisherThumbprint,
+  [ValidateSet('beta', 'stable')]
+  [string] $Channel = 'beta',
   [string] $ExpectedSourceBranch = 'main'
 )
 
@@ -67,8 +69,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the exact public source comm
 $rootPackage = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'package.json') | ConvertFrom-Json
 $desktopPackage = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'apps\desktop\package.json') | ConvertFrom-Json
 $version = [string] $rootPackage.version
-if ($version -ne [string] $desktopPackage.version -or $version -notmatch '^1\.\d+\.\d+$') {
-  throw "Root and desktop packages must identify the same V1 SemVer version; found '$version' and '$($desktopPackage.version)'."
+if ($version -ne [string] $desktopPackage.version -or $version -notmatch '^\d+\.\d+\.\d+$') {
+  throw "Root and desktop packages must identify the same three-part numeric version; found '$version' and '$($desktopPackage.version)'."
 }
 
 function Get-VersionTriple([System.IO.FileInfo] $File) {
@@ -216,12 +218,25 @@ foreach ($legalPath in @($licenseSource, $noticesSource)) {
 New-Item -ItemType Directory -Path $outputPath | Out-Null
 $setupName = "Balance-Book-$version-Setup.exe"
 $uninstallerName = "Uninstall-Balance-Book-$version.exe"
+$packageName = $packageFile.Name
+$releaseTag = if ($Channel -eq 'beta') { "v$version-beta" } else { "v$version" }
 $setupOutput = Join-Path $outputPath $setupName
 $uninstallerOutput = Join-Path $outputPath $uninstallerName
 Copy-Item -LiteralPath $setupSource -Destination $setupOutput
 Copy-Item -LiteralPath $uninstallerSource -Destination $uninstallerOutput
+Copy-Item -LiteralPath $packageFile.FullName -Destination (Join-Path $outputPath $packageName)
 Copy-Item -LiteralPath $licenseSource -Destination (Join-Path $outputPath 'LICENSE.txt')
 Copy-Item -LiteralPath $noticesSource -Destination (Join-Path $outputPath 'THIRD_PARTY_NOTICES.txt')
+$publicPackageUrl = "https://github.com/15decesaremj/balance-book/releases/download/$releaseTag/$packageName"
+$publicReleasesLine = '{0} {1} {2}' -f `
+  (Get-FileHash -Algorithm SHA1 -LiteralPath $packageFile.FullName).Hash, `
+  $publicPackageUrl, `
+  $packageFile.Length
+[System.IO.File]::WriteAllText(
+  (Join-Path $outputPath 'RELEASES'),
+  ($publicReleasesLine + [Environment]::NewLine),
+  $utf8
+)
 
 $readme = @"
 Balance Book $version - signed Windows 11 x64 artifact set
@@ -235,6 +250,7 @@ These files passed assembly-time source, build-evidence, package, version, hash,
    $ExpectedPublisher
    Certificate thumbprint: $($ExpectedPublisherThumbprint.Replace(' ', '').ToUpperInvariant())
 5. This folder contains no workbook, database, export, screenshot, log, or user backup.
+6. RELEASES and $packageName are machine-facing update assets. New users install only $setupName.
 
 Source: https://github.com/15decesaremj/balance-book/tree/$sourceCommit
 "@
@@ -245,6 +261,8 @@ $metadata = [ordered]@{
   metadataVersion = 1
   product = 'Balance Book'
   version = $version
+  releaseTag = $releaseTag
+  updateChannel = $Channel
   platform = 'Windows 11 x64'
   sourceRepository = 'https://github.com/15decesaremj/balance-book'
   sourceCommit = $sourceCommit
@@ -275,9 +293,11 @@ $metadata = [ordered]@{
     signerThumbprint = $packagedEvidence.Signature.SignerCertificate.Thumbprint
   }
   squirrelPackage = [ordered]@{
-    name = $packageFile.Name
+    name = $packageName
     sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $packageFile.FullName).Hash
-    releasesLine = $actualReleaseLine
+    sourceReleasesLine = $actualReleaseLine
+    publicReleasesLine = $publicReleasesLine
+    immutableAssetUrl = $publicPackageUrl
   }
   artifactReady = $true
   assemblyStatus = 'validated-artifact-set'
@@ -299,8 +319,10 @@ $finalNames = @(Get-ChildItem -LiteralPath $outputPath -File | Sort-Object Name 
 $expectedNames = @(
   $setupName,
   $uninstallerName,
+  $packageName,
   'LICENSE.txt',
   'README-FIRST.txt',
+  'RELEASES',
   'RELEASE-METADATA.json',
   'SHA256SUMS.txt',
   'THIRD_PARTY_NOTICES.txt'

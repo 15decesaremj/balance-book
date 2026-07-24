@@ -1,4 +1,7 @@
-export const databaseSchemaVersion = 1;
+export {
+  assertSupportedSchemaVersion,
+  latestSchemaVersion as databaseSchemaVersion,
+} from './migrations';
 
 export * from './auth';
 export * from './migrations';

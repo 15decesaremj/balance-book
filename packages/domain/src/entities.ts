@@ -183,6 +183,12 @@ const forecastEventBaseSchema = z.object({
   receivableOccurrenceDate: plainDateSchema.optional(),
   receivableOccurrenceTargetCents: moneyCentsSchema.positive().optional(),
   notes: z.string().trim().max(1000).optional(),
+  /**
+   * Marks an event entered after a same-day dated account snapshot. Historical events default to
+   * false, so the established rule that a balance includes all activity through its as-of date is
+   * unchanged. Quick cash entry uses this only when the event date equals the account balance date.
+   */
+  appliesAfterBalanceSnapshot: z.boolean().optional(),
 });
 const validateForecastEvent = (
   event: Pick<
@@ -621,6 +627,8 @@ export const creditCardCycleSchema = z
     paymentOn: plainDateSchema.optional(),
     /** Actual cash received by the issuer for this statement. Paid legacy rows may omit it. */
     actualPaymentCents: moneyCentsSchema.nonnegative().optional(),
+    /** Cash account the recorded statement payment actually left. Legacy paid rows fall back to the card default. */
+    actualPaymentAccountId: idSchema.optional(),
   })
   .superRefine((cycle, context) => {
     if (compareDates(cycle.opensOn, cycle.closesOn) > 0) {
@@ -668,6 +676,20 @@ export const creditCardCycleSchema = z
         message: 'An actual card payment requires its payment date',
       });
     }
+    if (cycle.actualPaymentAccountId !== undefined && cycle.state !== 'paid') {
+      context.addIssue({
+        code: 'custom',
+        path: ['actualPaymentAccountId'],
+        message: 'An actual card payment account is only valid after the cycle is marked paid',
+      });
+    }
+    if (cycle.actualPaymentAccountId !== undefined && cycle.paymentOn === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['paymentOn'],
+        message: 'An actual card payment account requires its payment date',
+      });
+    }
   });
 export type CreditCardCycle = z.infer<typeof creditCardCycleSchema>;
 
@@ -696,6 +718,13 @@ const creditCardBaseSchema = z.object({
   fixedPaymentCents: moneyCentsSchema.optional(),
   minimumPaymentCents: moneyCentsSchema.optional(),
   aprBasisPoints: z.number().int().min(0).max(100_000).optional(),
+  /** Card-level opt-out used only when the profile's experimental interest forecast is enabled. */
+  interestForecastEnabled: z.boolean().default(false),
+  /** Treats the entire reported carrying balance as one promotional balance, without per-purchase lots. */
+  promotionalCarryingBalance: z.boolean().default(false),
+  /** Manual APR for the promotional carrying balance; zero is a valid issuer promotion. */
+  promotionalAprBasisPoints: z.number().int().min(0).max(100_000).optional(),
+  /** Informational issuer promotion date only; no interest accrual or payment-policy change is inferred. */
   promotionEndDate: plainDateSchema.optional(),
   paymentDayOfMonth: z.number().int().min(1).max(31).optional(),
   statementCloseDayOfMonth: z.number().int().min(1).max(31).optional(),
@@ -712,6 +741,8 @@ const validateCreditCardPaymentTerms = (
     reportedBalanceDate?: PlainDateString;
     reportedCarryingBalanceCents?: number;
     reportedCarryingBalanceDate?: PlainDateString;
+    promotionalCarryingBalance: boolean;
+    promotionalAprBasisPoints?: number;
     status: 'active' | 'closed';
     closedOn?: PlainDateString;
   },
@@ -746,6 +777,13 @@ const validateCreditCardPaymentTerms = (
       code: 'custom',
       path: ['reportedCarryingBalanceDate'],
       message: 'A reported carrying balance and its as-of date must be entered together',
+    });
+  }
+  if (card.promotionalCarryingBalance && card.promotionalAprBasisPoints === undefined) {
+    context.addIssue({
+      code: 'custom',
+      path: ['promotionalAprBasisPoints'],
+      message: 'A promotional carrying balance requires its promotional APR',
     });
   }
   if (card.status === 'closed' && card.closedOn === undefined) {
@@ -1218,6 +1256,8 @@ export const assetSchema = z.object({
   type: z.enum(['investment', 'tangible', 'other']),
   valueCents: moneyCentsSchema,
   valuationDate: plainDateSchema,
+  annualGrowthRateBasisPoints: z.number().int().min(-9_900).max(100_000).optional(),
+  contributionGrossAnnualIncomeCents: moneyCentsSchema.nonnegative().optional(),
   contributionAmountCents: moneyCentsSchema.nonnegative().optional(),
   contributionRateBasisPoints: z.number().int().min(0).max(100_000).optional(),
   employerMatchBasisPoints: z.number().int().min(0).max(100_000).optional(),

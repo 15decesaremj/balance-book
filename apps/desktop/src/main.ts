@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   app,
+  autoUpdater,
   BrowserWindow,
   dialog,
   ipcMain,
@@ -43,19 +44,26 @@ import {
   buildForecastBundle,
   calculateCardSpendingPower,
   calculateCardPurchaseCashImpact,
+  calculateLongRunMonthlyFreeCashFlow,
   calculateNetWorth,
+  cardsForInterestForecast,
   evaluateScenarios,
+  generateCardCyclesThroughHorizon,
+  lowestTotalPositionFromDate,
   materializeCommittedRefinanceEvents,
   pendingRefinanceSettlementCentsForDate,
   pendingRefinanceEconomicSettlementCentsForDate,
   prepareRollingForecastContext,
+  projectAssetsAtDate,
   projectRollingReceivableBalances,
   roundInterestToCents,
   summarizeRevolvingDebt,
 } from '@balance-book/financial-engine';
 import {
   createPasswordRequestSchema,
+  auditHistoryEntrySchema,
   backupRequestSchema,
+  billPlanRequestSchema,
   combinedScenarioRequestSchema,
   commitRefinancePlanRequestSchema,
   cancelRefinancePlanRequestSchema,
@@ -70,9 +78,13 @@ import {
   jsonImportRequestSchema,
   loginRequestSchema,
   managedRecordsSchema,
+  notificationPresentationSchema,
   onboardingDraftSchema,
+  overviewExpenseRequestSchema,
+  postUpdateNoticeSchema,
   profileSummarySchema,
   receivableSettlementRequestSchema,
+  unattributedReceivableSettlementRequestSchema,
   resultSchema,
   scenarioRequestSchema,
   scenarioResponseSchema,
@@ -81,16 +93,26 @@ import {
   restoreRequestSchema,
   resetUserDataRequestSchema,
   sessionSchema,
+  setMenuBarVisibilityRequestSchema,
+  setPreferencesRequestSchema,
+  setNotificationPresentationsRequestSchema,
   setThemeRequestSchema,
   successSchema,
+  updateStatusSchema,
   upsertManagedEntityRequestSchema,
   upsertIncomePlanRequestSchema,
   updateCashPolicyRequestSchema,
   verticalSliceInputSchema,
   type ForecastSnapshotDto,
+  type PostUpdateNoticeDto,
   type SessionDto,
+  type UpdateStatusDto,
 } from './shared/contracts';
 import { handleSquirrelStartupEvent } from './squirrel-startup';
+import { buildReceivableAccrualDailyEvents } from './receivable-accrual-events';
+import { BalanceBookUpdateService } from './update-service';
+import { pendingUpdateMetadataSchema, postUpdateNoticeFromMetadata } from './update-metadata';
+import { createVerifiedUpdateRecoverySnapshot } from './update-recovery';
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -104,6 +126,91 @@ app.setAppUserModelId('com.squirrel.balance_book_mvp.BalanceBook');
 let store: BalanceBookStore;
 let auth: LocalAuthService;
 let activeUserId: string | null = null;
+let updateService: BalanceBookUpdateService;
+let postUpdateNotice: PostUpdateNoticeDto | null = null;
+
+const pendingUpdateMetadataPath = (): string =>
+  path.join(app.getPath('userData'), 'pending-update.json');
+
+const loadPostUpdateNotice = (): PostUpdateNoticeDto | null => {
+  const metadataPath = pendingUpdateMetadataPath();
+  if (!fs.existsSync(metadataPath)) return null;
+  try {
+    return postUpdateNoticeFromMetadata(
+      JSON.parse(fs.readFileSync(metadataPath, 'utf8')),
+      app.getVersion(),
+    );
+  } catch {
+    fs.rmSync(metadataPath, { force: true });
+    return null;
+  }
+};
+
+const broadcastUpdateStatus = (): void => {
+  if (!updateService) return;
+  const status = updateService.getStatus();
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('updates:status-changed', status);
+  }
+};
+
+const rendererCanRestartForUpdate = async (): Promise<boolean> => {
+  const windows = BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed());
+  const decisions = await Promise.all(
+    windows.map(
+      (window) =>
+        new Promise<boolean>((resolve) => {
+          const requestId = crypto.randomUUID();
+          const channel = `updates:restart-readiness:${requestId}`;
+          const timeout = setTimeout(() => {
+            ipcMain.removeAllListeners(channel);
+            resolve(false);
+          }, 5_000);
+          ipcMain.once(channel, (event, raw: unknown) => {
+            clearTimeout(timeout);
+            resolve(
+              event.sender.id === window.webContents.id &&
+                typeof raw === 'object' &&
+                raw !== null &&
+                (raw as { canRestart?: unknown }).canRestart === true,
+            );
+          });
+          window.webContents.send('updates:prepare-restart', { requestId });
+        }),
+    ),
+  );
+  return decisions.every(Boolean);
+};
+
+const createUpdateRecoverySnapshot = async (): Promise<void> => {
+  await createVerifiedUpdateRecoverySnapshot({
+    database: store.raw,
+    directory: path.join(app.getPath('userData'), 'update-backups'),
+    currentVersion: app.getVersion(),
+  });
+};
+
+const prepareUpdateInstall = async (status: UpdateStatusDto): Promise<void> => {
+  if (!(await rendererCanRestartForUpdate())) {
+    throw new Error('Save or cancel any open edits, then choose Update and restart again.');
+  }
+  await createUpdateRecoverySnapshot();
+  const metadataPath = pendingUpdateMetadataPath();
+  const temporaryPath = `${metadataPath}.tmp`;
+  await fs.promises.writeFile(
+    temporaryPath,
+    JSON.stringify(
+      pendingUpdateMetadataSchema.parse({
+        oldVersion: app.getVersion(),
+        releaseName: status.releaseName,
+        releaseNotes: status.releaseNotes,
+        initiatedAt: new Date().toISOString(),
+      }),
+    ),
+    { encoding: 'utf8', mode: 0o600 },
+  );
+  await fs.promises.rename(temporaryPath, metadataPath);
+};
 
 const initialProfileSchema = z.object({
   id: z.string().min(1).max(128),
@@ -183,7 +290,11 @@ const requireUser = (): string => {
 const sessionFor = (profile: ProfileSummary): SessionDto => {
   const credentials = store.getCredentialsById(profile.id);
   if (!credentials) throw new Error('Profile not found');
-  return sessionSchema.parse({ profile, themePreference: credentials.themePreference });
+  return sessionSchema.parse({
+    profile,
+    themePreference: credentials.themePreference,
+    preferences: credentials.preferences,
+  });
 };
 
 const currentFinancialDate = (): PlainDateString =>
@@ -193,16 +304,20 @@ const prepareForecast = (userId: string, requiredEndDate?: PlainDateString) => {
   const data = store.getForecastData(userId);
   if (!data) return undefined;
   const records = store.getManagedRecords(userId);
+  const preferences = store.getCredentialsById(userId)?.preferences;
+  const includeCardInterest = preferences?.experimentalCardInterestForecastEnabled ?? false;
+  const forecastCards = cardsForInterestForecast(records.cards, includeCardInterest);
   const today = currentFinancialDate();
   const { accounts, startDate, endDate, replayStartDate } = prepareRollingForecastContext({
     accounts: data.accounts,
     events: data.events,
-    cards: records.cards,
+    cards: forecastCards,
     cardCycles: records.cardCycles,
     loans: records.loans,
     committedRefinancePlans: records.committedRefinancePlans,
     receivables: records.receivables,
     policy: data.policy,
+    includeCardInterest,
     requestedStartDate: today,
     ...(requiredEndDate === undefined ? {} : { requiredEndDate }),
   });
@@ -210,11 +325,12 @@ const prepareForecast = (userId: string, requiredEndDate?: PlainDateString) => {
   const scheduledEvents = materializeCommittedRefinanceEvents({
     accounts,
     events: data.events,
-    cards: records.cards,
+    cards: forecastCards,
     cardCycles: records.cardCycles,
     loans: records.loans,
     plans: records.committedRefinancePlans,
     receivables: records.receivables,
+    includeCardInterest,
     startDate,
     endDate,
   });
@@ -235,6 +351,66 @@ const prepareForecast = (userId: string, requiredEndDate?: PlainDateString) => {
     endDate,
     replayStartDate,
   };
+};
+
+const buildLongRunMonthlyFreeCashFlow = (userId: string) => {
+  const currentMonth = Temporal.PlainDate.from(currentFinancialDate()).with({ day: 1 });
+  // Let current-cycle statements and the next two calendar months clear before measuring a stable
+  // 12-month budget run. This avoids presenting near-term reconciliation noise as recurring margin.
+  const windowStart = currentMonth.add({ months: 3 });
+  const windowEnd = windowStart.add({ months: 12 }).subtract({ days: 1 });
+  const positionDateBeforeWindow = windowStart.subtract({ days: 1 });
+  const context = prepareForecast(userId, windowEnd.toString());
+  if (!context) return undefined;
+
+  const receivables = projectRollingReceivableBalances({
+    receivables: context.records.receivables,
+    settlementEvents: context.data.events,
+    replayStartDate: context.replayStartDate,
+    startDate: context.startDate,
+    endDate: context.endDate,
+    mode: 'expected',
+    includeConfirmedReceivablesConservatively:
+      context.data.policy.includeConfirmedReceivablesConservatively,
+  });
+  const positionOn = (date: PlainDateString): number => {
+    const index = context.bundle.expected.days.findIndex((day) => day.date === date);
+    if (index < 0) throw new Error(`Long-run cash-flow date ${date} is outside the forecast`);
+    return moneyCentsSchema.parse(
+      context.bundle.expected.days[index]!.consolidatedCashCents +
+        receivables[index]!.endingOutstandingCents,
+    );
+  };
+
+  return calculateLongRunMonthlyFreeCashFlow({
+    positionBeforeWindowCents: positionOn(positionDateBeforeWindow.toString()),
+    positionAtWindowEndCents: positionOn(windowEnd.toString()),
+    monthlyPositionCents: [
+      positionOn(positionDateBeforeWindow.toString()),
+      ...Array.from({ length: 12 }, (_, offset) =>
+        positionOn(
+          windowStart
+            .add({ months: offset + 1 })
+            .subtract({ days: 1 })
+            .toString(),
+        ),
+      ),
+    ],
+    events: context.scheduledEvents,
+    scheduledCardCycleIds: new Set(
+      context.records.cardCycles
+        .filter((cycle) => cycle.state === 'scheduled-payment')
+        .map((cycle) => cycle.id),
+    ),
+    scheduledCardPaymentEventIds: new Set(
+      context.records.events
+        .filter((event) => event.kind === 'card-payment')
+        .map((event) => event.id),
+    ),
+    windowStart: windowStart.toString(),
+    windowEnd: windowEnd.toString(),
+    monthCount: 12,
+  });
 };
 
 const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): ForecastSnapshotDto => {
@@ -321,20 +497,51 @@ const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): Forec
       date: startDate,
     },
   );
-  const revolvingDebt = records.cards.map((card) => ({
-    cardId: card.id,
-    ...summarizeRevolvingDebt({
+  const revolvingDebtEvents = [...records.events, ...scheduledEvents];
+  const revolvingDebt = records.cards.map((card) => {
+    const summary = summarizeRevolvingDebt({
       card,
       cycles: records.cardCycles,
       asOfDate: startDate,
       // Cash projection materialization intentionally omits card-funded purchases,
       // while it adds generated payment occurrences. Debt needs both sets; the
       // revolving engine de-duplicates materialized descendants by lineage.
-      events: [...records.events, ...scheduledEvents],
-    }),
-  }));
+      events: revolvingDebtEvents,
+    });
+    return {
+      cardId: card.id,
+      reportedBalanceCents: card.reportedBalanceCents,
+      reportedBalanceDate: card.reportedBalanceDate,
+      calculatedThroughDate: startDate,
+      postSourceActivityCents:
+        card.reportedBalanceCents === undefined
+          ? undefined
+          : summary.currentBalanceCents - card.reportedBalanceCents,
+      ...summary,
+    };
+  });
   const totalRevolvingDebtCents = moneyCentsSchema.parse(
     revolvingDebt.reduce((total, card) => total + card.currentBalanceCents, 0),
+  );
+  const expectedCurrentDayAppliedEventIds = new Set(bundle.expected.days[0]!.appliedEventIds);
+  const expectedCurrentDayDebtEvents = revolvingDebtEvents.filter(
+    (event) =>
+      event.kind !== 'card-payment' ||
+      event.status === 'confirmed' ||
+      event.status === 'paid' ||
+      expectedCurrentDayAppliedEventIds.has(event.id),
+  );
+  const expectedCurrentDayRevolvingDebt = records.cards.map((card) =>
+    summarizeRevolvingDebt({
+      card,
+      cycles: records.cardCycles,
+      asOfDate: startDate,
+      events: expectedCurrentDayDebtEvents,
+      paymentEvidenceMode: 'include-projected-payments',
+    }),
+  );
+  const expectedCurrentDayRevolvingDebtCents = moneyCentsSchema.parse(
+    expectedCurrentDayRevolvingDebt.reduce((total, card) => total + card.currentBalanceCents, 0),
   );
   const totalCarryingDebtCents = moneyCentsSchema.parse(
     revolvingDebt.reduce((total, card) => total + card.carryingBalanceCents, 0),
@@ -344,7 +551,9 @@ const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): Forec
     assets: effectiveAssets,
     receivables: records.receivables,
     loans: effectiveLoans,
-    revolvingDebtCents: totalRevolvingDebtCents,
+    // Today's expected cash close includes only applied ledger events. Use the same payment basis
+    // for net-worth debt, while `revolvingDebt` above remains actual evidence for Overview.
+    revolvingDebtCents: expectedCurrentDayRevolvingDebtCents,
     liquidCashCentsOverride: expectedPositionDays[0]!.day.consolidatedCashCents,
     allCashCentsOverride: moneyCentsSchema.parse(
       expectedPositionDays[0]!.day.accounts.reduce(
@@ -463,8 +672,74 @@ const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): Forec
     0,
   );
   const currentPositionDay = expectedPositionDays[0]!;
+  const sourceAccountById = new Map(records.accounts.map((account) => [account.id, account]));
   const expectedExcludedEventIds = new Set(bundle.expected.excludedEventIds);
   const conservativeExcludedEventIds = new Set(bundle.conservative.excludedEventIds);
+  const projectDailyNetWorth = (mode: 'expected' | 'conservative'): number[] => {
+    const modeBundle = bundle[mode];
+    const modeReceivables = mode === 'expected' ? expectedReceivables : conservativeReceivables;
+    const excludedEventIds =
+      mode === 'expected' ? expectedExcludedEventIds : conservativeExcludedEventIds;
+    const debtEvents = revolvingDebtEvents.filter((event) => !excludedEventIds.has(event.id));
+    return modeBundle.days.map((day, index) => {
+      const loans = activeLoansForDate({
+        accounts,
+        loans: records.loans,
+        plans: records.committedRefinancePlans,
+        loanPaymentEvents: records.events,
+        date: day.date,
+      });
+      const assets = projectAssetsAtDate(
+        effectiveAssetsForDate({
+          assets: records.assets,
+          plans: records.committedRefinancePlans,
+          date: day.date,
+        }),
+        day.date,
+      );
+      const revolvingDebtCents = moneyCentsSchema.parse(
+        records.cards.reduce(
+          (total, card) =>
+            total +
+            summarizeRevolvingDebt({
+              card,
+              cycles: records.cardCycles,
+              asOfDate: day.date,
+              events: debtEvents,
+              paymentEvidenceMode: 'include-projected-payments',
+            }).currentBalanceCents,
+          0,
+        ),
+      );
+      return calculateNetWorth({
+        cashAccounts: records.accounts,
+        assets,
+        receivables: records.receivables,
+        loans,
+        revolvingDebtCents,
+        allCashCentsOverride: moneyCentsSchema.parse(
+          day.accounts.reduce(
+            (total, account) => total + account.endingBalanceCents,
+            day.inTransitCents,
+          ),
+        ),
+        liquidCashCentsOverride: day.consolidatedCashCents,
+        receivablesCentsOverride: modeReceivables[index]!.endingOutstandingCents,
+        restrictedRefinanceSettlementCents: pendingRefinanceSettlementCentsForDate({
+          plans: records.committedRefinancePlans,
+          date: day.date,
+        }),
+        economicRestrictedRefinanceSettlementCents: pendingRefinanceEconomicSettlementCentsForDate({
+          plans: records.committedRefinancePlans,
+          loans: records.loans,
+          date: day.date,
+        }),
+      }).contractualNetWorthCents;
+    });
+  };
+  const conservativeDailyNetWorth = projectDailyNetWorth('conservative');
+  const expectedDailyNetWorth = projectDailyNetWorth('expected');
+  const longRunMonthlyFreeCashFlow = buildLongRunMonthlyFreeCashFlow(userId);
   const snapshot = forecastSnapshotSchema.safeParse({
     setupComplete: true,
     startDate,
@@ -495,6 +770,13 @@ const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): Forec
     ),
     currentReceivableCents: currentPositionDay.receivableCents,
     currentTotalPositionCents: currentPositionDay.positionCents,
+    longRunMonthlyFreeCashFlowCents: longRunMonthlyFreeCashFlow?.monthlyNetCents,
+    longRunMonthlyScheduledCardPaymentCents:
+      longRunMonthlyFreeCashFlow?.monthlyScheduledCardPaymentCents,
+    longRunMonthlyBeforeScheduledCardPaymentCents:
+      longRunMonthlyFreeCashFlow?.monthlyBeforeScheduledCardPaymentsCents,
+    longRunCashFlowWindowStart: longRunMonthlyFreeCashFlow?.windowStart,
+    longRunCashFlowWindowEnd: longRunMonthlyFreeCashFlow?.windowEnd,
     conservativePositionLowCents: conservativePositionLow.positionCents,
     conservativePositionLowDate: conservativePositionLow.day.date,
     expectedPositionLowCents: expectedPositionLow.positionCents,
@@ -508,16 +790,24 @@ const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): Forec
     configuredPreferredFloorCents: data.policy.preferredConsolidatedFloorCents,
     accountHardFloorTotalCents: bundle.conservative.accountHardFloorTotalCents,
     accountPreferredFloorTotalCents: bundle.conservative.accountPreferredFloorTotalCents,
-    cashAccounts: accounts.map((account) => ({
-      id: account.id,
-      name: account.name,
-      balanceCents:
+    cashAccounts: accounts.map((account) => {
+      const sourceAccount = sourceAccountById.get(account.id) ?? account;
+      const calculatedBalanceCents =
         currentPositionDay.day.accounts.find((item) => item.accountId === account.id)
-          ?.endingBalanceCents ?? account.openingBalanceCents,
-      hardFloorCents: account.hardFloorCents ?? 0,
-      preferredFloorCents: account.preferredFloorCents,
-      showOnOverview: account.showOnOverview,
-    })),
+          ?.endingBalanceCents ?? account.openingBalanceCents;
+      return {
+        id: account.id,
+        name: account.name,
+        balanceCents: calculatedBalanceCents,
+        sourceBalanceCents: sourceAccount.openingBalanceCents,
+        sourceBalanceDate: sourceAccount.balanceAsOf,
+        calculatedThroughDate: startDate,
+        postSourceChangeCents: calculatedBalanceCents - sourceAccount.openingBalanceCents,
+        hardFloorCents: account.hardFloorCents ?? 0,
+        preferredFloorCents: account.preferredFloorCents,
+        showOnOverview: account.showOnOverview,
+      };
+    }),
     accountTroughs: accounts.flatMap((account) => {
       const conservative = accountDailyLow(
         bundle.conservative.days,
@@ -637,6 +927,8 @@ const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): Forec
       expectedPositionCents:
         bundle.expected.days[index]!.consolidatedCashCents +
         expectedReceivables[index]!.endingOutstandingCents,
+      conservativeNetWorthCents: conservativeDailyNetWorth[index],
+      expectedNetWorthCents: expectedDailyNetWorth[index],
       accountBalances: day.accounts.map((account) => ({
         accountId: account.accountId,
         accountName: accountNameById.get(account.accountId) ?? 'Unknown account',
@@ -646,25 +938,34 @@ const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): Forec
           (candidate) => candidate.accountId === account.accountId,
         )!.endingBalanceCents,
       })),
-      events: scheduledEvents
-        .filter(
-          (event) =>
-            event.date === day.date && event.status !== 'cancelled' && event.status !== 'skipped',
-        )
-        .map((event) => ({
-          id: event.id,
-          label: event.label,
-          accountName: accountNameById.get(event.accountId) ?? 'Unknown account',
-          amountCents: event.amountCents,
-          direction: event.direction,
-          kind: event.kind,
-          certainty: event.certainty,
-          status: event.status,
-          hypothetical: event.hypothetical,
-          displayState: displayStateForForecastEvent(event),
-          includedInExpected: !expectedExcludedEventIds.has(event.id),
-          includedInConservative: !conservativeExcludedEventIds.has(event.id),
-        })),
+      events: [
+        ...scheduledEvents
+          .filter(
+            (event) =>
+              event.date === day.date && event.status !== 'cancelled' && event.status !== 'skipped',
+          )
+          .map((event) => ({
+            id: event.id,
+            sourceRecordId: event.sourceRecordId,
+            label: event.label,
+            accountName: accountNameById.get(event.accountId) ?? 'Unknown account',
+            amountCents: event.amountCents,
+            direction: event.direction,
+            kind: event.kind,
+            certainty: event.certainty,
+            status: event.status,
+            hypothetical: event.hypothetical,
+            displayState: displayStateForForecastEvent(event),
+            includedInExpected: !expectedExcludedEventIds.has(event.id),
+            includedInConservative: !conservativeExcludedEventIds.has(event.id),
+          })),
+        ...buildReceivableAccrualDailyEvents({
+          date: day.date,
+          expectedAccruals: expectedReceivables[index]!.accruals,
+          conservativeAccruals: conservativeReceivables[index]!.accruals,
+          receivables: records.receivables,
+        }),
+      ],
     })),
   });
   if (!snapshot.success) {
@@ -693,12 +994,18 @@ const registerIpc = (): void => {
         : undefined,
     );
     activeUserId = profile.id;
-    return sessionFor(profile);
+    const nextSession = sessionFor(profile);
+    updateService.setChannel(nextSession.preferences.updateChannel);
+    updateService.start();
+    return nextSession;
   });
   handle('auth:login', loginRequestSchema, sessionSchema, async (request) => {
     const profile = await auth.login(request.username, request.password);
     activeUserId = profile.id;
-    return sessionFor(profile);
+    const nextSession = sessionFor(profile);
+    updateService.setChannel(nextSession.preferences.updateChannel);
+    updateService.start();
+    return nextSession;
   });
   handle('auth:logout', emptyRequestSchema, successSchema, () => {
     activeUserId = null;
@@ -749,6 +1056,9 @@ const registerIpc = (): void => {
           card,
           cardCycles: records.cardCycles,
           cardActivities: initialContext.data.events,
+          includeInterest:
+            store.getCredentialsById(userId)?.preferences.experimentalCardInterestForecastEnabled ??
+            false,
           purchaseDate: request.settlementDate,
           amountCents: request.amountCents,
         })
@@ -807,6 +1117,35 @@ const registerIpc = (): void => {
       fundingNeeds: afterForecast.transferNeeds,
       enforceFundingAccountFloor: request.fundingType === 'cash',
     });
+    const followingStatement =
+      card && cardImpact
+        ? generateCardCyclesThroughHorizon({
+            card,
+            cardCycles: records.cardCycles.filter((cycle) => cycle.cardId === card.id),
+            startDate,
+            endDate,
+          })
+            .filter((cycle) => cycle.dueOn > cardImpact.owningCycle.dueOn)
+            .sort((left, right) => left.dueOn.localeCompare(right.dueOn))[0]
+        : undefined;
+    const followingStatementPositionCents = followingStatement
+      ? lowestTotalPositionFromDate(
+          afterForecast.days.flatMap((day, index) => {
+            const receivable = scenarioReceivables[index]?.endingOutstandingCents;
+            return receivable === undefined
+              ? []
+              : [
+                  {
+                    date: day.date,
+                    totalPositionCents: moneyCentsSchema.parse(
+                      day.consolidatedCashCents + receivable,
+                    ),
+                  },
+                ];
+          }),
+          followingStatement.dueOn,
+        )
+      : undefined;
     return {
       verdict: result.verdict,
       settlementDate: cashSettlementDate,
@@ -814,6 +1153,7 @@ const registerIpc = (): void => {
       afterTroughCents: afterForecast.consolidatedTroughCents,
       afterHardFloorMarginCents: afterForecast.hardFloorMarginCents,
       afterAvailableToDeployCents: result.after.availableToDeployCents,
+      resultingAvailableSpendCents: result.after.availableToDeployCents,
       accountShortfallCount: new Set(
         afterForecast.accountShortfalls.map((shortfall) => shortfall.accountId),
       ).size,
@@ -840,6 +1180,9 @@ const registerIpc = (): void => {
       baselineCardPaymentCents: cardImpact?.baselineScheduledPaymentCents,
       afterPurchaseCardPaymentCents: cardImpact?.afterPurchaseScheduledPaymentCents,
       incrementalCashPaymentCents: cardImpact?.incrementalCashPaymentCents,
+      owningStatementClosesOn: cardImpact?.owningCycle.closesOn,
+      followingStatementDueOn: followingStatement?.dueOn,
+      followingStatementPositionCents,
     };
   });
   handle(
@@ -888,6 +1231,9 @@ const registerIpc = (): void => {
             card,
             cardCycles: records.cardCycles,
             cardActivities: rollingCardActivities,
+            includeInterest:
+              store.getCredentialsById(userId)?.preferences
+                .experimentalCardInterestForecastEnabled ?? false,
             purchaseDate: scenario.purchaseDate,
             amountCents: scenario.amountCents,
           });
@@ -1012,6 +1358,39 @@ const registerIpc = (): void => {
       return managedRecordsFor(userId);
     },
   );
+  handle(
+    'receivable:settle-unattributed',
+    unattributedReceivableSettlementRequestSchema,
+    managedRecordsSchema,
+    (request) => {
+      const userId = requireUser();
+      store.recordUnattributedReceivableSettlement({
+        userId,
+        ...request,
+        asOfDate: currentFinancialDate(),
+      });
+      return managedRecordsFor(userId);
+    },
+  );
+  handle(
+    'overview:record-expense',
+    overviewExpenseRequestSchema,
+    managedRecordsSchema,
+    (request) => {
+      const userId = requireUser();
+      store.recordOverviewExpense({
+        userId,
+        ...request,
+        asOfDate: currentFinancialDate(),
+      });
+      return managedRecordsFor(userId);
+    },
+  );
+  handle('bills:upsert', billPlanRequestSchema, managedRecordsSchema, (request) => {
+    const userId = requireUser();
+    store.upsertBillPlan({ userId, ...request, asOfDate: currentFinancialDate() });
+    return managedRecordsFor(userId);
+  });
   handle('transfer:create', internalTransferRequestSchema, managedRecordsSchema, (request) => {
     const userId = requireUser();
     store.createInternalTransfer({ userId, ...request });
@@ -1022,6 +1401,55 @@ const registerIpc = (): void => {
     store.setTheme(userId, request.theme);
     return sessionFor(store.getCredentialsById(userId)!);
   });
+  handle('preferences:set', setPreferencesRequestSchema, sessionSchema, (request) => {
+    const userId = requireUser();
+    store.setPreferences(userId, request);
+    updateService.setChannel(request.updateChannel);
+    return sessionFor(store.getCredentialsById(userId)!);
+  });
+  handle(
+    'shell:set-menu-bar-visibility',
+    setMenuBarVisibilityRequestSchema,
+    successSchema,
+    (request) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.setMenuBarVisibility(request.visible);
+      }
+      return { success: true as const };
+    },
+  );
+  handle('updates:status', emptyRequestSchema, updateStatusSchema, () => updateService.getStatus());
+  handle('updates:check', emptyRequestSchema, updateStatusSchema, () => updateService.check());
+  handle('updates:defer', emptyRequestSchema, updateStatusSchema, () => updateService.defer());
+  handle('updates:restart', emptyRequestSchema, updateStatusSchema, () =>
+    updateService.restartAndInstall(),
+  );
+  handle(
+    'updates:post-update-notice',
+    emptyRequestSchema,
+    postUpdateNoticeSchema.nullable(),
+    () => postUpdateNotice,
+  );
+  handle('updates:acknowledge-post-update', emptyRequestSchema, successSchema, async () => {
+    postUpdateNotice = null;
+    await fs.promises.rm(pendingUpdateMetadataPath(), { force: true });
+    return { success: true as const };
+  });
+  handle(
+    'notifications:list-presentation',
+    emptyRequestSchema,
+    z.array(notificationPresentationSchema),
+    () => store.getNotificationPresentations(requireUser()),
+  );
+  handle('audit:list', emptyRequestSchema, z.array(auditHistoryEntrySchema), () =>
+    store.getAuditHistory(requireUser()),
+  );
+  handle(
+    'notifications:set-presentation',
+    setNotificationPresentationsRequestSchema,
+    z.array(notificationPresentationSchema),
+    (request) => store.setNotificationPresentations(requireUser(), request.updates),
+  );
   handle('policy:update', updateCashPolicyRequestSchema, managedRecordsSchema, (request) => {
     const userId = requireUser();
     store.updateCashFloorPolicy(userId, request);
@@ -1180,6 +1608,7 @@ const createWindow = async (): Promise<void> => {
     minWidth: 960,
     minHeight: 640,
     show: false,
+    autoHideMenuBar: true,
     backgroundColor: '#f3f3f3',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1188,6 +1617,7 @@ const createWindow = async (): Promise<void> => {
       sandbox: true,
     },
   });
+  mainWindow.setMenuBarVisibility(false);
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -1233,6 +1663,19 @@ if (!squirrelStartupHandled) {
         });
         store.initializeProfiles(loadInitialProfiles());
         auth = new LocalAuthService(store);
+        postUpdateNotice = loadPostUpdateNotice();
+        updateService = new BalanceBookUpdateService(autoUpdater, {
+          enabled:
+            __BALANCE_BOOK_UPDATES_ENABLED__ &&
+            app.isPackaged &&
+            process.platform === 'win32' &&
+            !process.env.BALANCE_BOOK_DATA_DIR,
+          currentVersion: app.getVersion(),
+          initialChannel: 'beta',
+          firstRun: process.argv.includes('--squirrel-firstrun'),
+          onStatus: broadcastUpdateStatus,
+          prepareInstall: prepareUpdateInstall,
+        });
         registerIpc();
         installProductionProtocol();
         session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) =>
@@ -1250,6 +1693,7 @@ if (!squirrelStartupHandled) {
   }
 
   app.on('will-quit', () => {
+    updateService?.dispose();
     if (store?.raw.open) store.close();
   });
 

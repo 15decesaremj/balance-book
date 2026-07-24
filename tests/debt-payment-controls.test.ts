@@ -111,4 +111,40 @@ describe('guided debt-payment controls', () => {
       },
     });
   });
+
+  it('clears debt-only lineage when a payment is converted to an ordinary cash event', () => {
+    const ordinaryEdit = append(new FormData(), {
+      editEventAccountId: 'checking',
+      editEventDate: '2026-08-01',
+      editEventKind: 'direct-commitment',
+      editEventDirection: 'outflow',
+      editEventAmount: '100.00',
+      editEventCertainty: 'confirmed',
+      editEventStatus: 'planned',
+      editEventLabel: 'Ordinary bill',
+      editEventNotes: '',
+      editEventPaymentMethod: 'cash-account',
+      editEventRecurrence: 'one-time',
+      editEventConservativeTreatment: 'automatic',
+    });
+
+    expect(makeForecastEventEditRequest(storedEvent, ordinaryEdit)).toMatchObject({
+      entityType: 'forecast-event',
+      payload: {
+        kind: 'direct-commitment',
+        sourceRecordId: undefined,
+        loanPaymentTreatment: undefined,
+      },
+    });
+
+    const importedOrdinaryEvent = forecastEventSchema.parse({
+      ...storedEvent,
+      id: 'imported-ordinary-event',
+      kind: 'direct-commitment',
+      sourceRecordId: 'import-lineage-42',
+    });
+    expect(makeForecastEventEditRequest(importedOrdinaryEvent, ordinaryEdit)).toMatchObject({
+      payload: { sourceRecordId: 'import-lineage-42' },
+    });
+  });
 });

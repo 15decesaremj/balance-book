@@ -7,6 +7,7 @@ import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import {
   cashAccountSchema,
   cashFloorPolicySchema,
+  defaultProfilePreferences,
   creditCardCycleSchema,
   creditCardSchema,
   committedRefinancePlanInputSchema,
@@ -17,10 +18,12 @@ import {
   loanSchema,
   maximumProfileAssetRecords,
   plainDateSchema,
+  profilePreferencesSchema,
   receivableSchema,
   reconciliationSchema,
   rewardProgramSchema,
   savedScenarioSchema,
+  storedProfilePreferencesSchema,
   addDays,
   compareDates,
   daysBetween,
@@ -35,6 +38,7 @@ import {
   type CreditCardCycle,
   type Loan,
   type PlainDateString,
+  type ProfilePreferences,
   type Receivable,
   type Reconciliation,
   type RefinanceAssetRelink,
@@ -49,6 +53,7 @@ import {
   hasRecurringReceivableSchedule,
   parseReceivableOccurrenceNote,
   projectLoanPayoffAtDate,
+  projectRollingReceivableBalances,
   receivableForSettlementSource,
   receivableForSettlementSourceFromIndex,
   receivableSettlementDates,
@@ -57,7 +62,7 @@ import {
   resolveRecordedReceivableOccurrenceDate,
   resolveReceivableScheduleOccurrenceDate,
 } from '@balance-book/financial-engine';
-import { applyMigrations, latestSchemaVersion } from './migrations';
+import { applyMigrations, assertSupportedSchemaVersion, latestSchemaVersion } from './migrations';
 import {
   auditEvents,
   assets,
@@ -71,6 +76,7 @@ import {
   importBatches,
   importLineage,
   loans,
+  notificationPresentations,
   onboardingDrafts,
   profiles,
   receivables,
@@ -101,6 +107,7 @@ export interface ProfileCredentials extends ProfileSummary {
   failedLoginAttempts: number;
   lockedUntil: string | null;
   themePreference: 'system' | 'light' | 'dark';
+  preferences: ProfilePreferences;
 }
 
 export interface VerticalSliceInput {
@@ -144,6 +151,56 @@ export type ManagedEntityType =
   | 'reconciliation'
   | 'saved-scenario';
 
+type LoanPaymentInstructionCascade = {
+  action: 'move' | 'split';
+  eventId: string;
+  futureEventId?: string;
+  fromAccountId: string;
+  toAccountId: string;
+  effectiveDate: PlainDateString;
+};
+
+const firstFutureLoanPaymentOccurrence = (
+  event: ForecastEvent,
+  asOfDate: PlainDateString,
+): PlainDateString | undefined => {
+  if (
+    event.status === 'cancelled' ||
+    event.status === 'skipped' ||
+    (event.hypothetical && !event.accepted)
+  ) {
+    return undefined;
+  }
+  const sameDayIsSettled = event.status === 'confirmed' || event.status === 'paid';
+  const dateComparison = compareDates(event.date, asOfDate);
+  if (dateComparison > 0 || (dateComparison === 0 && !sameDayIsSettled)) return event.date;
+  if (!event.recurrenceRule || event.recurrenceRule.frequency === 'once') return undefined;
+  if (event.recurrenceEndDate) {
+    const endComparison = compareDates(event.recurrenceEndDate, asOfDate);
+    if (endComparison < 0 || (endComparison === 0 && sameDayIsSettled)) return undefined;
+  }
+  const searchEnd = event.recurrenceEndDate ?? addDays(asOfDate, 800);
+  return expandRecurrence({
+    startDate: event.date,
+    endDate: searchEnd,
+    rule: event.recurrenceRule,
+  }).find((date) => {
+    const comparison = compareDates(date, asOfDate);
+    return comparison > 0 || (comparison === 0 && !sameDayIsSettled);
+  });
+};
+
+const loanPaymentInstructionHasHistory = (
+  event: ForecastEvent,
+  asOfDate: PlainDateString,
+): boolean => {
+  const comparison = compareDates(event.date, asOfDate);
+  return (
+    comparison < 0 ||
+    (comparison === 0 && (event.status === 'confirmed' || event.status === 'paid'))
+  );
+};
+
 export interface ManagedRecords {
   accounts: CashAccount[];
   events: ForecastEvent[];
@@ -157,6 +214,31 @@ export interface ManagedRecords {
   rewardPrograms: RewardProgram[];
   reconciliations: Reconciliation[];
   savedScenarios: SavedScenario[];
+}
+
+export interface NotificationPresentation {
+  notificationId: string;
+  conditionFingerprint: string;
+  readAt: string | null;
+  snoozedUntil: string | null;
+  dismissedAt: string | null;
+  updatedAt: string;
+}
+
+export interface NotificationPresentationUpdate {
+  notificationId: string;
+  conditionFingerprint: string;
+  readAt: string | null;
+  snoozedUntil: string | null;
+  dismissedAt: string | null;
+}
+
+export interface AuditHistoryEntry {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  createdAt: string;
 }
 
 export type CommitRefinancePlanInput = CommittedRefinancePlanInput;
@@ -214,7 +296,7 @@ export interface PortableRecordTimestamp {
 
 export interface PortableProfileBackup extends ManagedRecords {
   format: 'balance-book-portable-profile';
-  version: 2;
+  version: 3;
   exportedAt: string;
   sourceAppVersion: string;
   sourceSchemaVersion: number;
@@ -223,6 +305,7 @@ export interface PortableProfileBackup extends ManagedRecords {
     displayName: string;
     username: string;
     themePreference: 'system' | 'light' | 'dark';
+    preferences: ProfilePreferences;
     onboardingComplete: boolean;
   };
   onboardingDraft: { values: Record<string, string>; updatedAt: string } | null;
@@ -268,6 +351,16 @@ export interface ImportReview {
 }
 
 const now = (): string => new Date().toISOString();
+
+const deserializeProfilePreferences = (serialized: string): ProfilePreferences => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized);
+  } catch {
+    throw new Error('Profile preferences are invalid');
+  }
+  return storedProfilePreferencesSchema.parse(parsed);
+};
 const localPlainDate = (): PlainDateString => {
   const date = new Date();
   const year = String(date.getFullYear()).padStart(4, '0');
@@ -356,6 +449,7 @@ const serializeForecastEvent = (entity: ForecastEvent) => {
     receivableOccurrenceDate: nullable(entity.receivableOccurrenceDate),
     receivableOccurrenceTargetCents: nullable(entity.receivableOccurrenceTargetCents),
     notes: nullable(entity.notes),
+    appliesAfterBalanceSnapshot: entity.appliesAfterBalanceSnapshot ?? false,
   };
 };
 
@@ -386,6 +480,7 @@ const deserializeForecastEvent = (row: typeof forecastEvents.$inferSelect): Fore
     receivableOccurrenceDate: row.receivableOccurrenceDate ?? undefined,
     receivableOccurrenceTargetCents: row.receivableOccurrenceTargetCents ?? undefined,
     notes: row.notes ?? undefined,
+    appliesAfterBalanceSnapshot: row.appliesAfterBalanceSnapshot,
   });
 
 const serializeCashFloorPolicy = (entity: CashFloorPolicy) => ({
@@ -405,6 +500,7 @@ const serializeCreditCard = (entity: CreditCard) => ({
   fixedPaymentCents: nullable(entity.fixedPaymentCents),
   minimumPaymentCents: nullable(entity.minimumPaymentCents),
   aprBasisPoints: nullable(entity.aprBasisPoints),
+  promotionalAprBasisPoints: nullable(entity.promotionalAprBasisPoints),
   promotionEndDate: nullable(entity.promotionEndDate),
   closedOn: nullable(entity.closedOn),
   paymentDayOfMonth: entity.paymentDayOfMonth ?? 1,
@@ -426,6 +522,9 @@ const deserializeCreditCard = (row: typeof creditCards.$inferSelect): CreditCard
     fixedPaymentCents: row.fixedPaymentCents ?? undefined,
     minimumPaymentCents: row.minimumPaymentCents ?? undefined,
     aprBasisPoints: row.aprBasisPoints ?? undefined,
+    interestForecastEnabled: row.interestForecastEnabled,
+    promotionalCarryingBalance: row.promotionalCarryingBalance,
+    promotionalAprBasisPoints: row.promotionalAprBasisPoints ?? undefined,
     promotionEndDate: row.promotionEndDate ?? undefined,
     status: row.status ?? 'active',
     closedOn: row.closedOn ?? undefined,
@@ -521,6 +620,8 @@ const deserializeCommittedRefinancePlan = (
 
 const serializeAsset = (entity: Asset) => ({
   ...entity,
+  annualGrowthRateBasisPoints: nullable(entity.annualGrowthRateBasisPoints),
+  contributionGrossAnnualIncomeCents: nullable(entity.contributionGrossAnnualIncomeCents),
   contributionAmountCents: nullable(entity.contributionAmountCents),
   contributionRateBasisPoints: nullable(entity.contributionRateBasisPoints),
   employerMatchBasisPoints: nullable(entity.employerMatchBasisPoints),
@@ -534,6 +635,7 @@ const serializeCreditCardCycle = (entity: CreditCardCycle) => ({
   projectionOverrideCents: nullable(entity.projectionOverrideCents),
   paymentOn: nullable(entity.paymentOn),
   actualPaymentCents: nullable(entity.actualPaymentCents),
+  actualPaymentAccountId: nullable(entity.actualPaymentAccountId),
 });
 
 const serializeReceivable = (entity: Receivable) => {
@@ -604,15 +706,21 @@ export class BalanceBookStore {
   constructor(input: { databasePath: string; backupDirectory: string }) {
     fs.mkdirSync(path.dirname(input.databasePath), { recursive: true });
     this.raw = new BetterSqlite3(input.databasePath);
-    this.raw.pragma('foreign_keys = ON');
-    this.raw.pragma('journal_mode = WAL');
-    this.raw.pragma('busy_timeout = 5000');
-    applyMigrations({
-      database: this.raw,
-      databasePath: input.databasePath,
-      backupDirectory: input.backupDirectory,
-    });
-    this.orm = drizzle(this.raw, { schema });
+    try {
+      assertSupportedSchemaVersion(this.raw);
+      this.raw.pragma('foreign_keys = ON');
+      this.raw.pragma('journal_mode = WAL');
+      this.raw.pragma('busy_timeout = 5000');
+      applyMigrations({
+        database: this.raw,
+        databasePath: input.databasePath,
+        backupDirectory: input.backupDirectory,
+      });
+      this.orm = drizzle(this.raw, { schema });
+    } catch (error) {
+      this.raw.close();
+      throw error;
+    }
   }
 
   close(): void {
@@ -631,6 +739,7 @@ export class BalanceBookStore {
             username: profile.username.toLowerCase(),
             onboardingComplete: profile.onboardingComplete ?? false,
             themePreference: 'dark',
+            preferencesJson: JSON.stringify(defaultProfilePreferences),
             createdAt: timestamp,
             updatedAt: timestamp,
           })
@@ -712,6 +821,7 @@ export class BalanceBookStore {
       failedLoginAttempts: profile.failedLoginAttempts,
       lockedUntil: profile.lockedUntil,
       themePreference: profile.themePreference,
+      preferences: deserializeProfilePreferences(profile.preferencesJson),
     };
   }
 
@@ -772,6 +882,88 @@ export class BalanceBookStore {
       .set({ themePreference: theme, updatedAt: now() })
       .where(eq(profiles.id, profileId))
       .run();
+  }
+
+  setPreferences(profileId: string, preferences: ProfilePreferences): void {
+    const parsed = profilePreferencesSchema.parse(preferences);
+    const result = this.orm
+      .update(profiles)
+      .set({ preferencesJson: JSON.stringify(parsed), updatedAt: now() })
+      .where(eq(profiles.id, profileId))
+      .run();
+    if (result.changes !== 1) throw new Error('Profile not found');
+  }
+
+  getNotificationPresentations(profileId: string): NotificationPresentation[] {
+    return this.orm
+      .select()
+      .from(notificationPresentations)
+      .where(eq(notificationPresentations.userId, profileId))
+      .orderBy(asc(notificationPresentations.updatedAt))
+      .all()
+      .map((row) => ({
+        notificationId: row.notificationId,
+        conditionFingerprint: row.conditionFingerprint,
+        readAt: row.readAt,
+        snoozedUntil: row.snoozedUntil,
+        dismissedAt: row.dismissedAt,
+        updatedAt: row.updatedAt,
+      }));
+  }
+
+  getAuditHistory(profileId: string): AuditHistoryEntry[] {
+    if (!this.getCredentialsById(profileId)) throw new Error('Profile not found');
+    return this.orm
+      .select({
+        id: auditEvents.id,
+        action: auditEvents.action,
+        entityType: auditEvents.entityType,
+        entityId: auditEvents.entityId,
+        createdAt: auditEvents.createdAt,
+      })
+      .from(auditEvents)
+      .where(eq(auditEvents.userId, profileId))
+      .orderBy(asc(auditEvents.createdAt))
+      .all();
+  }
+
+  setNotificationPresentations(
+    profileId: string,
+    updates: NotificationPresentationUpdate[],
+  ): NotificationPresentation[] {
+    if (!this.getCredentialsById(profileId)) throw new Error('Profile not found');
+    const timestamp = now();
+    this.raw.transaction(() => {
+      for (const update of updates) {
+        const id = createHash('sha256')
+          .update(`${profileId}\u0000${update.notificationId}`)
+          .digest('hex');
+        this.orm
+          .insert(notificationPresentations)
+          .values({
+            id,
+            userId: profileId,
+            notificationId: update.notificationId,
+            conditionFingerprint: update.conditionFingerprint,
+            readAt: update.readAt,
+            snoozedUntil: update.snoozedUntil,
+            dismissedAt: update.dismissedAt,
+            updatedAt: timestamp,
+          })
+          .onConflictDoUpdate({
+            target: notificationPresentations.id,
+            set: {
+              conditionFingerprint: update.conditionFingerprint,
+              readAt: update.readAt,
+              snoozedUntil: update.snoozedUntil,
+              dismissedAt: update.dismissedAt,
+              updatedAt: timestamp,
+            },
+          })
+          .run();
+      }
+    })();
+    return this.getNotificationPresentations(profileId);
   }
 
   saveVerticalSlice(userId: string, input: VerticalSliceInput): void {
@@ -1047,6 +1239,7 @@ export class BalanceBookStore {
           projectionOverrideCents: row.projectionOverrideCents ?? undefined,
           paymentOn: row.paymentOn ?? undefined,
           actualPaymentCents: row.actualPaymentCents ?? undefined,
+          actualPaymentAccountId: row.actualPaymentAccountId ?? undefined,
         }),
       ),
       loans: loanRows.map(deserializeLoan),
@@ -1055,6 +1248,8 @@ export class BalanceBookStore {
       assets: assetRows.map((row) =>
         assetSchema.parse({
           ...row,
+          annualGrowthRateBasisPoints: row.annualGrowthRateBasisPoints ?? undefined,
+          contributionGrossAnnualIncomeCents: row.contributionGrossAnnualIncomeCents ?? undefined,
           contributionAmountCents: row.contributionAmountCents ?? undefined,
           contributionRateBasisPoints: row.contributionRateBasisPoints ?? undefined,
           employerMatchBasisPoints: row.employerMatchBasisPoints ?? undefined,
@@ -1593,6 +1788,9 @@ export class BalanceBookStore {
                 fixedPaymentCents: cardRow.fixedPaymentCents,
                 minimumPaymentCents: cardRow.minimumPaymentCents,
                 aprBasisPoints: cardRow.aprBasisPoints,
+                interestForecastEnabled: entity.interestForecastEnabled,
+                promotionalCarryingBalance: entity.promotionalCarryingBalance,
+                promotionalAprBasisPoints: cardRow.promotionalAprBasisPoints,
                 promotionEndDate: cardRow.promotionEndDate,
                 paymentDayOfMonth: cardRow.paymentDayOfMonth,
                 statementCloseDayOfMonth: cardRow.statementCloseDayOfMonth,
@@ -1612,6 +1810,9 @@ export class BalanceBookStore {
           }
           const cycleRow = serializeCreditCardCycle(entity);
           const linkedCard = this.ownedCard(userId, entity.cardId);
+          if (entity.actualPaymentAccountId) {
+            this.assertOwnedAccount(userId, entity.actualPaymentAccountId);
+          }
           if (
             linkedCard.status === 'closed' &&
             compareDates(entity.opensOn, linkedCard.closedOn!) >= 0
@@ -1730,6 +1931,27 @@ export class BalanceBookStore {
               throw new Error(
                 'Source-loan schedule terms are locked by committed refinance history; cancel the upcoming plan before closing if those terms must change',
               );
+            }
+          }
+          if (existingLoan) {
+            const paymentInstructionCascades = this.reconcileLoanPaymentInstructionsForEdit({
+              userId,
+              previousLoan: existingLoan,
+              nextLoan: entity,
+              asOfDate: effectiveAsOfDate,
+              timestamp,
+            });
+            if (paymentInstructionCascades.length > 0) {
+              auditPayload = {
+                ...auditPayload,
+                loanPaymentInstructionCascadeSummary: {
+                  count: paymentInstructionCascades.length,
+                  sample: paymentInstructionCascades.slice(0, 20),
+                  sha256: createHash('sha256')
+                    .update(JSON.stringify(paymentInstructionCascades))
+                    .digest('hex'),
+                },
+              };
             }
           }
           entityId = entity.id;
@@ -2612,7 +2834,7 @@ export class BalanceBookStore {
       .get();
     return {
       format: 'balance-book-portable-profile',
-      version: 2,
+      version: 3,
       exportedAt: now(),
       sourceAppVersion,
       sourceSchemaVersion: latestSchemaVersion,
@@ -2621,6 +2843,7 @@ export class BalanceBookStore {
         displayName: profile.displayName,
         username: profile.username,
         themePreference: profile.themePreference,
+        preferences: profile.preferences,
         onboardingComplete: profile.onboardingComplete,
       },
       onboardingDraft: this.getOnboardingDraft(userId),
@@ -2918,7 +3141,12 @@ export class BalanceBookStore {
 
     for (const card of records.cards)
       requireReference(accountIds, card.fundingAccountId, 'card funding account');
-    for (const cycle of records.cardCycles) requireReference(cardIds, cycle.cardId, 'card cycle');
+    for (const cycle of records.cardCycles) {
+      requireReference(cardIds, cycle.cardId, 'card cycle');
+      if (cycle.actualPaymentAccountId) {
+        requireReference(accountIds, cycle.actualPaymentAccountId, 'recorded card payment account');
+      }
+    }
     for (const loan of records.loans)
       requireReference(accountIds, loan.fundingAccountId, 'loan funding account');
     const committedPayoffLoanIds = new Set<string>();
@@ -3511,7 +3739,7 @@ export class BalanceBookStore {
   }
 
   replacePortableProfile(userId: string, data: PortableProfileBackup): void {
-    if (data.format !== 'balance-book-portable-profile' || data.version !== 2) {
+    if (data.format !== 'balance-book-portable-profile' || data.version !== 3) {
       throw new Error('Unsupported Balance Book portable profile');
     }
     if (data.sourceSchemaVersion > latestSchemaVersion) {
@@ -3662,8 +3890,9 @@ export class BalanceBookStore {
       this.orm
         .update(profiles)
         .set({
-          onboardingComplete: data.sourceProfile.onboardingComplete || records.accounts.length > 0,
+          onboardingComplete: data.sourceProfile.onboardingComplete,
           themePreference: data.sourceProfile.themePreference,
+          preferencesJson: JSON.stringify(data.sourceProfile.preferences),
           updatedAt: timestamp,
         })
         .where(eq(profiles.id, userId))
@@ -4113,6 +4342,10 @@ export class BalanceBookStore {
     const timestamp = now();
     this.raw.transaction(() => {
       this.orm.delete(onboardingDrafts).where(eq(onboardingDrafts.userId, userId)).run();
+      this.orm
+        .delete(notificationPresentations)
+        .where(eq(notificationPresentations.userId, userId))
+        .run();
       this.orm.delete(importLineage).where(eq(importLineage.userId, userId)).run();
       this.orm.delete(importBatches).where(eq(importBatches.userId, userId)).run();
       this.orm.delete(creditCardCycles).where(eq(creditCardCycles.userId, userId)).run();
@@ -4232,6 +4465,18 @@ export class BalanceBookStore {
     asOfDate: string;
     occurrenceDate?: string;
     /** Per-release destination. The receivable account remains the default for legacy callers. */
+    destinationAccountId?: string;
+  }): string {
+    return this.raw.transaction(() => this.recordReceivableSettlementInTransaction(input))();
+  }
+
+  private recordReceivableSettlementInTransaction(input: {
+    userId: string;
+    receivableId: string;
+    amountCents: number;
+    date: string;
+    asOfDate: string;
+    occurrenceDate?: string;
     destinationAccountId?: string;
   }): string {
     const settlementDate = plainDateSchema.parse(input.date);
@@ -4361,64 +4606,507 @@ export class BalanceBookStore {
     this.assertOwnedAccount(input.userId, destinationAccountId);
     const timestamp = now();
     const eventId = randomUUID();
-    this.raw.transaction(() => {
-      if (occurrenceUsesStaticBalance) {
-        this.orm
-          .update(receivables)
-          .set({
-            remainingAmountCents: receivable.remainingAmountCents - input.amountCents,
-            updatedAt: timestamp,
-          })
-          .where(and(eq(receivables.id, receivable.id), eq(receivables.userId, input.userId)))
-          .run();
+    if (occurrenceUsesStaticBalance) {
+      this.orm
+        .update(receivables)
+        .set({
+          remainingAmountCents: receivable.remainingAmountCents - input.amountCents,
+          updatedAt: timestamp,
+        })
+        .where(and(eq(receivables.id, receivable.id), eq(receivables.userId, input.userId)))
+        .run();
+    }
+    this.orm
+      .insert(forecastEvents)
+      .values({
+        id: eventId,
+        userId: input.userId,
+        accountId: destinationAccountId,
+        date: settlementDate,
+        kind: 'receivable-settlement',
+        direction: 'inflow',
+        amountCents: input.amountCents,
+        certainty: 'confirmed',
+        status: 'confirmed',
+        label: `Settlement: ${receivable.description}`,
+        sourceRecordId: receivable.id,
+        hypothetical: false,
+        accepted: false,
+        receivableOccurrenceDate: repeating || oneTimeAccrualOnly ? occurrenceDate : null,
+        receivableOccurrenceTargetCents: occurrenceTargetCents ?? null,
+        notes: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      })
+      .run();
+    this.orm
+      .insert(auditEvents)
+      .values({
+        id: randomUUID(),
+        userId: input.userId,
+        action: 'settle',
+        entityType: 'receivable',
+        entityId: receivable.id,
+        payloadJson: JSON.stringify({
+          eventId,
+          amountCents: input.amountCents,
+          date: settlementDate,
+          occurrenceDate,
+          occurrenceTargetCents,
+          recurring: repeating,
+          staticBalanceReducedCents: occurrenceUsesStaticBalance ? input.amountCents : 0,
+          destinationAccountId,
+          defaultDestinationAccountId: receivable.destinationAccountId,
+        }),
+        createdAt: timestamp,
+      })
+      .run();
+    return eventId;
+  }
+
+  recordUnattributedReceivableSettlement(input: {
+    userId: string;
+    amountCents: number;
+    date: string;
+    asOfDate: string;
+    destinationAccountId: string;
+  }): string[] {
+    const settlementDate = plainDateSchema.parse(input.date);
+    const asOfDate = plainDateSchema.parse(input.asOfDate);
+    if (compareDates(settlementDate, asOfDate) > 0) {
+      throw new Error('Date received cannot be in the future');
+    }
+    if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) {
+      throw new Error('Received amount must be a positive whole number of cents');
+    }
+    this.assertOwnedAccount(input.userId, input.destinationAccountId);
+    const records = this.getManagedRecords(input.userId);
+    if (!records.policy || records.accounts.length === 0) {
+      throw new Error('Cash forecast setup is required before recording received money');
+    }
+    const replayStartDate = records.accounts
+      .map((account) => account.balanceAsOf)
+      .reduce((earliest, date) => (compareDates(date, earliest) < 0 ? date : earliest));
+    const currentDay = projectRollingReceivableBalances({
+      receivables: records.receivables,
+      settlementEvents: records.events,
+      replayStartDate,
+      startDate: settlementDate,
+      endDate: settlementDate,
+      mode: 'expected',
+      includeConfirmedReceivablesConservatively:
+        records.policy.includeConfirmedReceivablesConservatively,
+    })[0];
+    const receivableById = new Map(
+      records.receivables.map((receivable) => [receivable.id, receivable]),
+    );
+    const candidates = (currentDay?.occurrences ?? [])
+      .filter(
+        (occurrence) =>
+          occurrence.endingOutstandingCents > 0 && receivableById.has(occurrence.receivableId),
+      )
+      .sort(
+        (left, right) =>
+          compareDates(left.occurrenceDate, right.occurrenceDate) ||
+          left.receivableId.localeCompare(right.receivableId),
+      );
+    const totalOpenCents = candidates.reduce(
+      (total, occurrence) => total + occurrence.endingOutstandingCents,
+      0,
+    );
+    if (input.amountCents > totalOpenCents) {
+      throw new Error('Received amount cannot be more than the Money Owed balance on that date');
+    }
+
+    return this.raw.transaction(() => {
+      let remainingCents = input.amountCents;
+      const eventIds: string[] = [];
+      for (const candidate of candidates) {
+        if (remainingCents === 0) break;
+        const receivable = receivableById.get(candidate.receivableId)!;
+        const allocatedCents = Math.min(remainingCents, candidate.endingOutstandingCents);
+        eventIds.push(
+          this.recordReceivableSettlementInTransaction({
+            userId: input.userId,
+            receivableId: receivable.id,
+            amountCents: allocatedCents,
+            date: settlementDate,
+            asOfDate,
+            ...(hasRecurringReceivableSchedule(receivable)
+              ? { occurrenceDate: candidate.occurrenceDate }
+              : {}),
+            destinationAccountId: input.destinationAccountId,
+          }),
+        );
+        remainingCents -= allocatedCents;
       }
+      if (remainingCents !== 0) {
+        throw new Error('Received money could not be fully applied to the Money Owed balance');
+      }
+      return eventIds;
+    })();
+  }
+
+  recordOverviewExpense(input: {
+    userId: string;
+    paymentSource:
+      { kind: 'cash-account'; accountId: string } | { kind: 'credit-card'; cardId: string };
+    amountCents: number;
+    date: string;
+    label: string;
+    notes?: string;
+    owedTreatment: 'none' | 'reimbursable' | 'shared';
+    owedBy?: string;
+    asOfDate: string;
+  }): { expenseEventId: string; receivableId?: string } {
+    const expenseDate = plainDateSchema.parse(input.date);
+    const asOfDate = plainDateSchema.parse(input.asOfDate);
+    if (compareDates(expenseDate, asOfDate) > 0) {
+      throw new Error('Expense date cannot be in the future');
+    }
+    if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) {
+      throw new Error('Expense amount must be a positive whole number of cents');
+    }
+    const label = input.label.trim();
+    if (!label) throw new Error('Expense description is required');
+    const owedBy = input.owedBy?.trim();
+    if (input.owedTreatment !== 'none' && !owedBy) {
+      throw new Error('Enter who owes this amount');
+    }
+    if (input.owedTreatment === 'none' && owedBy) {
+      throw new Error('An owed-by name requires a reimbursable or shared expense');
+    }
+
+    let accountId: string;
+    let paymentMethod: 'cash-account' | 'credit-card';
+    let cardId: string | undefined;
+    let balanceSnapshotDate: PlainDateString | undefined;
+    let destinationAccountId: string;
+    let paymentInstrument: string;
+    if (input.paymentSource.kind === 'cash-account') {
+      const account = this.orm
+        .select()
+        .from(cashAccounts)
+        .where(
+          and(
+            eq(cashAccounts.id, input.paymentSource.accountId),
+            eq(cashAccounts.userId, input.userId),
+          ),
+        )
+        .get();
+      if (!account) throw new Error('Cash account is not available to this profile');
+      if (compareDates(expenseDate, account.balanceAsOf) < 0) {
+        throw new Error(`Expense date cannot be before ${account.balanceAsOf}`);
+      }
+      accountId = account.id;
+      destinationAccountId = account.id;
+      paymentMethod = 'cash-account';
+      balanceSnapshotDate = account.balanceAsOf;
+      paymentInstrument = `cash-account:${account.id}`;
+    } else {
+      const card = this.ownedCard(input.userId, input.paymentSource.cardId);
+      if (!cardAllowsPurchasesOnDate(card, expenseDate)) {
+        throw new Error(`${card.name} cannot fund purchases on or after its closure date`);
+      }
+      if (card.reportedBalanceDate && compareDates(expenseDate, card.reportedBalanceDate) < 0) {
+        throw new Error(`Expense date cannot be before ${card.reportedBalanceDate}`);
+      }
+      accountId = card.fundingAccountId;
+      destinationAccountId = card.fundingAccountId;
+      paymentMethod = 'credit-card';
+      cardId = card.id;
+      balanceSnapshotDate = card.reportedBalanceDate;
+      paymentInstrument = `credit-card:${card.id}`;
+    }
+
+    const timestamp = now();
+    const expenseEventId = randomUUID();
+    const expense = forecastEventSchema.parse({
+      id: expenseEventId,
+      userId: input.userId,
+      accountId,
+      date: expenseDate,
+      kind: 'manual-adjustment',
+      direction: 'outflow',
+      amountCents: input.amountCents,
+      certainty: 'confirmed',
+      status: 'confirmed',
+      label,
+      hypothetical: false,
+      accepted: false,
+      paymentMethod,
+      cardId,
+      cardActivityTreatment: cardId ? 'additional' : undefined,
+      appliesAfterBalanceSnapshot: expenseDate === balanceSnapshotDate,
+      notes: input.notes?.trim() || undefined,
+    });
+    const owedAmountCents =
+      input.owedTreatment === 'reimbursable'
+        ? input.amountCents
+        : input.owedTreatment === 'shared'
+          ? Math.round(input.amountCents / 2)
+          : 0;
+    const receivableId = owedAmountCents > 0 ? randomUUID() : undefined;
+    const receivable = receivableId
+      ? receivableSchema.parse({
+          id: receivableId,
+          userId: input.userId,
+          source: owedBy!,
+          description: label,
+          originalAmountCents: owedAmountCents,
+          remainingAmountCents: owedAmountCents,
+          expectedDate: expenseDate,
+          settlementDateConfirmed: false,
+          destinationAccountId,
+          certainty: 'confirmed',
+          grossExpenseCents: input.amountCents,
+          userEconomicShareCents: input.amountCents - owedAmountCents,
+          relatedExpenseId: expenseEventId,
+          paymentInstrument,
+          includeInCashForecast: false,
+          notes: input.notes?.trim() || undefined,
+        })
+      : undefined;
+
+    this.raw.transaction(() => {
       this.orm
         .insert(forecastEvents)
         .values({
-          id: eventId,
-          userId: input.userId,
-          accountId: destinationAccountId,
-          date: settlementDate,
-          kind: 'receivable-settlement',
-          direction: 'inflow',
-          amountCents: input.amountCents,
-          certainty: 'confirmed',
-          status: 'confirmed',
-          label: `Settlement: ${receivable.description}`,
-          sourceRecordId: receivable.id,
-          hypothetical: false,
-          accepted: false,
-          receivableOccurrenceDate: repeating || oneTimeAccrualOnly ? occurrenceDate : null,
-          receivableOccurrenceTargetCents: occurrenceTargetCents ?? null,
-          notes: null,
+          ...serializeForecastEvent(expense),
           createdAt: timestamp,
           updatedAt: timestamp,
         })
         .run();
+      if (receivable) {
+        this.orm
+          .insert(receivables)
+          .values({
+            ...serializeReceivable(receivable),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          })
+          .run();
+      }
+      const auditPayload = {
+        source: 'overview-expense',
+        paymentSource: input.paymentSource,
+        owedTreatment: input.owedTreatment,
+        receivableId,
+      };
       this.orm
         .insert(auditEvents)
         .values({
           id: randomUUID(),
           userId: input.userId,
-          action: 'settle',
-          entityType: 'receivable',
-          entityId: receivable.id,
-          payloadJson: JSON.stringify({
-            eventId,
-            amountCents: input.amountCents,
-            date: settlementDate,
-            occurrenceDate,
-            occurrenceTargetCents,
-            recurring: repeating,
-            staticBalanceReducedCents: occurrenceUsesStaticBalance ? input.amountCents : 0,
-            destinationAccountId,
-            defaultDestinationAccountId: receivable.destinationAccountId,
-          }),
+          action: 'log-expense',
+          entityType: 'forecast-event',
+          entityId: expenseEventId,
+          payloadJson: JSON.stringify(auditPayload),
           createdAt: timestamp,
         })
         .run();
+      if (receivableId) {
+        this.orm
+          .insert(auditEvents)
+          .values({
+            id: randomUUID(),
+            userId: input.userId,
+            action: 'create-from-expense',
+            entityType: 'receivable',
+            entityId: receivableId,
+            payloadJson: JSON.stringify({
+              ...auditPayload,
+              expenseEventId,
+              owedAmountCents,
+            }),
+            createdAt: timestamp,
+          })
+          .run();
+      }
     })();
-    return eventId;
+    return { expenseEventId, receivableId };
+  }
+
+  upsertBillPlan(input: {
+    userId: string;
+    eventId: string;
+    linkedReceivableId?: string;
+    paymentSource:
+      | { kind: 'cash-account'; accountId: string }
+      | { kind: 'credit-card'; cardId: string; addToCardBalance: boolean };
+    amountCents: number;
+    firstBillDate: string;
+    label: string;
+    recurrenceRule: RecurrenceRule;
+    recurrenceEndDate?: string;
+    certainty: 'confirmed' | 'expected' | 'uncertain';
+    active: boolean;
+    notes?: string;
+    owedTreatment: 'none' | 'reimbursable' | 'shared';
+    owedBy?: string;
+    asOfDate: string;
+  }): { eventId: string; receivableId?: string } {
+    const firstBillDate = plainDateSchema.parse(input.firstBillDate);
+    const recurrenceEndDate = input.recurrenceEndDate
+      ? plainDateSchema.parse(input.recurrenceEndDate)
+      : undefined;
+    if (recurrenceEndDate && compareDates(recurrenceEndDate, firstBillDate) < 0) {
+      throw new Error('Bill schedule end cannot precede its first date');
+    }
+    const label = input.label.trim();
+    if (!label) throw new Error('Bill name is required');
+    if (!Number.isSafeInteger(input.amountCents) || input.amountCents <= 0) {
+      throw new Error('Bill amount must be a positive whole number of cents');
+    }
+    const owedBy = input.owedBy?.trim();
+    if (input.owedTreatment !== 'none' && !owedBy) {
+      throw new Error('Enter who owes this amount');
+    }
+    if (input.owedTreatment === 'none' && owedBy) {
+      throw new Error('An owed-by name requires a reimbursable or shared bill');
+    }
+
+    let accountId: string;
+    let destinationAccountId: string;
+    let paymentMethod: 'cash-account' | 'credit-card';
+    let cardId: string | undefined;
+    let cardActivityTreatment: 'additional' | 'included-in-cycle-total' | undefined;
+    let paymentInstrument: string;
+    if (input.paymentSource.kind === 'cash-account') {
+      this.assertOwnedAccount(input.userId, input.paymentSource.accountId);
+      accountId = input.paymentSource.accountId;
+      destinationAccountId = input.paymentSource.accountId;
+      paymentMethod = 'cash-account';
+      paymentInstrument = `cash-account:${accountId}`;
+    } else {
+      const card = this.ownedCard(input.userId, input.paymentSource.cardId);
+      if (!cardAllowsPurchasesOnDate(card, firstBillDate)) {
+        throw new Error(`${card.name} cannot fund purchases on or after its closure date`);
+      }
+      accountId = card.fundingAccountId;
+      destinationAccountId = card.fundingAccountId;
+      paymentMethod = 'credit-card';
+      cardId = card.id;
+      cardActivityTreatment = input.paymentSource.addToCardBalance
+        ? 'additional'
+        : 'included-in-cycle-total';
+      paymentInstrument = `credit-card:${card.id}`;
+    }
+
+    const existingEventRow = this.orm
+      .select()
+      .from(forecastEvents)
+      .where(and(eq(forecastEvents.id, input.eventId), eq(forecastEvents.userId, input.userId)))
+      .get();
+    const existingEvent = existingEventRow ? deserializeForecastEvent(existingEventRow) : undefined;
+    if (
+      existingEvent &&
+      (existingEvent.direction !== 'outflow' ||
+        !['direct-commitment', 'payable', 'baseline-spending'].includes(existingEvent.kind))
+    ) {
+      throw new Error('Only an existing bill or subscription can be edited here');
+    }
+
+    const bill = forecastEventSchema.parse({
+      ...(existingEvent ?? {}),
+      id: input.eventId,
+      userId: input.userId,
+      accountId,
+      date: firstBillDate,
+      kind: existingEvent?.kind ?? 'direct-commitment',
+      direction: 'outflow',
+      amountCents: input.amountCents,
+      certainty: input.certainty,
+      status: input.active ? 'planned' : 'cancelled',
+      label,
+      hypothetical: false,
+      accepted: false,
+      recurrenceRule: input.recurrenceRule,
+      recurrenceEndDate,
+      paymentMethod,
+      cardId,
+      cardActivityTreatment,
+      notes: input.notes?.trim() || undefined,
+      appliesAfterBalanceSnapshot: undefined,
+    });
+
+    const existingLinkedRows = this.orm
+      .select()
+      .from(receivables)
+      .where(eq(receivables.userId, input.userId))
+      .all()
+      .filter(
+        (row) =>
+          row.relatedExpenseId === input.eventId ||
+          (input.linkedReceivableId !== undefined && row.id === input.linkedReceivableId),
+      );
+    if (existingLinkedRows.length > 1) {
+      throw new Error('This bill has more than one linked Money Owed schedule');
+    }
+    const existingReceivable = existingLinkedRows[0]
+      ? deserializeReceivable(existingLinkedRows[0])
+      : undefined;
+    if (
+      existingReceivable?.relatedExpenseId &&
+      existingReceivable.relatedExpenseId !== input.eventId
+    ) {
+      throw new Error('The selected Money Owed schedule belongs to another expense');
+    }
+
+    return this.raw.transaction(() => {
+      this.upsertManagedEntity(input.userId, 'forecast-event', bill, {
+        asOfDate: plainDateSchema.parse(input.asOfDate),
+      });
+      let receivableId = existingReceivable?.id;
+      if (input.owedTreatment !== 'none') {
+        const owedAmountCents =
+          input.owedTreatment === 'reimbursable'
+            ? input.amountCents
+            : Math.round(input.amountCents / 2);
+        receivableId ??= input.linkedReceivableId ?? randomUUID();
+        const receivable = receivableSchema.parse({
+          ...(existingReceivable ?? {}),
+          id: receivableId,
+          userId: input.userId,
+          source: owedBy!,
+          description: label,
+          originalAmountCents: Math.max(
+            existingReceivable?.originalAmountCents ?? 0,
+            existingReceivable?.remainingAmountCents ?? 0,
+          ),
+          remainingAmountCents: existingReceivable?.remainingAmountCents ?? 0,
+          expectedDate: firstBillDate,
+          settlementDateConfirmed: false,
+          destinationAccountId,
+          certainty: input.certainty,
+          grossExpenseCents: input.amountCents,
+          userEconomicShareCents: input.amountCents - owedAmountCents,
+          relatedExpenseId: input.eventId,
+          paymentInstrument,
+          accrualAmountCents: input.active ? owedAmountCents : undefined,
+          accrualDate: input.active ? firstBillDate : undefined,
+          accrualRecurrenceRule: input.active ? input.recurrenceRule : undefined,
+          recurrenceEndDate: input.active ? recurrenceEndDate : undefined,
+          includeInCashForecast: false,
+          notes: input.notes?.trim() || undefined,
+        });
+        this.upsertManagedEntity(input.userId, 'receivable', receivable, {
+          asOfDate: plainDateSchema.parse(input.asOfDate),
+        });
+      } else if (existingReceivable) {
+        const stoppedReceivable = receivableSchema.parse({
+          ...existingReceivable,
+          accrualAmountCents: undefined,
+          accrualDate: undefined,
+          accrualRecurrenceRule: undefined,
+          recurrenceEndDate: undefined,
+        });
+        this.upsertManagedEntity(input.userId, 'receivable', stoppedReceivable, {
+          asOfDate: plainDateSchema.parse(input.asOfDate),
+        });
+      }
+      return { eventId: bill.id, receivableId };
+    })();
   }
 
   createInternalTransfer(input: {
@@ -5125,6 +5813,7 @@ export class BalanceBookStore {
         ? [
             ['forecast_events', 'account_id'],
             ['credit_cards', 'funding_account_id'],
+            ['credit_card_cycles', 'actual_payment_account_id'],
             ['loans', 'funding_account_id'],
             ['receivables', 'destination_account_id'],
             ['reconciliations', 'account_id'],
@@ -5141,10 +5830,13 @@ export class BalanceBookStore {
             ]
           : entityType === 'loan'
             ? [
+                ['forecast_events', 'source_record_id'],
                 ['committed_refinance_plans', 'replacement_loan_id'],
                 ['committed_refinance_payoffs', 'source_loan_id'],
               ]
-            : [];
+            : entityType === 'card-cycle'
+              ? [['forecast_events', 'source_record_id']]
+              : [];
     const hasRelinkedRefinanceAsset =
       entityType === 'asset' &&
       (
@@ -5183,12 +5875,17 @@ export class BalanceBookStore {
     if (!hasDependents) return;
     if (entityType === 'cash-account') {
       throw new Error(
-        'This cash account still has linked events, cards, loans, receivables, reconciliations, scenarios, or refinance plans. Move or delete those records first so no financial history is lost.',
+        'This cash account still has linked events, cards, loans, receivables, reconciliations, scenarios, refinance plans, or recorded statement payments. Move or delete those records first so no financial history is lost.',
       );
     }
     if (entityType === 'loan') {
       throw new Error(
-        'This loan belongs to committed refinance history. Cancel dependent plans where allowed; refinance lineage cannot be deleted.',
+        'This loan still has linked payment history or instructions, or belongs to committed refinance history. Keep the loan and mark it paid off, or remove unneeded future instructions first; recorded lineage cannot be deleted.',
+      );
+    }
+    if (entityType === 'card-cycle') {
+      throw new Error(
+        'This statement cycle still has linked payment history or instructions. Keep the statement, or remove an unneeded future payment instruction first so cash timing and statement lineage stay intact.',
       );
     }
     if (entityType === 'asset') {
@@ -5283,6 +5980,141 @@ export class BalanceBookStore {
 
   private assertOwnedLoan(userId: string, loanId: string): void {
     this.ownedLoan(userId, loanId);
+  }
+
+  private reconcileLoanPaymentInstructionsForEdit(input: {
+    userId: string;
+    previousLoan: Loan;
+    nextLoan: Loan;
+    asOfDate: PlainDateString;
+    timestamp: string;
+  }): LoanPaymentInstructionCascade[] {
+    const nextCashScheduleIsActive =
+      (input.nextLoan.status ?? 'active') === 'active' &&
+      input.nextLoan.includeInCashForecast !== false;
+    if (!nextCashScheduleIsActive) return [];
+
+    const linkedEvents = this.orm
+      .select()
+      .from(forecastEvents)
+      .where(
+        and(
+          eq(forecastEvents.userId, input.userId),
+          eq(forecastEvents.sourceRecordId, input.nextLoan.id),
+        ),
+      )
+      .all()
+      .map(deserializeForecastEvent)
+      .filter((event) => event.kind === 'loan-payment');
+    const cascades: LoanPaymentInstructionCascade[] = [];
+    const scheduleIdentity = (loan: Loan): string =>
+      JSON.stringify({
+        principalCents: loan.principalCents,
+        accruedInterestCents: loan.accruedInterestCents,
+        balanceDate: loan.balanceDate,
+        annualRateBasisPoints: loan.annualRateBasisPoints,
+        accrualConvention: loan.accrualConvention,
+        paymentCents: loan.paymentCents,
+        cashPaymentCents: loan.cashPaymentCents ?? loan.paymentCents,
+        nextPaymentDate: loan.nextPaymentDate,
+        maturityDate: loan.maturityDate,
+        originalDate: loan.originalDate,
+        amortizationStructure: loan.amortizationStructure,
+        expectedBalloonCents: loan.expectedBalloonCents,
+        paymentFrequency: loan.paymentFrequency ?? 'monthly',
+      });
+    const scheduleChanged =
+      scheduleIdentity(input.previousLoan) !== scheduleIdentity(input.nextLoan);
+    const cashScheduleActivated =
+      (input.previousLoan.status ?? 'active') !== 'active' ||
+      input.previousLoan.includeInCashForecast === false;
+
+    for (const event of linkedEvents) {
+      const firstFutureDate = firstFutureLoanPaymentOccurrence(event, input.asOfDate);
+      if (!firstFutureDate) continue;
+      const futureInstruction = forecastEventSchema.parse({ ...event, date: firstFutureDate });
+      const accountNeedsMigration = event.accountId !== input.nextLoan.fundingAccountId;
+
+      if (
+        (scheduleChanged || cashScheduleActivated || accountNeedsMigration) &&
+        (event.loanPaymentTreatment ?? 'scheduled-draft-override') === 'scheduled-draft-override'
+      ) {
+        try {
+          this.assertScheduledLoanDraftOccurrence(input.nextLoan, futureInstruction);
+        } catch (error) {
+          const detail =
+            error instanceof Error ? error.message : 'the new schedule is incompatible';
+          throw new Error(
+            `Cannot update ${input.nextLoan.name} while ${event.label} is still scheduled: ${detail}. Edit or cancel that future payment instruction first.`,
+            { cause: error },
+          );
+        }
+      }
+
+      if (!accountNeedsMigration) continue;
+      if (
+        event.recurrenceRule &&
+        event.recurrenceRule.frequency !== 'once' &&
+        loanPaymentInstructionHasHistory(event, input.asOfDate)
+      ) {
+        const futureEventId = randomUUID();
+        const futureEvent = forecastEventSchema.parse({
+          ...futureInstruction,
+          id: futureEventId,
+          accountId: input.nextLoan.fundingAccountId,
+        });
+        this.orm
+          .update(forecastEvents)
+          .set({
+            recurrenceEndDate:
+              firstFutureDate === input.asOfDate ? addDays(input.asOfDate, -1) : input.asOfDate,
+            updatedAt: input.timestamp,
+          })
+          .where(and(eq(forecastEvents.id, event.id), eq(forecastEvents.userId, input.userId)))
+          .run();
+        this.orm
+          .insert(forecastEvents)
+          .values({
+            ...serializeForecastEvent(futureEvent),
+            createdAt: input.timestamp,
+            updatedAt: input.timestamp,
+          })
+          .run();
+        cascades.push({
+          action: 'split',
+          eventId: event.id,
+          futureEventId,
+          fromAccountId: event.accountId,
+          toAccountId: input.nextLoan.fundingAccountId,
+          effectiveDate: firstFutureDate,
+        });
+      } else {
+        this.orm
+          .update(forecastEvents)
+          .set({ accountId: input.nextLoan.fundingAccountId, updatedAt: input.timestamp })
+          .where(and(eq(forecastEvents.id, event.id), eq(forecastEvents.userId, input.userId)))
+          .run();
+        cascades.push({
+          action: 'move',
+          eventId: event.id,
+          fromAccountId: event.accountId,
+          toAccountId: input.nextLoan.fundingAccountId,
+          effectiveDate: firstFutureDate,
+        });
+      }
+      this.orm
+        .update(importLineage)
+        .set({ destinationEditedAt: input.timestamp })
+        .where(
+          and(
+            eq(importLineage.userId, input.userId),
+            eq(importLineage.entityType, 'forecast-event'),
+            eq(importLineage.entityId, event.id),
+          ),
+        )
+        .run();
+    }
+    return cascades;
   }
 
   private ownedLoan(userId: string, loanId: string): Loan {

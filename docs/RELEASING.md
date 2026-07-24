@@ -12,7 +12,7 @@ Only the third is a public software release. Building an installer does not esta
 
 - Use a clean, reviewed source tree and the exact committed lock file.
 - Confirm the root and desktop package versions match the intended SemVer version.
-- Refuse to reuse a version or tag for different bytes. The current feature-release candidate is 1.1.2 and must not overwrite or rebuild an earlier artifact identity.
+- Refuse to reuse a version or tag for different bytes. The current feature-release candidate is 2.0.7 and must not overwrite or rebuild an earlier artifact identity.
 - Use the documented Node.js 24 and pnpm 11 toolchain.
 - Update project state, supported versions, third-party notices, changelog/release notes, and any changed backup or migration documentation.
 - Review dependency advisories and generate a production dependency-license inventory. Retain the exact result in [DEPENDENCY_REVIEW.md](DEPENDENCY_REVIEW.md).
@@ -24,7 +24,7 @@ Only the third is a public software release. Building an installer does not esta
 
 Do not make the existing development repository public merely because the current tree passes a privacy scan. The default scan covers the present tracked and staged tree. Publication additionally requires the fail-closed history mode, which rejects shallow repositories and scans every locally reachable path, blob, commit header/message, and annotated-tag message. Neither local mode alone proves the live GitHub ref set or release assets are clean.
 
-The first public source release must be created as a sanitized, clean-history public mirror or orphan-root repository after an explicit history and artifact review. Preserve the original development repository privately. Verify the mirror independently, push only the intended V1 root, and inspect it from a fresh clone before changing repository visibility. Update every package, issue, homepage, support, and vulnerability-reporting URL to the public mirror, and pin external GitHub Actions to reviewed immutable commit SHAs before enabling the public workflow.
+The first public source release must be created as a sanitized, clean-history public mirror or orphan-root repository after an explicit history and artifact review. Preserve the original development repository privately. Verify the mirror independently, push only the intended release root, and inspect it from a fresh clone before changing repository visibility. Update every package, issue, homepage, support, and vulnerability-reporting URL to the public mirror, and pin external GitHub Actions to reviewed immutable commit SHAs before enabling the public workflow.
 
 After the first private source commit is clean and reviewed, create the local one-root mirror without copying development history:
 
@@ -57,7 +57,7 @@ pnpm release:windows
 
 By default, the release script produces a two-binary candidate beneath `out\release-candidates\`. It does not claim that a private handoff is complete without an explicitly supplied backup path.
 
-The default complete-handoff lane is strict. When `-BackupPath` names an existing encrypted portable backup, it can create `local-releases\Balance Book V1 - <version>\` only from a clean tree after every release gate passes and both executables have valid Authenticode signatures. Its metadata and SHA-256 manifest remain outside the exact three-file folder under `local-releases\metadata\`. The backup is a private owner-transfer artifact and is never part of the public release.
+The default complete-handoff lane is strict. When `-BackupPath` names an existing encrypted portable backup, it creates `local-releases\Balance Book V<major> - <version>\` only from a clean tree after every release gate passes and both executables have valid Authenticode signatures. Its metadata and SHA-256 manifest remain outside the exact three-file folder under `local-releases\metadata\`. The backup is a private owner-transfer artifact and is never part of the public release.
 
 For owner testing when signing or the network audit is unavailable, use the separately labelled local lane:
 
@@ -69,7 +69,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-windows-release.
   -AllowUnsigned
 ```
 
-Add `-AllowDirty` only for a deliberately uncommitted local build. If an offline machine already has the frozen dependencies, `-SkipInstall` may be used; if the advisory service is unreachable, `-SkipAudit` may be used. Every skipped gate is written to external metadata, the result is marked `productionReady: false`, and the folder is named `local-releases\candidates\Balance Book V1 - <version> - LOCAL UNSIGNED CANDIDATE\`. Other skip switches are for reassembling already tested artifacts, not substitutes for testing.
+Add `-AllowDirty` only for a deliberately uncommitted local build. If an offline machine already has the frozen dependencies, `-SkipInstall` may be used; if the advisory service is unreachable, `-SkipAudit` may be used. Every skipped gate is written to external metadata, the result is marked `productionReady: false`, and the folder is named `local-releases\candidates\Balance Book V<major> - <version> - LOCAL UNSIGNED CANDIDATE\`. Other skip switches are for reassembling already tested artifacts, not substitutes for testing.
 
 `-AllowUnsigned`, `-AllowDirty`, and skipped gates cannot produce a public-production handoff. Never rename a local unsigned candidate to hide its status or publish it as a trusted release.
 
@@ -105,15 +105,15 @@ Automated packaged smoke is necessary but not sufficient. Before publication, va
 12. Reinstall and confirm the same profile and sign-in password still work.
 13. Separately perform a clean-data restore using the encrypted portable backup and a different destination sign-in password.
 14. Verify wrong-password, damaged-backup, newer-schema, and ownership-conflict failures do not partially replace data.
-15. Check database integrity, exact 1.1.2 version identity, and packaged legal notices after every transition.
+15. Check database integrity, exact 2.0.7 version identity, and packaged legal notices after every transition.
 
 The installer-smoke mutation mode intentionally refuses a Windows profile that already has an installation or app-data directory. Use a disposable account rather than risking real data.
 
 ## Public artifact contents
 
-A public GitHub release contains exactly the signed installer, signed uninstall helper, `SHA256SUMS.txt`, `RELEASE-METADATA.json`, `README-FIRST.txt`, project license, and third-party notices. The installed application must also retain the project MIT License plus applicable Electron, Chromium, and dependency notices. A public release must not include an encrypted or plaintext user backup, export, database, workbook, log, screenshot with private data, signing material, `.nupkg`, archive, or the private three-file handoff folder.
+A public GitHub release contains exactly the signed installer, signed uninstall helper, versioned full Squirrel `.nupkg`, `RELEASES`, `SHA256SUMS.txt`, `RELEASE-METADATA.json`, `README-FIRST.txt`, project license, and third-party notices. The `.nupkg` and `RELEASES` are machine-facing update assets and must never be presented as user installers. The installed application must also retain the project MIT License plus applicable Electron, Chromium, and dependency notices. A public release must not include an encrypted or plaintext user backup, export, database, workbook, log, screenshot with private data, signing material, archive, or the private three-file handoff folder.
 
-After building and signing from the public mirror, assemble that exact seven-file set outside both repositories:
+After building and signing from the public mirror, assemble that exact nine-file set outside both repositories:
 
 ```powershell
 pnpm public:release -- `
@@ -122,12 +122,22 @@ pnpm public:release -- `
   -PackagedExecutablePath "<signed packaged Balance Book.exe>" `
   -SquirrelArtifactDirectory "<folder containing Setup, full.nupkg, and RELEASES>" `
   -BuildMetadataPath "<candidate metadata JSON emitted by release:windows>" `
-  -OutputDirectory "C:\AI-Projects\Balance Book 1.1.2 - public release" `
+  -OutputDirectory "C:\AI-Projects\Balance Book 2.0.7 - public release" `
   -ExpectedPublisher "<exact certificate subject>" `
-  -ExpectedPublisherThumbprint "<certificate thumbprint>"
+  -ExpectedPublisherThumbprint "<certificate thumbprint>" `
+  -Channel beta
 ```
 
-The assembler refuses a dirty or non-`main` public tree, unsigned or wrong-version binaries, a wrong exact publisher subject or certificate thumbprint, missing timestamps, Squirrel package/setup/payload mismatches, an existing output directory, or an output path inside a repository. It emits canonical versioned filenames, checksums for every other asset, and metadata binding the installer, uninstall helper, packaged executable, Squirrel package, lock file, source commit, and source tree. Its metadata says only `artifactReady`; dependency, lifecycle, publication, and fresh-download gates still determine Published Status.
+The assembler refuses a dirty or non-`main` public tree, unsigned or wrong-version binaries, a wrong exact publisher subject or certificate thumbprint, missing timestamps, Squirrel package/setup/payload mismatches, an existing output directory, or an output path inside a repository. It emits canonical versioned filenames, an absolute immutable release URL in `RELEASES`, checksums for every other asset, and metadata binding the installer, uninstall helper, packaged executable, Squirrel package, channel, lock file, source commit, and source tree. Its metadata says only `artifactReady`; dependency, lifecycle, publication, and fresh-download gates still determine Published Status.
+
+## Signed beta and update feed
+
+The public clean-history repository owns two protected, manually dispatched workflows:
+
+- `release-beta.yml` builds from `main` with updates enabled, imports the trusted Authenticode certificate only inside the protected `public-release` environment, runs the complete release gate, signs and timestamps the packaged application before Squirrel packaging, signs Setup and the uninstall helper, assembles and attests all nine assets, verifies a fresh draft download, publishes an immutable prerelease, then deploys only its `RELEASES` feed to GitHub Pages.
+- `rollback-beta-feed.yml` accepts only an existing immutable beta tag, verifies the package SHA-1 and size named by its `RELEASES`, and redeploys that older feed. It never edits a release or creates new bytes. Squirrel does not downgrade an already newer installation.
+
+The protected environment requires `WINDOWS_CERTIFICATE_PFX_BASE64`, `WINDOWS_CERTIFICATE_PASSWORD`, `WINDOWS_EXPECTED_PUBLISHER`, and `WINDOWS_EXPECTED_PUBLISHER_THUMBPRINT`. Do not dispatch the beta workflow until immutable releases and GitHub Pages are enabled, those secrets identify a trusted timestamp-capable certificate, and a human reviewer approves the environment. An unsigned or self-signed bootstrap must not be published as the automatic-update starting point.
 
 ## Publish and record
 

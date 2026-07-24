@@ -6,12 +6,14 @@ import {
   assetSchema,
   cashAccountSchema,
   cashFloorPolicySchema,
+  defaultProfilePreferences,
   creditCardCycleSchema,
   creditCardSchema,
   committedRefinancePlanSchema,
   forecastEventSchema,
   loanSchema,
   maximumProfileAssetRecords,
+  storedProfilePreferencesSchema,
   receivableSchema,
   reconciliationSchema,
   rewardProgramSchema,
@@ -108,59 +110,90 @@ const managedEntityTypeSchema = z.enum([
   'committed-refinance-plan',
 ]);
 
-const portableProfileBackupSchema = z
+const portableProfileContentsShape = {
+  exportedAt: z.string().datetime(),
+  sourceAppVersion: z.string().min(1).max(64),
+  sourceSchemaVersion: z.number().int().positive().max(10_000),
+  onboardingDraft: z
+    .object({
+      values: z.record(z.string().min(1).max(64), z.string().max(500)),
+      updatedAt: z.string().datetime(),
+    })
+    .strict()
+    .nullable(),
+  policy: cashFloorPolicySchema.optional(),
+  accounts: z.array(cashAccountSchema).max(10_000),
+  events: z.array(forecastEventSchema).max(200_000),
+  cards: z.array(creditCardSchema).max(10_000),
+  cardCycles: z.array(creditCardCycleSchema).max(200_000),
+  loans: z.array(loanSchema).max(50_000),
+  committedRefinancePlans: z.array(committedRefinancePlanSchema).max(50_000).default([]),
+  receivables: z.array(receivableSchema).max(200_000),
+  assets: z.array(assetSchema).max(maximumProfileAssetRecords),
+  rewardPrograms: z.array(rewardProgramSchema).max(50_000),
+  reconciliations: z.array(reconciliationSchema).max(200_000),
+  savedScenarios: z.array(savedScenarioSchema).max(200_000),
+  auditEvents: z.array(portableAuditEventSchema).max(500_000),
+  importBatches: z.array(portableImportBatchSchema).max(100_000),
+  importLineage: z.array(portableImportLineageSchema).max(500_000),
+  recordTimestamps: z
+    .array(
+      z
+        .object({
+          entityType: managedEntityTypeSchema,
+          entityId: z.string().min(1).max(256),
+          createdAt: z.string().datetime(),
+          updatedAt: z.string().datetime(),
+        })
+        .strict(),
+    )
+    .max(500_000),
+  policyUpdatedAt: z.string().datetime().nullable(),
+};
+
+const portableProfileIdentityShape = {
+  id: z.string().min(1).max(128),
+  displayName: z.string().min(1).max(120),
+  username: z.string().min(1).max(128),
+  themePreference: z.enum(['system', 'light', 'dark']),
+  onboardingComplete: z.boolean(),
+};
+
+const portableProfileV3Schema = z
+  .object({
+    format: z.literal('balance-book-portable-profile'),
+    version: z.literal(3),
+    ...portableProfileContentsShape,
+    sourceProfile: z
+      .object({
+        ...portableProfileIdentityShape,
+        preferences: storedProfilePreferencesSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
+const portableProfileV2Schema = z
   .object({
     format: z.literal('balance-book-portable-profile'),
     version: z.literal(2),
-    exportedAt: z.string().datetime(),
-    sourceAppVersion: z.string().min(1).max(64),
-    sourceSchemaVersion: z.number().int().positive().max(10_000),
-    sourceProfile: z
-      .object({
-        id: z.string().min(1).max(128),
-        displayName: z.string().min(1).max(120),
-        username: z.string().min(1).max(128),
-        themePreference: z.enum(['system', 'light', 'dark']),
-        onboardingComplete: z.boolean(),
-      })
-      .strict(),
-    onboardingDraft: z
-      .object({
-        values: z.record(z.string().min(1).max(64), z.string().max(500)),
-        updatedAt: z.string().datetime(),
-      })
-      .strict()
-      .nullable(),
-    policy: cashFloorPolicySchema.optional(),
-    accounts: z.array(cashAccountSchema).max(10_000),
-    events: z.array(forecastEventSchema).max(200_000),
-    cards: z.array(creditCardSchema).max(10_000),
-    cardCycles: z.array(creditCardCycleSchema).max(200_000),
-    loans: z.array(loanSchema).max(50_000),
-    committedRefinancePlans: z.array(committedRefinancePlanSchema).max(50_000).default([]),
-    receivables: z.array(receivableSchema).max(200_000),
-    assets: z.array(assetSchema).max(maximumProfileAssetRecords),
-    rewardPrograms: z.array(rewardProgramSchema).max(50_000),
-    reconciliations: z.array(reconciliationSchema).max(200_000),
-    savedScenarios: z.array(savedScenarioSchema).max(200_000),
-    auditEvents: z.array(portableAuditEventSchema).max(500_000),
-    importBatches: z.array(portableImportBatchSchema).max(100_000),
-    importLineage: z.array(portableImportLineageSchema).max(500_000),
-    recordTimestamps: z
-      .array(
-        z
-          .object({
-            entityType: managedEntityTypeSchema,
-            entityId: z.string().min(1).max(256),
-            createdAt: z.string().datetime(),
-            updatedAt: z.string().datetime(),
-          })
-          .strict(),
-      )
-      .max(500_000),
-    policyUpdatedAt: z.string().datetime().nullable(),
+    ...portableProfileContentsShape,
+    sourceProfile: z.object(portableProfileIdentityShape).strict(),
   })
-  .strict();
+  .strict()
+  .transform((legacy): PortableProfileBackup => ({
+    ...legacy,
+    version: 3,
+    sourceProfile: {
+      ...legacy.sourceProfile,
+      // V2 historically treated any restored account set as completed onboarding. Preserve that
+      // compatibility during normalization; native V3 payloads keep their explicit flag exactly.
+      onboardingComplete: legacy.sourceProfile.onboardingComplete || legacy.accounts.length > 0,
+      preferences: defaultProfilePreferences,
+    },
+  }));
+
+const portableProfileBackupSchema = z.union([portableProfileV3Schema, portableProfileV2Schema]);
 
 export const parsePortableProfileBackup = (input: unknown): PortableProfileBackup =>
   portableProfileBackupSchema.parse(input);

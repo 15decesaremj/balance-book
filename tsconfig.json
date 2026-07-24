@@ -28,6 +28,7 @@
     "apps/**/*.tsx",
     "packages/**/*.ts",
     "tools/**/*.ts",
+    "tools/**/*.mts",
     "tests/**/*.ts",
     "*.ts"
   ]

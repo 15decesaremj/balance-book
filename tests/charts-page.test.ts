@@ -94,7 +94,7 @@ describe('Charts page', () => {
   it('loads both data sources and exposes accessible time, category, legend, and chart controls', async () => {
     render(createElement(ChartsPage));
 
-    await screen.findByRole('heading', { name: 'Charts' });
+    await screen.findByRole('heading', { name: 'Trends' });
     expect(window.balanceBook.listRecords).toHaveBeenCalledOnce();
     expect(window.balanceBook.getForecast).toHaveBeenCalledOnce();
     expect(screen.getByText(/12 months back · 12 months forward/i)).toBeVisible();
@@ -118,7 +118,7 @@ describe('Charts page', () => {
     fireEvent.click(checkingLegend);
     expect(cashCategory).toHaveAttribute('aria-pressed', 'true');
     expect(checkingLegend).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText(/missing history stays blank instead of being guessed/i)).toBeVisible();
+    expect(screen.getByText(/missing history stays blank/i)).toBeVisible();
 
     fireEvent.click(screen.getByText(/view chart data/i));
     expect(screen.getByRole('table', { name: 'Visible chart data' })).toBeVisible();

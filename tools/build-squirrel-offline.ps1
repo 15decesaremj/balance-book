@@ -65,6 +65,25 @@ if ($env:WINDOWS_CERTIFICATE_FILE -and -not (Test-Path -LiteralPath $env:WINDOWS
   throw 'WINDOWS_CERTIFICATE_FILE does not identify a readable certificate file.'
 }
 $signingConfigured = [bool] ($env:WINDOWS_CERTIFICATE_FILE -and $env:WINDOWS_CERTIFICATE_PASSWORD)
+$signTool = $null
+if ($signingConfigured) {
+  $windowsKitsBin = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+  $signTool = Get-ChildItem -LiteralPath $windowsKitsBin -Directory -ErrorAction Stop |
+    Sort-Object Name -Descending |
+    ForEach-Object { Join-Path $_.FullName 'x64\signtool.exe' } |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+    Select-Object -First 1
+  if (-not $signTool) { throw 'The Windows SDK x64 signtool.exe was not found.' }
+  & $signTool sign /fd SHA256 /td SHA256 /tr 'http://timestamp.digicert.com' /f $env:WINDOWS_CERTIFICATE_FILE /p $env:WINDOWS_CERTIFICATE_PASSWORD $appExecutable
+  if ($LASTEXITCODE -ne 0) { throw "Packaged application signing failed with exit code $LASTEXITCODE." }
+  $appSignature = Get-AuthenticodeSignature -LiteralPath $appExecutable
+  if (
+    $appSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+    -not $appSignature.TimeStamperCertificate
+  ) {
+    throw 'The packaged application did not retain a valid timestamped Authenticode signature.'
+  }
+}
 
 $stagingBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $stagingRoot = [System.IO.Path]::GetFullPath(
@@ -361,10 +380,6 @@ try {
     '--no-msi',
     '--no-delta'
   )
-  if ($signingConfigured) {
-    $signParameters = '/a /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f "{0}" /p "{1}"' -f ([System.IO.Path]::GetFullPath($env:WINDOWS_CERTIFICATE_FILE)), $env:WINDOWS_CERTIFICATE_PASSWORD
-    $squirrelArguments += @('--signWithParams', $signParameters)
-  }
   $savedSquirrelTemp = $env:SQUIRREL_TEMP
   try {
     $env:SQUIRREL_TEMP = Join-Path $stagingRoot 'squirrel-temp'
@@ -387,6 +402,10 @@ try {
     throw 'Squirrel did not create Setup.exe.'
   }
   Move-Item -LiteralPath $unfixedSetup -Destination $setupPath
+  if ($signingConfigured) {
+    & $signTool sign /fd SHA256 /td SHA256 /tr 'http://timestamp.digicert.com' /f $env:WINDOWS_CERTIFICATE_FILE /p $env:WINDOWS_CERTIFICATE_PASSWORD $setupPath
+    if ($LASTEXITCODE -ne 0) { throw "Setup signing failed with exit code $LASTEXITCODE." }
+  }
 
   $fullPackageName = "balance_book_mvp-$Version-full.nupkg"
   $fullPackagePath = Join-Path $releaseOutput $fullPackageName
@@ -410,6 +429,9 @@ try {
   $setupSignature = Get-AuthenticodeSignature -LiteralPath $setupPath
   if (-not $AllowUnsigned -and $setupSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
     throw "Offline Squirrel Setup requires a valid Authenticode signature; received $($setupSignature.Status)."
+  }
+  if (-not $AllowUnsigned -and -not $setupSignature.TimeStamperCertificate) {
+    throw 'Offline Squirrel Setup requires a trusted timestamp signature.'
   }
 
   New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null

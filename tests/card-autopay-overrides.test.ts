@@ -26,6 +26,12 @@ const account = cashAccountSchema.parse({
   transferDelayDays: 0,
 });
 
+const alternateAccount = cashAccountSchema.parse({
+  ...account,
+  id: 'synthetic-alternate-checking',
+  name: 'Synthetic alternate checking',
+});
+
 const card = (
   paymentTerms:
     | { paymentPolicy: 'full-statement' | 'manual' }
@@ -64,6 +70,66 @@ const cycle = (
   });
 
 describe('card autopay and dated payment overrides', () => {
+  it('posts a recorded statement payment only to the cash account actually used', () => {
+    const fullPayCard = card({ paymentPolicy: 'full-statement' });
+    const paidStatement = cycle('paid-from-alternate-account', '2032-02-15', {
+      opensOn: '2032-01-01',
+      closesOn: '2032-01-31',
+      state: 'paid',
+      actualActivityCents: 0,
+      lockedStatementCents: 10_000,
+      actualPaymentCents: 10_000,
+      actualPaymentAccountId: alternateAccount.id,
+    });
+
+    const payments = materializeForecastEvents({
+      accounts: [account, alternateAccount],
+      events: [],
+      cards: [fullPayCard],
+      cardCycles: [paidStatement],
+      loans: [],
+      startDate: '2032-02-01',
+      endDate: '2032-02-28',
+    }).filter((event) => event.kind === 'card-payment');
+
+    expect(payments).toEqual([
+      expect.objectContaining({
+        id: `card-payment-${paidStatement.id}`,
+        accountId: alternateAccount.id,
+        amountCents: 10_000,
+        status: 'paid',
+      }),
+    ]);
+
+    const legacyPayment = materializeForecastEvents({
+      accounts: [account, alternateAccount],
+      events: [],
+      cards: [fullPayCard],
+      cardCycles: [
+        cycle('legacy-paid-without-account', '2032-02-15', {
+          opensOn: '2032-01-01',
+          closesOn: '2032-01-31',
+          state: 'paid',
+          actualActivityCents: 0,
+          lockedStatementCents: 10_000,
+          actualPaymentCents: 10_000,
+        }),
+      ],
+      loans: [],
+      startDate: '2032-02-01',
+      endDate: '2032-02-28',
+    }).find((event) => event.kind === 'card-payment');
+    expect(legacyPayment?.accountId).toBe(fullPayCard.fundingAccountId);
+  });
+
+  it('rejects a recorded card-payment account on an unpaid statement cycle', () => {
+    expect(() =>
+      cycle('unpaid-with-actual-account', '2032-02-15', {
+        actualPaymentAccountId: alternateAccount.id,
+      }),
+    ).toThrow(/actual card payment account is only valid after the cycle is marked paid/i);
+  });
+
   it.each([
     {
       terms: { paymentPolicy: 'full-statement' as const },

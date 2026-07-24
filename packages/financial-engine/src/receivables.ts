@@ -4,6 +4,7 @@ import {
   enumerateDates,
   forecastEventSchema,
   moneyCentsSchema,
+  plainDateSchema,
   receivableSchema,
   type MoneyCents,
   type PlainDateString,
@@ -67,6 +68,18 @@ export interface DailyReceivableBalance {
     receivableId: string;
     source: string;
     description: string;
+    endingOutstandingCents: MoneyCents;
+  }>;
+  accruals: Array<{
+    receivableId: string;
+    occurrenceDate: PlainDateString;
+    source: string;
+    description: string;
+    cents: MoneyCents;
+  }>;
+  occurrences: Array<{
+    receivableId: string;
+    occurrenceDate: PlainDateString;
     endingOutstandingCents: MoneyCents;
   }>;
 }
@@ -430,6 +443,24 @@ export const projectReceivableBalances = (input: {
         description: receivable.description,
         endingOutstandingCents: balanceForReceivable(receivable.id),
       })),
+      accruals: (accrualsByDate.get(date) ?? []).map((accrual) => {
+        const receivable = receivableById.get(accrual.receivableId)!;
+        return {
+          receivableId: receivable.id,
+          occurrenceDate: accrual.occurrenceDate,
+          source: receivable.source,
+          description: receivable.description,
+          cents: moneyCentsSchema.parse(accrual.cents),
+        };
+      }),
+      occurrences: [...balanceBuckets.entries()].map(([key, cents]) => {
+        const separator = key.lastIndexOf('@');
+        return {
+          receivableId: key.slice(0, separator),
+          occurrenceDate: plainDateSchema.parse(key.slice(separator + 1)),
+          endingOutstandingCents: moneyCentsSchema.parse(cents),
+        };
+      }),
     };
   });
 };

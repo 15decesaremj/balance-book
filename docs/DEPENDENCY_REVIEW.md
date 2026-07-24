@@ -1,8 +1,8 @@
 # Production dependency review
 
-Reviewed: 2026-07-16
+Reviewed: 2026-07-22
 
-This record covers Balance Book 1.1.2 at lock-file SHA-256 `C1A3FAB48411CA4766973B22F49722826C796F34A68020FFA997B0F5184917FC`.
+This record covers Balance Book 2.0.1 at lock-file SHA-256 `C1A3FAB48411CA4766973B22F49722826C796F34A68020FFA997B0F5184917FC`.
 
 ## Advisory result
 

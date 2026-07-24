@@ -160,8 +160,8 @@ const cardActivityDates = (event: ForecastEvent, endDate: PlainDateString): Plai
  * owns each occurrence. The activity remains non-cash until the resulting card
  * payment, so it is represented once in the cash forecast. A cycle's manually
  * entered planned activity is treated as additional aggregate activity. Detailed
- * records are additive unless explicitly marked as already included in the cycle
- * total, and duplicate input occurrences are ignored by ID/date.
+ * purchase records are additive and card-credit records subtract from activity unless explicitly
+ * marked as already included in the cycle total. Duplicate occurrences are ignored by ID/date.
  */
 export const enrichCardCyclesWithActivities = (input: {
   cardCycles: CreditCardCycle[];
@@ -202,7 +202,6 @@ export const enrichCardCyclesWithActivities = (input: {
       activity.paymentMethod !== 'credit-card' ||
       !activity.cardId ||
       activity.cardActivityTreatment === 'included-in-cycle-total' ||
-      activity.direction !== 'outflow' ||
       activity.status === 'cancelled' ||
       activity.status === 'skipped' ||
       (activity.hypothetical && !activity.accepted)
@@ -236,7 +235,9 @@ export const enrichCardCyclesWithActivities = (input: {
           activity.status === 'confirmed' ||
           activity.status === 'paid');
       const additions = isPostedActual ? actualAdditions : plannedAdditions;
-      additions.set(cycle.id, (additions.get(cycle.id) ?? 0) + activity.amountCents);
+      const signedActivityCents =
+        activity.direction === 'outflow' ? activity.amountCents : -activity.amountCents;
+      additions.set(cycle.id, (additions.get(cycle.id) ?? 0) + signedActivityCents);
     }
   }
 
@@ -355,6 +356,45 @@ export interface ScheduledCardPayment {
   cycleId?: string;
 }
 
+export const effectiveCarryingBalanceAprBasisPoints = (rawCard: CreditCard): number | undefined => {
+  const card = creditCardSchema.parse(rawCard);
+  return card.promotionalCarryingBalance ? card.promotionalAprBasisPoints : card.aprBasisPoints;
+};
+
+/**
+ * Estimates one issuer-style monthly interest period on an already-carried balance. A zero balance
+ * is always zero even when APR is unknown; a positive balance without APR remains unavailable.
+ */
+export const estimatedMonthlyCardInterestCents = (input: {
+  card: CreditCard;
+  carryingBalanceCents: MoneyCents;
+}): MoneyCents | undefined => {
+  const carryingBalanceCents = moneyCentsSchema.nonnegative().parse(input.carryingBalanceCents);
+  if (carryingBalanceCents === 0) return 0;
+  const aprBasisPoints = effectiveCarryingBalanceAprBasisPoints(input.card);
+  if (aprBasisPoints === undefined) return undefined;
+  return moneyCentsSchema.parse(
+    new Decimal(carryingBalanceCents)
+      .mul(aprBasisPoints)
+      .div(10_000)
+      .div(12)
+      .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+      .toNumber(),
+  );
+};
+
+export const cardsForInterestForecast = (
+  cards: readonly CreditCard[],
+  profileEnabled: boolean,
+): CreditCard[] =>
+  cards.map((rawCard) => {
+    const card = creditCardSchema.parse(rawCard);
+    return creditCardSchema.parse({
+      ...card,
+      interestForecastEnabled: profileEnabled && card.interestForecastEnabled,
+    });
+  });
+
 /**
  * Rolls a revolving residual through future cycles. A real locked statement supersedes the prior
  * modeled carry because the issuer statement already contains it. Open/future cycle estimates are
@@ -365,6 +405,8 @@ export const projectCardDebtSchedule = (input: {
   card: CreditCard;
   cardCycles: CreditCardCycle[];
   asOfDate?: PlainDateString;
+  /** Off by default; callers must opt into this experimental projection. */
+  includeInterest?: boolean;
   openingCarryingBalance?: { cents: MoneyCents; asOfDate: PlainDateString };
   scheduledPayments?: readonly ScheduledCardPayment[];
   /** @deprecated Prefer dated `scheduledPayments`; retained for pure-model compatibility. */
@@ -463,16 +505,12 @@ export const projectCardDebtSchedule = (input: {
       balanceCreditCents = 0;
     }
     const interestOnCarryCents =
-      locked !== undefined || carryCents === 0 || card.aprBasisPoints === undefined
+      locked !== undefined ||
+      carryCents === 0 ||
+      input.includeInterest !== true ||
+      !card.interestForecastEnabled
         ? 0
-        : moneyCentsSchema.parse(
-            new Decimal(carryCents)
-              .mul(card.aprBasisPoints)
-              .div(10_000)
-              .div(12)
-              .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
-              .toNumber(),
-          );
+        : (estimatedMonthlyCardInterestCents({ card, carryingBalanceCents: carryCents }) ?? 0);
     const beforeCreditCents = moneyCentsSchema.parse(
       locked !== undefined
         ? locked
@@ -566,6 +604,18 @@ export interface CardSpendingPowerDay {
   }>;
 }
 
+export const lowestTotalPositionFromDate = (
+  days: ReadonlyArray<Pick<CardSpendingPowerDay, 'date' | 'totalPositionCents'>>,
+  startDate: PlainDateString,
+): MoneyCents | undefined =>
+  days
+    .filter((day) => compareDates(day.date, startDate) >= 0)
+    .reduce<(typeof days)[number] | undefined>(
+      (lowest, day) =>
+        !lowest || day.totalPositionCents < lowest.totalPositionCents ? day : lowest,
+      undefined,
+    )?.totalPositionCents;
+
 export interface CardSpendingPower {
   cardId: string;
   cardName: string;
@@ -579,6 +629,11 @@ export interface CardSpendingPower {
   currentCycleClosesOn?: PlainDateString;
   /** Earliest unresolved contractual due date. This is not the modeled cash-settlement date. */
   nextDueOn?: PlainDateString;
+  /** Lowest total cash plus open receivables from the cycle after today's purchase-bearing cycle. */
+  nextStatementDueOn?: PlainDateString;
+  nextStatementPositionCents?: MoneyCents;
+  /** Purchase-advisor scenarios require a policy that maps new spending to a known cash payment. */
+  purchaseAdvisorEligible: boolean;
   currentCyclePaymentOn?: PlainDateString;
   spendingPowerCents: MoneyCents;
   cashBackedCapacityCents: MoneyCents;
@@ -767,6 +822,13 @@ export const calculateCardSpendingPower = (input: {
             compareDates(cycle.opensOn, input.asOfDate) <= 0 &&
             compareDates(cycle.closesOn, input.asOfDate) >= 0,
         ) ?? cycles.find((cycle) => compareDates(cycle.opensOn, input.asOfDate) > 0);
+      const nextStatementCycle = currentCycle
+        ? cycles.find((cycle) => compareDates(cycle.dueOn, currentCycle.dueOn) > 0)
+        : undefined;
+      const nextStatementDueOn = nextStatementCycle?.dueOn;
+      const nextStatementPositionCents = nextStatementDueOn
+        ? lowestTotalPositionFromDate(daysInDateOrder, nextStatementDueOn)
+        : undefined;
       if (!currentCycle) {
         const positionLow = daysInDateOrder.reduce((lowest, day) =>
           day.totalPositionCents < lowest.totalPositionCents ? day : lowest,
@@ -790,6 +852,7 @@ export const calculateCardSpendingPower = (input: {
           statementState: statement?.state,
           currentCycleAmountCents: 0,
           nextDueOn,
+          purchaseAdvisorEligible: card.paymentPolicy === 'full-statement',
           spendingPowerCents: 0,
           cashBackedCapacityCents: 0,
           spendingPowerStatus: overdueStatementWithUnknownTiming
@@ -813,6 +876,24 @@ export const calculateCardSpendingPower = (input: {
       }
       const runwayStartDate = currentCycle.dueOn;
       const paymentDate = currentCycle.paymentOn ?? currentCycle.dueOn;
+      const hasExplicitPaydownThroughCurrentDue = (input.cardActivities ?? []).some((rawEvent) => {
+        const event = forecastEventSchema.parse(rawEvent);
+        const targetsCurrentCycle =
+          event.sourceRecordId === currentCycle.id ||
+          (event.sourceRecordId === undefined &&
+            compareDates(event.date, currentCycle.closesOn) > 0);
+        return (
+          event.cardId === card.id &&
+          event.kind === 'card-payment' &&
+          event.paymentMethod === 'cash-account' &&
+          event.direction === 'outflow' &&
+          event.status !== 'cancelled' &&
+          event.status !== 'skipped' &&
+          targetsCurrentCycle &&
+          compareDates(event.date, input.asOfDate) >= 0 &&
+          compareDates(event.date, paymentDate) <= 0
+        );
+      });
       const paymentDateDay = daysInDateOrder.find((day) => day.date === paymentDate);
       const runwayEligibleDays = daysInDateOrder.filter(
         (day) => compareDates(day.date, runwayStartDate) >= 0,
@@ -914,7 +995,8 @@ export const calculateCardSpendingPower = (input: {
       const spendingPowerStatus: CardSpendingPower['spendingPowerStatus'] =
         overdueStatementWithUnknownTiming
           ? 'indeterminate-overdue-payment-timing'
-          : card.paymentPolicy !== 'full-statement'
+          : card.paymentPolicy !== 'full-statement' &&
+              !(card.paymentPolicy === 'manual' && hasExplicitPaydownThroughCurrentDue)
             ? 'indeterminate-payment-policy'
             : runwayEligibleDays.length === 0 || paymentEligibleDays.length === 0
               ? 'indeterminate-payment-outside-horizon'
@@ -945,6 +1027,9 @@ export const calculateCardSpendingPower = (input: {
         currentCycleAmountCents: projectedCycleObligation(card, currentCycle),
         currentCycleClosesOn: currentCycle.closesOn,
         nextDueOn,
+        nextStatementDueOn,
+        nextStatementPositionCents,
+        purchaseAdvisorEligible: card.paymentPolicy === 'full-statement',
         currentCyclePaymentOn: currentCycle.paymentOn ?? currentCycle.dueOn,
         spendingPowerCents: moneyCentsSchema.parse(spendingPowerCents),
         cashBackedCapacityCents: moneyCentsSchema.parse(cashBackedCapacityCents),

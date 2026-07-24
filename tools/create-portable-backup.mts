@@ -33,7 +33,7 @@ const containsCredentialMaterial = (value: unknown): boolean => {
 
 const databasePath = path.resolve(argument('--database')!);
 const outputPath = path.resolve(argument('--output')!);
-const sourceVersion = argument('--source-version', false) ?? '1.1.2';
+const sourceVersion = argument('--source-version', false) ?? '1.1.9';
 const requestedProfileId = argument('--profile-id', false);
 const readPassword = async (): Promise<string> => {
   if (process.env.BALANCE_BOOK_BACKUP_PASSWORD) return process.env.BALANCE_BOOK_BACKUP_PASSWORD;

@@ -238,7 +238,9 @@ export const buildForecast = (input: {
         compareDates(event.date, endDate) <= 0 &&
         // A dated opening balance already includes activity through its as-of date.
         // Earlier events are history for that account, not forecast movements.
-        compareDates(event.date, accountsById.get(event.accountId)!.balanceAsOf) > 0 &&
+        (compareDates(event.date, accountsById.get(event.accountId)!.balanceAsOf) > 0 ||
+          (event.appliesAfterBalanceSnapshot === true &&
+            event.date === accountsById.get(event.accountId)!.balanceAsOf)) &&
         shouldIncludeEvent(
           event,
           input.mode,

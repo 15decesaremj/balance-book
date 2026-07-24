@@ -23,6 +23,7 @@ Balance Book does not claim to defend its live database from a Windows administr
 4. **File selection and import/restore:** untrusted workbook, JSON, CSV, and encrypted-backup bytes enter through user-selected paths.
 5. **Export and backup destinations:** sensitive output leaves the app-data directory for a user-selected filesystem location.
 6. **Build and distribution:** source, dependencies, native modules, signing material, installer, and checksums move through the release workflow.
+7. **Signed update channel:** an update-enabled main process reads a fixed HTTPS feed and immutable GitHub release package; profile data must never cross this boundary.
 
 ## Relevant attackers and failures
 
@@ -32,12 +33,13 @@ Balance Book does not claim to defend its live database from a Windows administr
 - a malicious spreadsheet value attempting formula execution when CSV is opened elsewhere;
 - a stolen backup or accidentally published plaintext export;
 - a dependency, build host, or release artifact compromised through the supply chain;
+- a mutable, rolled-back, wrongly signed, or tampered update feed/package;
 - power loss, disk error, interrupted migration, or interrupted backup creation;
 - an incorrect financial rule that produces optimistic guidance despite valid data.
 
 ## Existing controls
 
-- No telemetry, cloud backend, bank synchronization, advertising, remote content, or automatic money movement.
+- No telemetry, cloud backend, bank synchronization, advertising, arbitrary remote content, or automatic money movement.
 - Electron context isolation, renderer sandboxing, disabled Node integration, a narrow preload surface, typed and validated IPC, sender-origin validation, denied permission requests, denied unexpected navigation/new windows, denied webviews, a custom local application protocol, restrictive production CSP, and hardened Electron fuses.
 - Profile ownership on database reads and writes, password hashing with per-password salt, login throttling, foreign keys, transactions, versioned migrations, WAL-consistent snapshots, and audit events.
 - Exact integer-cent money handling, timezone-free financial dates, deterministic scheduling, conservative unknown-timing behavior, and tests across engine, domain, database, contracts, accessibility, and packaged application boundaries.
@@ -45,6 +47,8 @@ Balance Book does not claim to defend its live database from a Windows administr
 - CSV text that could be interpreted as a spreadsheet formula is escaped.
 - Generated databases, workbooks, exports, backups, screenshots, signing files, and local release folders are ignored and rejected by privacy checks when tracked.
 - Release signing hooks, stable update identity, checksum generation, and a fresh-install validation workflow.
+- Update-enabled builds use fixed GitHub-hosted channel URLs, immutable release assets, delayed and deduplicated checks, explicit Beta/Stable preference, offline-safe failure handling, unsaved-form refusal, and a WAL-checkpointed recovery snapshot whose SQLite integrity is verified before restart. Unsigned owner-test builds compile the update path off.
+- Post-update metadata is strictly bounded to version, release name/notes, and time; it cannot carry profile or financial fields. The one-time confirmation is local and dismissible.
 
 ## Residual risks
 
@@ -55,6 +59,7 @@ Balance Book does not claim to defend its live database from a Windows administr
 - Privacy scanning cannot prove that source history, external caches, issue attachments, release assets, or screenshots are clean.
 - Code signing does not make code safe; it identifies the signer and detects post-signing modification.
 - Dependency advisories and license metadata change over time and require review for every release.
+- GitHub availability can delay update checks. A compromised publisher signing key or protected release environment could still authorize malicious bytes; certificate protection, environment approval, immutable releases, provenance, rollback-only feed controls, and independent verification reduce but do not eliminate that risk.
 - Financial modeling defects can be safety defects. Spending-power output is guidance based on entered assumptions, not a guarantee that funds or credit will be available.
 
 ## Required abuse-case tests
@@ -68,7 +73,8 @@ Balance Book does not claim to defend its live database from a Windows administr
 - path traversal and unsafe filenames in every file-producing flow;
 - incomplete card timing, stale issuer snapshots, incorrect paid-in-full carrying state, underconstrained or contradictory loan facts, hidden maturity balloons, misclassified extra principal, double-counted transfers, uncertain receivables, and other cases that could overstate safe spending or understate debt;
 - unsigned, wrongly signed, tampered, or checksum-mismatched release artifacts.
+- duplicate update checks, first-run installer lock, offline checks, deferred restart, unsaved forms, failed recovery snapshots, interrupted update, same-version launch, malformed post-update metadata, channel changes, immutable-feed rollback, and refusal by an older binary to open a newer database schema.
 
 ## Review triggers
 
-Update this threat model before adding networking, bank connectivity, telemetry, remote content, auto-update, cloud backup, shared accounts, password recovery, new import formats, new cryptography, new native modules, a changed installer identity, or any feature that moves money or sends data off the device.
+Update this threat model before changing the fixed update hosts or metadata, adding bank connectivity, telemetry, arbitrary remote content, cloud backup, shared accounts, password recovery, new import formats, new cryptography, new native modules, a changed installer identity, or any feature that moves money or sends profile data off the device.

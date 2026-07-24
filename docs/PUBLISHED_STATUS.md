@@ -14,7 +14,7 @@
 3. The public default branch, release tag, package versions, changelog, and release artifacts identify one exact source version.
 4. Public links in package metadata, support, security, issue templates, installation documentation, and release notes point to the public mirror.
 5. Formatting, lint, type checks, synthetic tests, privacy checks, dependency review, package smoke, and the complete Electron journey have current evidence from the public tree.
-6. Public release assets are exactly the installer, uninstall helper, `SHA256SUMS.txt`, `RELEASE-METADATA.json`, `README-FIRST.txt`, license, and third-party notices. Release notes belong in the reviewed GitHub release body, not an eighth asset. The release never contains a workbook, database, export, screenshot, log, backup, certificate, signing secret, private handoff, `.nupkg`, or local release metadata.
+6. Public release assets are exactly the signed installer, signed uninstall helper, versioned full Squirrel `.nupkg`, `RELEASES`, `SHA256SUMS.txt`, `RELEASE-METADATA.json`, `README-FIRST.txt`, license, and third-party notices. The `.nupkg` and `RELEASES` are machine-facing update assets, not user installers. Release notes belong in the reviewed GitHub release body. The release never contains a workbook, database, export, screenshot, log, backup, certificate, signing secret, private handoff, archive, or local release metadata.
 7. `READY` additionally requires valid Authenticode signatures from the expected publisher on the installer, installed executable, and uninstall helper.
 8. The exact assets are downloaded again from GitHub, hashes and signatures are rechecked, and a disposable Windows profile completes install, launch, blank onboarding, restart, uninstall, preserved-data reinstall, and clean restore testing.
 9. File Explorer is left open to a plainly named folder containing only the verified public downloads.
@@ -40,9 +40,9 @@ To restore the original profile after the test, close Balance Book, move the new
 
 These steps become active only after the complete Published Status workflow reports `READY` and the linked release has been downloaded and verified.
 
-1. Open the [latest stable Balance Book release](https://github.com/15decesaremj/balance-book/releases/latest). This link is not an active install source until Published Status is `READY`.
+1. Open the [latest stable Balance Book release](https://github.com/15decesaremj/balance-book/releases/latest). Beta testers use the explicitly reviewed `v<version>-beta` prerelease link instead. Neither is an active install source until the matching Published Status run is `READY`.
 2. Expand **Assets**.
-3. Download all seven reviewed assets: `Balance-Book-<version>-Setup.exe`, `Uninstall-Balance-Book-<version>.exe`, `SHA256SUMS.txt`, `RELEASE-METADATA.json`, `README-FIRST.txt`, `LICENSE.txt`, and `THIRD_PARTY_NOTICES.txt`. The versioned executable names must match the exact latest stable release shown by GitHub; do not download GitHub’s automatically generated **Source code** archives as the installer.
+3. For a normal install, download `Balance-Book-<version>-Setup.exe`. Published Status independently downloads and validates all nine reviewed assets: Setup, uninstall helper, the exact versioned `.nupkg`, `RELEASES`, `SHA256SUMS.txt`, `RELEASE-METADATA.json`, `README-FIRST.txt`, `LICENSE.txt`, and `THIRD_PARTY_NOTICES.txt`. Never run the `.nupkg` and do not use GitHub’s automatically generated **Source code** archives as the installer.
 4. The Published Status handoff leaves File Explorer open to a folder freshly downloaded and checksum-checked by the release checker. Open `README-FIRST.txt` and note its exact publisher name and certificate thumbprint. Right-click the Setup file, choose **Properties → Digital Signatures**, select that exact publisher, choose **Details**, and confirm Windows says the signature is OK. Then choose **View Certificate → Details → Thumbprint** and compare it with the README value; display spaces and letter case do not matter. Stop if any identity differs, the signature is absent, or Windows blocks the installer.
 5. Double-click the verified Setup file.
 6. Launch Balance Book from the Start menu or desktop shortcut.
@@ -59,7 +59,8 @@ pnpm published:status -- `
   -ReleaseDirectory "C:\AI-Projects\Balance Book - fresh public download" `
   -ExpectedPublisher "<exact certificate subject>" `
   -ExpectedPublisherThumbprint "<certificate thumbprint>" `
-  -InstalledExecutable "<installed Balance Book.exe path>"
+  -InstalledExecutable "<installed Balance Book.exe path>" `
+  -Channel beta
 ```
 
 The release directory must not already contain files: the checker downloads the exact GitHub assets itself, then compares names, sizes, hashes, versions, tag/commit identity, repository parity, privacy rules, full source verification, signatures, and versioned GitHub release notes. It reports only whether those automated gates passed. A pass is necessary but cannot by itself establish `READY`; the dependency/license and release-body review plus recorded disposable-profile lifecycle remain mandatory.

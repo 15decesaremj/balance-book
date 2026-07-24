@@ -87,20 +87,55 @@ describe('scenario evaluation lifecycle guard', () => {
     );
   });
 
-  it('uses immediate and completed-save locks with cleanup in a finally block', () => {
+  it('uses one immediate action lock plus completed-save identity with cleanup in finally', () => {
     const start = appSource.indexOf('const saveScenario = async');
     const end = appSource.indexOf('\n  type SavedScenario', start);
     const saveSource = appSource.slice(start, end);
 
-    expect(saveSource).toContain('saveScenarioLockRef.current === evaluatedInputKey');
     expect(saveSource).toContain('evaluatedInputKey !== currentEvaluationKey');
     expect(saveSource).toContain('savedEvaluationKey === evaluatedInputKey');
-    expect(saveSource).toContain('saveScenarioLockRef.current = evaluationKeySnapshot');
-    expect(saveSource).toContain('savedSuccessfully = true');
+    expect(saveSource).toContain("const action = 'save-evaluated-scenario'");
+    expect(saveSource).toContain('if (!beginScenarioAction(action)) return');
     expect(saveSource).toContain('finally');
-    expect(saveSource).toContain('saveScenarioLockRef.current = null');
+    expect(saveSource).toContain('finishScenarioAction(action)');
+    expect(appSource).toContain('if (!scenarioActionLock.acquire(action)) return false');
+    expect(appSource).toContain('if (scenarioActionLock.active() !== action) return');
+    expect(appSource).toContain('scenarioActionLock.release(action)');
     expect(appSource).toContain('onChange={invalidateScenarioEvaluation}');
     expect(appSource).toContain("? 'Saving scenario...'\n");
     expect(appSource).toContain("? 'Scenario saved'\n");
+  });
+
+  it('serializes purchase evaluation with every saved-scenario action', () => {
+    const start = appSource.indexOf('const submit = form.handleSubmit');
+    const end = appSource.indexOf('\n  const saveScenario = async', start);
+    const submitSource = appSource.slice(start, end);
+
+    expect(submitSource).toContain("const action = 'evaluate-scenario'");
+    expect(submitSource).toContain('if (!beginScenarioAction(action)) return');
+    expect(submitSource).toContain('finally');
+    expect(submitSource).toContain('finishScenarioAction(action)');
+    expect(appSource).toContain(
+      "scenarioAction === 'evaluate-scenario' ? 'Evaluating…' : 'Evaluate purchase'",
+    );
+  });
+
+  it('routes every saved-scenario action through the same lock and visible busy state', () => {
+    for (const handler of [
+      'saveScenarioRecord',
+      'evaluateSavedScenarios',
+      'duplicateScenario',
+      'convertScenario',
+      'deleteScenario',
+    ]) {
+      const start = appSource.indexOf(`const ${handler} = async`);
+      const end = appSource.indexOf('\n  };', start);
+      const source = appSource.slice(start, end);
+      expect(source).toContain('beginScenarioAction(action)');
+      expect(source).toContain('catch (caught: unknown)');
+      expect(source).toContain('finally');
+      expect(source).toContain('finishScenarioAction(action)');
+    }
+    expect(appSource).toContain('disabled={scenarioControlsBusy}');
   });
 });

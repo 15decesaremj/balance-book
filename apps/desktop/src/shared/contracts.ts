@@ -14,6 +14,7 @@ import {
   loanInputSchema,
   loanSchema,
   plainDateSchema,
+  profilePreferencesSchema,
   recurrenceRuleSchema,
   receivableInputSchema,
   receivableSchema,
@@ -27,6 +28,7 @@ import {
 
 export const themePreferenceSchema = z.enum(['system', 'light', 'dark']);
 export type ThemePreference = z.infer<typeof themePreferenceSchema>;
+export type ProfilePreferencesDto = z.infer<typeof profilePreferencesSchema>;
 
 export const profileSummarySchema = z.object({
   id: z.string().min(1),
@@ -40,6 +42,7 @@ export type ProfileSummaryDto = z.infer<typeof profileSummarySchema>;
 export const sessionSchema = z.object({
   profile: profileSummarySchema,
   themePreference: themePreferenceSchema,
+  preferences: profilePreferencesSchema,
 });
 export type SessionDto = z.infer<typeof sessionSchema>;
 
@@ -227,6 +230,7 @@ export const displayStateForForecastEvent = (
 export const forecastDailyEventSchema = z
   .object({
     id: z.string(),
+    sourceRecordId: z.string().optional(),
     label: z.string(),
     accountName: z.string(),
     amountCents: z.number().int().nonnegative().safe(),
@@ -249,6 +253,7 @@ export const forecastDailyEventSchema = z
       });
     }
   });
+export type ForecastDailyEventDto = z.infer<typeof forecastDailyEventSchema>;
 
 export const dailyCashPointSchema = z.object({
   date: plainDateSchema,
@@ -260,6 +265,8 @@ export const dailyCashPointSchema = z.object({
   expectedReceivableCents: z.number().int().nonnegative().safe(),
   conservativePositionCents: z.number().int().safe(),
   expectedPositionCents: z.number().int().safe(),
+  conservativeNetWorthCents: z.number().int().safe().optional(),
+  expectedNetWorthCents: z.number().int().safe().optional(),
   accountBalances: z.array(
     z.object({
       accountId: z.string(),
@@ -286,6 +293,9 @@ const cardSpendingPowerSchema = z.array(
     currentCycleAmountCents: z.number().int().safe(),
     currentCycleClosesOn: plainDateSchema.optional(),
     nextDueOn: plainDateSchema.optional(),
+    nextStatementDueOn: plainDateSchema.optional(),
+    nextStatementPositionCents: z.number().int().safe().optional(),
+    purchaseAdvisorEligible: z.boolean(),
     currentCyclePaymentOn: plainDateSchema.optional(),
     spendingPowerCents: z.number().int().nonnegative().safe(),
     cashBackedCapacityCents: z.number().int().nonnegative().safe(),
@@ -345,6 +355,10 @@ const cardSpendingPowerSchema = z.array(
 const revolvingDebtByCardSchema = z.array(
   z.object({
     cardId: z.string(),
+    reportedBalanceCents: z.number().int().nonnegative().safe().optional(),
+    reportedBalanceDate: plainDateSchema.optional(),
+    calculatedThroughDate: plainDateSchema.optional(),
+    postSourceActivityCents: z.number().int().safe().optional(),
     latestStatementCents: z.number().int().nonnegative().safe(),
     latestStatementDate: plainDateSchema.optional(),
     amountCurrentlyDueCents: z.number().int().nonnegative().safe(),
@@ -407,6 +421,11 @@ export const forecastSnapshotSchema = z.object({
   currentAllCashCents: z.number().int().safe().optional(),
   currentReceivableCents: z.number().int().nonnegative().safe().optional(),
   currentTotalPositionCents: z.number().int().safe().optional(),
+  longRunMonthlyFreeCashFlowCents: z.number().int().safe().optional(),
+  longRunMonthlyScheduledCardPaymentCents: z.number().int().nonnegative().safe().optional(),
+  longRunMonthlyBeforeScheduledCardPaymentCents: z.number().int().safe().optional(),
+  longRunCashFlowWindowStart: plainDateSchema.optional(),
+  longRunCashFlowWindowEnd: plainDateSchema.optional(),
   conservativePositionLowCents: z.number().int().safe().optional(),
   conservativePositionLowDate: plainDateSchema.optional(),
   expectedPositionLowCents: z.number().int().safe().optional(),
@@ -426,6 +445,10 @@ export const forecastSnapshotSchema = z.object({
         id: z.string(),
         name: z.string(),
         balanceCents: z.number().int().safe(),
+        sourceBalanceCents: z.number().int().safe().optional(),
+        sourceBalanceDate: plainDateSchema.optional(),
+        calculatedThroughDate: plainDateSchema.optional(),
+        postSourceChangeCents: z.number().int().safe().optional(),
         hardFloorCents: z.number().int().nonnegative().safe(),
         preferredFloorCents: z.number().int().nonnegative().safe().optional(),
         showOnOverview: z.boolean().optional(),
@@ -517,6 +540,7 @@ export const scenarioResponseSchema = z.object({
   afterTroughCents: z.number().int().safe(),
   afterHardFloorMarginCents: z.number().int().safe(),
   afterAvailableToDeployCents: z.number().int().nonnegative().safe(),
+  resultingAvailableSpendCents: z.number().int().nonnegative().safe().optional(),
   accountShortfallCount: z.number().int().nonnegative(),
   transferNeeds: transferNeedsSchema,
   fundingAccountName: z.string(),
@@ -539,6 +563,9 @@ export const scenarioResponseSchema = z.object({
   baselineCardPaymentCents: z.number().int().nonnegative().safe().optional(),
   afterPurchaseCardPaymentCents: z.number().int().nonnegative().safe().optional(),
   incrementalCashPaymentCents: z.number().int().nonnegative().safe().optional(),
+  owningStatementClosesOn: plainDateSchema.optional(),
+  followingStatementDueOn: plainDateSchema.optional(),
+  followingStatementPositionCents: z.number().int().safe().optional(),
 });
 export type ScenarioResponseDto = z.infer<typeof scenarioResponseSchema>;
 
@@ -560,6 +587,112 @@ export const receivableSettlementRequestSchema = z
   })
   .strict();
 export type ReceivableSettlementRequest = z.infer<typeof receivableSettlementRequestSchema>;
+export const unattributedReceivableSettlementRequestSchema = z
+  .object({
+    amountCents: z.number().int().positive().safe(),
+    date: plainDateSchema,
+    destinationAccountId: z.string().min(1).max(128),
+  })
+  .strict();
+export type UnattributedReceivableSettlementRequest = z.infer<
+  typeof unattributedReceivableSettlementRequestSchema
+>;
+export const overviewExpenseRequestSchema = z
+  .object({
+    paymentSource: z.discriminatedUnion('kind', [
+      z
+        .object({
+          kind: z.literal('cash-account'),
+          accountId: z.string().min(1).max(128),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal('credit-card'),
+          cardId: z.string().min(1).max(128),
+        })
+        .strict(),
+    ]),
+    amountCents: z.number().int().positive().safe(),
+    date: plainDateSchema,
+    label: z.string().trim().min(1).max(240),
+    notes: z.string().trim().max(1000).optional(),
+    owedTreatment: z.enum(['none', 'reimbursable', 'shared']),
+    owedBy: z.string().trim().min(1).max(120).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.owedTreatment !== 'none' && !input.owedBy) {
+      context.addIssue({
+        code: 'custom',
+        path: ['owedBy'],
+        message: 'Enter who owes this amount',
+      });
+    }
+    if (input.owedTreatment === 'none' && input.owedBy !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['owedBy'],
+        message: 'An owed-by name is only valid for a reimbursable or shared expense',
+      });
+    }
+  });
+export type OverviewExpenseRequest = z.infer<typeof overviewExpenseRequestSchema>;
+export const billPlanRequestSchema = z
+  .object({
+    eventId: z.string().min(1).max(128),
+    linkedReceivableId: z.string().min(1).max(128).optional(),
+    paymentSource: z.discriminatedUnion('kind', [
+      z
+        .object({
+          kind: z.literal('cash-account'),
+          accountId: z.string().min(1).max(128),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal('credit-card'),
+          cardId: z.string().min(1).max(128),
+          addToCardBalance: z.boolean().default(false),
+        })
+        .strict(),
+    ]),
+    amountCents: z.number().int().positive().safe(),
+    firstBillDate: plainDateSchema,
+    label: z.string().trim().min(1).max(240),
+    recurrenceRule: recurrenceRuleSchema,
+    recurrenceEndDate: plainDateSchema.optional(),
+    certainty: z.enum(['confirmed', 'expected', 'uncertain']).default('confirmed'),
+    active: z.boolean().default(true),
+    notes: z.string().trim().max(1000).optional(),
+    owedTreatment: z.enum(['none', 'reimbursable', 'shared']),
+    owedBy: z.string().trim().min(1).max(120).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.recurrenceEndDate && input.recurrenceEndDate < input.firstBillDate) {
+      context.addIssue({
+        code: 'custom',
+        path: ['recurrenceEndDate'],
+        message: 'Bill schedule end cannot precede its first date',
+      });
+    }
+    if (input.owedTreatment !== 'none' && !input.owedBy) {
+      context.addIssue({
+        code: 'custom',
+        path: ['owedBy'],
+        message: 'Enter who owes this amount',
+      });
+    }
+    if (input.owedTreatment === 'none' && input.owedBy !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['owedBy'],
+        message: 'An owed-by name is only valid for a reimbursable or shared bill',
+      });
+    }
+  });
+export type BillPlanRequest = z.infer<typeof billPlanRequestSchema>;
 export const internalTransferRequestSchema = z
   .object({
     sourceAccountId: z.string().min(1).max(128),
@@ -591,6 +724,45 @@ export type InternalTransferRequest = z.infer<typeof internalTransferRequestSche
 export const setThemeRequestSchema = z.object({ theme: themePreferenceSchema });
 export type SetThemeRequest = z.infer<typeof setThemeRequestSchema>;
 
+export const setPreferencesRequestSchema = profilePreferencesSchema;
+export type SetPreferencesRequest = z.infer<typeof setPreferencesRequestSchema>;
+
+export const setMenuBarVisibilityRequestSchema = z.object({ visible: z.boolean() }).strict();
+export type SetMenuBarVisibilityRequest = z.infer<typeof setMenuBarVisibilityRequestSchema>;
+
+export const notificationPresentationSchema = z
+  .object({
+    notificationId: z.string().trim().min(1).max(240),
+    conditionFingerprint: z.string().trim().min(1).max(1_000),
+    readAt: z.string().datetime().nullable(),
+    snoozedUntil: z.string().datetime().nullable(),
+    dismissedAt: z.string().datetime().nullable(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type NotificationPresentationDto = z.infer<typeof notificationPresentationSchema>;
+export const auditHistoryEntrySchema = z
+  .object({
+    id: z.string(),
+    action: z.string(),
+    entityType: z.string(),
+    entityId: z.string(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type AuditHistoryEntryDto = z.infer<typeof auditHistoryEntrySchema>;
+export const setNotificationPresentationsRequestSchema = z
+  .object({
+    updates: z
+      .array(notificationPresentationSchema.omit({ updatedAt: true }))
+      .min(1)
+      .max(200),
+  })
+  .strict();
+export type SetNotificationPresentationsRequest = z.infer<
+  typeof setNotificationPresentationsRequestSchema
+>;
+
 export const updateCashPolicyRequestSchema = cashFloorPolicySchema;
 export type UpdateCashPolicyRequest = z.infer<typeof updateCashPolicyRequestSchema>;
 
@@ -601,6 +773,44 @@ export const forecastRequestSchema = z
   .default({});
 export type ForecastRequest = z.infer<typeof forecastRequestSchema>;
 export const successSchema = z.object({ success: z.literal(true) });
+
+export const updateChannelSchema = z.enum(['beta', 'stable']);
+export type UpdateChannel = z.infer<typeof updateChannelSchema>;
+export const updateStatusSchema = z
+  .object({
+    enabled: z.boolean(),
+    state: z.enum([
+      'disabled',
+      'idle',
+      'checking',
+      'downloading',
+      'current',
+      'ready',
+      'deferred',
+      'installing',
+      'offline',
+      'failed',
+    ]),
+    channel: updateChannelSchema,
+    currentVersion: z.string().min(1).max(40),
+    message: z.string().min(1).max(300),
+    checkedAt: z.string().datetime().optional(),
+    releaseName: z.string().min(1).max(160).optional(),
+    releaseDate: z.string().datetime().optional(),
+    releaseNotes: z.string().max(2_000).optional(),
+  })
+  .strict();
+export type UpdateStatusDto = z.infer<typeof updateStatusSchema>;
+export const postUpdateNoticeSchema = z
+  .object({
+    oldVersion: z.string().min(1).max(40),
+    newVersion: z.string().min(1).max(40),
+    releaseName: z.string().min(1).max(160).optional(),
+    releaseNotes: z.string().max(2_000).optional(),
+    profileRetained: z.literal(true),
+  })
+  .strict();
+export type PostUpdateNoticeDto = z.infer<typeof postUpdateNoticeSchema>;
 
 export const managedRecordsSchema = z.object({
   accounts: z.array(cashAccountSchema),
@@ -822,10 +1032,22 @@ export interface BalanceBookApi {
   recordReceivableSettlement(
     input: ReceivableSettlementRequest,
   ): Promise<IpcResult<ManagedRecordsDto>>;
+  recordUnattributedReceivableSettlement(
+    input: UnattributedReceivableSettlementRequest,
+  ): Promise<IpcResult<ManagedRecordsDto>>;
+  recordOverviewExpense(input: OverviewExpenseRequest): Promise<IpcResult<ManagedRecordsDto>>;
+  upsertBillPlan(input: BillPlanRequest): Promise<IpcResult<ManagedRecordsDto>>;
   createInternalTransfer(input: InternalTransferRequest): Promise<IpcResult<ManagedRecordsDto>>;
   commitRefinancePlan(input: CommitRefinancePlanRequest): Promise<IpcResult<ManagedRecordsDto>>;
   cancelRefinancePlan(input: CancelRefinancePlanRequest): Promise<IpcResult<ManagedRecordsDto>>;
   setTheme(input: SetThemeRequest): Promise<IpcResult<SessionDto>>;
+  setPreferences(input: SetPreferencesRequest): Promise<IpcResult<SessionDto>>;
+  setMenuBarVisibility(input: SetMenuBarVisibilityRequest): Promise<IpcResult<{ success: true }>>;
+  listNotificationPresentations(): Promise<IpcResult<NotificationPresentationDto[]>>;
+  listAuditHistory(): Promise<IpcResult<AuditHistoryEntryDto[]>>;
+  setNotificationPresentations(
+    input: SetNotificationPresentationsRequest,
+  ): Promise<IpcResult<NotificationPresentationDto[]>>;
   updateCashPolicy(input: UpdateCashPolicyRequest): Promise<IpcResult<ManagedRecordsDto>>;
   listRecords(): Promise<IpcResult<ManagedRecordsDto>>;
   upsertRecord(input: UpsertManagedEntityRequest): Promise<IpcResult<ManagedRecordsDto>>;
@@ -837,4 +1059,11 @@ export interface BalanceBookApi {
   importJson(input: JsonImportRequest): Promise<IpcResult<FileActionResultDto>>;
   resetUserData(input: ResetUserDataRequest): Promise<IpcResult<{ success: true }>>;
   getImportReview(): Promise<IpcResult<ImportReviewDto>>;
+  getUpdateStatus(): Promise<IpcResult<UpdateStatusDto>>;
+  checkForUpdates(): Promise<IpcResult<UpdateStatusDto>>;
+  deferUpdate(): Promise<IpcResult<UpdateStatusDto>>;
+  restartForUpdate(): Promise<IpcResult<UpdateStatusDto>>;
+  onUpdateStatus(listener: (status: UpdateStatusDto) => void): () => void;
+  getPostUpdateNotice(): Promise<IpcResult<PostUpdateNoticeDto | null>>;
+  acknowledgePostUpdateNotice(): Promise<IpcResult<{ success: true }>>;
 }

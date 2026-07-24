@@ -469,7 +469,11 @@ const MetricCard = ({
 const trajectoryText = (trajectory: ChartsTrajectory | null): string =>
   trajectory ? formatMoney(trajectory.changeCents) : 'Not available';
 
-export const ChartsPage = (): React.JSX.Element => {
+export const ChartsPage = ({
+  experimentalCardInterestForecastEnabled,
+}: {
+  experimentalCardInterestForecastEnabled: boolean;
+}): React.JSX.Element => {
   const styles = useStyles();
   const [records, setRecords] = useState<ManagedRecordsDto | null>(null);
   const [forecast, setForecast] = useState<ForecastSnapshotDto | null>(null);
@@ -507,8 +511,14 @@ export const ChartsPage = (): React.JSX.Element => {
 
   const model = useMemo<ChartsViewModel | null>(() => {
     if (!records || !forecast) return null;
-    return buildChartsViewModel({ records, forecast, historyMonths: 12, futureMonths: 12 });
-  }, [forecast, records]);
+    return buildChartsViewModel({
+      records,
+      forecast,
+      historyMonths: 12,
+      futureMonths: 12,
+      experimentalCardInterestForecastEnabled,
+    });
+  }, [experimentalCardInterestForecastEnabled, forecast, records]);
 
   const visibleSeries = useMemo(() => {
     if (!model) return [];
@@ -599,10 +609,9 @@ export const ChartsPage = (): React.JSX.Element => {
       <header className={styles.header}>
         <div className={styles.heading}>
           <Text className={styles.eyebrow}>Financial timeline</Text>
-          <Title1 as="h1">Charts</Title1>
+          <Title1 as="h1">Trends</Title1>
           <Text className={styles.detail}>
-            A two-year window around today, grounded in recorded history and your live expected
-            forecast. Missing history stays blank instead of being guessed.
+            One year back and one year forward. Missing history stays blank.
           </Text>
         </div>
         <div className={styles.windowBadge} aria-label="Visible date window">

@@ -41,6 +41,8 @@ export interface RevolvingDebtSummary {
   reportedBalanceHasUnresolvedSameCycleActivity: boolean;
 }
 
+export type RevolvingDebtPaymentEvidenceMode = 'actual-only' | 'include-projected-payments';
+
 const nonnegativeCents = (value: number): MoneyCents =>
   moneyCentsSchema.nonnegative().parse(Math.max(0, value));
 
@@ -105,13 +107,21 @@ const activeEvent = (event: ForecastEvent): boolean =>
   event.status !== 'skipped' &&
   (!event.hypothetical || event.accepted);
 
-const actualEventThrough = (
+const evidencedEventThrough = (
   event: ForecastEvent,
   date: PlainDateString,
   asOfDate: PlainDateString,
+  paymentEvidenceMode: RevolvingDebtPaymentEvidenceMode = 'actual-only',
 ): boolean =>
   compareDates(date, asOfDate) <= 0 &&
-  (event.certainty === 'confirmed' || event.status === 'confirmed' || event.status === 'paid');
+  // A confirmed certainty locks a forecast amount/date; only an explicit payment status proves
+  // that card debt was actually released. The projected mode is an explicit opt-in for callers
+  // that already narrowed payment events to those applied in a matching cash ledger.
+  (event.kind === 'card-payment'
+    ? event.status === 'confirmed' ||
+      event.status === 'paid' ||
+      paymentEvidenceMode === 'include-projected-payments'
+    : event.certainty === 'confirmed' || event.status === 'confirmed' || event.status === 'paid');
 
 const eventEvidenceRank = (event: ForecastEvent): number =>
   (event.sourceRecordId && event.sourceRecordId !== event.id ? 8 : 0) +
@@ -214,6 +224,7 @@ const datedCardPayments = (input: {
   card: CreditCard;
   cardId: string;
   asOfDate: PlainDateString;
+  paymentEvidenceMode: RevolvingDebtPaymentEvidenceMode;
 }): DatedCardPayment[] => {
   const cyclePayments = input.cycles.flatMap((cycle): DatedCardPayment[] => {
     const amount = actualPaymentThrough(cycle, input.asOfDate);
@@ -237,7 +248,7 @@ const datedCardPayments = (input: {
     return event.kind === 'card-payment' &&
       event.paymentMethod === 'cash-account' &&
       event.direction === 'outflow' &&
-      actualEventThrough(event, occurrence.date, input.asOfDate)
+      evidencedEventThrough(event, occurrence.date, input.asOfDate, input.paymentEvidenceMode)
       ? [
           {
             occurrence,
@@ -353,6 +364,11 @@ export const summarizeRevolvingDebt = (input: {
   asOfDate: PlainDateString;
   /** Dated card-funded activity and cash card-payment evidence. */
   events?: ForecastEvent[];
+  /**
+   * Defaults to actual payment evidence only. Projected payments may be included only when the
+   * caller has already narrowed `events` to the payments applied in the matching cash ledger.
+   */
+  paymentEvidenceMode?: RevolvingDebtPaymentEvidenceMode;
 }): RevolvingDebtSummary => {
   const card = creditCardSchema.parse(input.card);
   const asOfDate = plainDateSchema.parse(input.asOfDate);
@@ -360,6 +376,7 @@ export const summarizeRevolvingDebt = (input: {
     .map((cycle) => creditCardCycleSchema.parse(cycle))
     .filter((cycle) => cycle.cardId === card.id);
   const events = input.events ?? [];
+  const paymentEvidenceMode = input.paymentEvidenceMode ?? 'actual-only';
   const uncoveredEventStartDate = datedCardEventOccurrences({
     events,
     card,
@@ -369,7 +386,6 @@ export const summarizeRevolvingDebt = (input: {
     .filter(
       (occurrence) =>
         occurrence.event.paymentMethod === 'credit-card' &&
-        occurrence.event.direction === 'outflow' &&
         cycleForActivityDate(storedCycles, occurrence.date) === undefined,
     )
     .reduce<PlainDateString>(
@@ -400,6 +416,7 @@ export const summarizeRevolvingDebt = (input: {
     card,
     cardId: card.id,
     asOfDate,
+    paymentEvidenceMode,
   });
   const statement = latestLockedStatement(storedCycles, asOfDate);
   const latestStatementCents = nonnegativeCents(statement?.lockedStatementCents ?? 0);
@@ -420,12 +437,18 @@ export const summarizeRevolvingDebt = (input: {
       .filter(
         (occurrence) =>
           occurrence.event.paymentMethod === 'credit-card' &&
-          occurrence.event.direction === 'outflow' &&
           occurrence.event.cardActivityTreatment !== 'included-in-cycle-total' &&
-          actualEventThrough(occurrence.event, occurrence.date, asOfDate) &&
+          evidencedEventThrough(occurrence.event, occurrence.date, asOfDate) &&
           cycleForActivityDate(effectiveCycles, occurrence.date) === undefined,
       )
-      .reduce((total, occurrence) => total + occurrence.event.amountCents, 0),
+      .reduce(
+        (total, occurrence) =>
+          total +
+          (occurrence.event.direction === 'outflow'
+            ? occurrence.event.amountCents
+            : -occurrence.event.amountCents),
+        0,
+      ),
   );
   const actualOpenCycleCents = nonnegativeCents(
     postedActivityCycles.reduce((total, cycle) => total + cycle.actualActivityCents, 0) +
@@ -481,10 +504,11 @@ export const summarizeRevolvingDebt = (input: {
           const activity = occurrence.event;
           if (
             activity.paymentMethod !== 'credit-card' ||
-            activity.direction !== 'outflow' ||
             activity.cardActivityTreatment === 'included-in-cycle-total' ||
-            !actualEventThrough(activity, occurrence.date, asOfDate) ||
-            compareDates(occurrence.date, card.reportedBalanceDate!) <= 0
+            !evidencedEventThrough(activity, occurrence.date, asOfDate) ||
+            compareDates(occurrence.date, card.reportedBalanceDate!) < 0 ||
+            (occurrence.date === card.reportedBalanceDate &&
+              activity.appliesAfterBalanceSnapshot !== true)
           ) {
             return false;
           }
@@ -495,9 +519,16 @@ export const summarizeRevolvingDebt = (input: {
           // cannot be split without inventing a delta.
           return cycle === undefined || compareDates(cycle.opensOn, card.reportedBalanceDate!) <= 0;
         })
-        .reduce((total, occurrence) => total + occurrence.event.amountCents, 0)
+        .reduce(
+          (total, occurrence) =>
+            total +
+            (occurrence.event.direction === 'outflow'
+              ? occurrence.event.amountCents
+              : -occurrence.event.amountCents),
+          0,
+        )
     : 0;
-  const activityAfterReportedBalanceCents = nonnegativeCents(
+  const activityAfterReportedBalanceCents = moneyCentsSchema.parse(
     wholeCycleActivityAfterReportedBalanceCents + exactSameCycleActivityAfterReportedBalanceCents,
   );
   const useReportedBalance = hasReportedBalance && !newerLockedStatementThanReportedBalance;
@@ -576,7 +607,11 @@ export const summarizeRevolvingDebt = (input: {
       : { availableCreditCents: nonnegativeCents(card.creditLimitCents - currentBalanceCents) }),
     carryingBalanceCents,
     projectedCarryingBalanceCents,
-    overdue: carryingBalanceCents > 0,
+    overdue:
+      statement !== undefined &&
+      statement.state !== 'paid' &&
+      compareDates(statement.dueOn, asOfDate) < 0 &&
+      amountCurrentlyDueCents > 0,
     source: useReportedBalance ? 'reported' : 'cycle-derived',
     reportedBalanceHasUnresolvedSameCycleActivity,
   };

@@ -25,6 +25,7 @@ const card = (cardName: string): DashboardCardPower => ({
   fundingAccountName: 'Checking',
   statementAmountCents: 40_000,
   currentCycleAmountCents: 25_000,
+  purchaseAdvisorEligible: true,
   spendingPowerCents: 50_000,
   cashBackedCapacityCents: 50_000,
   spendingPowerStatus: 'determinate',

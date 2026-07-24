@@ -1,6 +1,6 @@
 {
   "name": "balance-book-mvp",
-  "version": "1.1.2",
+  "version": "2.0.7",
   "productName": "Balance Book",
   "author": "Balance Book contributors",
   "license": "MIT",
@@ -26,7 +26,7 @@
     "format:check": "prettier --check .",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run tests --pool=threads --maxWorkers=1",
+    "test": "vitest run tests --pool=forks --maxWorkers=1",
     "test:watch": "vitest tests",
     "pretest:e2e": "electron-forge package",
     "test:e2e": "playwright test --config playwright.config.ts",

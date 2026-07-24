@@ -51,6 +51,7 @@ export interface CommittedRefinanceForecastInput {
   cardCycles: CreditCardCycle[];
   loans: Loan[];
   receivables: Receivable[];
+  includeCardInterest?: boolean;
   policy: CashFloorPolicy;
   requestedStartDate: PlainDateString;
   existingPlans?: CommittedRefinancePlan[];
@@ -504,6 +505,7 @@ export const materializeCommittedRefinanceEvents = (input: {
   cardCycles: CreditCardCycle[];
   loans: Loan[];
   receivables?: Receivable[];
+  includeCardInterest?: boolean;
   plans: CommittedRefinancePlan[];
   startDate: PlainDateString;
   endDate: PlainDateString;
@@ -574,6 +576,7 @@ export const materializeCommittedRefinanceEvents = (input: {
     cardCycles: input.cardCycles,
     loans: resolved.loans,
     ...(input.receivables === undefined ? {} : { receivables: input.receivables }),
+    includeCardInterest: input.includeCardInterest,
     startDate: input.startDate,
     endDate: input.endDate,
     ...(input.plannedReceivableStartDate === undefined
@@ -662,6 +665,7 @@ export const evaluateCommittedRefinanceForecast = (
     committedRefinancePlans: existingPlans,
     receivables: input.receivables,
     policy,
+    includeCardInterest: input.includeCardInterest,
     requestedStartDate: input.requestedStartDate,
     requiredEndDate:
       compareDates(plan.firstPaymentDate, plan.payoffDate) >= 0
@@ -674,6 +678,7 @@ export const evaluateCommittedRefinanceForecast = (
     cards: input.cards,
     cardCycles: input.cardCycles,
     receivables: input.receivables,
+    includeCardInterest: input.includeCardInterest,
     startDate: context.startDate,
     endDate: context.endDate,
   };

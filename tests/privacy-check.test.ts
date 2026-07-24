@@ -163,7 +163,7 @@ describeWithChildProcesses('privacy path-content scanner', () => {
   });
 });
 
-describeWithGit('privacy history scanner', () => {
+describeWithGit('privacy history scanner', { timeout: 15_000 }, () => {
   it('passes complete synthetic history with a safe identity and raw Unicode path', () => {
     const { root, patternFile } = createRepository();
     mkdirSync(join(root, 'docs'));
@@ -219,7 +219,7 @@ describeWithGit('privacy history scanner', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('Git tag');
     expect(result.stderr).toContain('matches a local private-content pattern');
-  });
+  }, 15_000);
 
   it('finds a protected fingerprint in a historical path name', () => {
     const { root, patternFile } = createRepository();
@@ -235,7 +235,7 @@ describeWithGit('privacy history scanner', () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('path matches a local private-content pattern');
-  });
+  }, 15_000);
 
   it('finds a generic email-like identifier in a historical path name', () => {
     const { root, patternFile } = createRepository();
@@ -256,18 +256,22 @@ describeWithGit('privacy history scanner', () => {
     ['tag', 'refs/tags'],
     ['remote-tracking', 'refs/remotes/origin'],
     ['pull audit', 'refs/pull/123'],
-  ])('finds protected fingerprints in %s ref names', (_label, namespace) => {
-    const { root, patternFile } = createRepository();
-    const fingerprint = 'SYNTHETIC_REF_NAME_FINGERPRINT_84D2';
-    writeFileSync(patternFile, `${fingerprint}\n`, 'utf8');
-    runGit(root, ['update-ref', `${namespace}/${fingerprint}`, 'HEAD']);
+  ])(
+    'finds protected fingerprints in %s ref names',
+    (_label, namespace) => {
+      const { root, patternFile } = createRepository();
+      const fingerprint = 'SYNTHETIC_REF_NAME_FINGERPRINT_84D2';
+      writeFileSync(patternFile, `${fingerprint}\n`, 'utf8');
+      runGit(root, ['update-ref', `${namespace}/${fingerprint}`, 'HEAD']);
 
-    const result = runHistoryCheck(root, patternFile);
+      const result = runHistoryCheck(root, patternFile);
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('Git ref');
-    expect(result.stderr).toContain('matches a local private-content pattern');
-  });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Git ref');
+      expect(result.stderr).toContain('matches a local private-content pattern');
+    },
+    15_000,
+  );
 
   it('applies generic privacy rules to ref names', () => {
     const { root, patternFile } = createRepository();

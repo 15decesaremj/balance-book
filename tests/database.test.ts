@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import BetterSqlite3 from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -60,6 +61,41 @@ afterEach(() => {
 });
 
 describe('local database and authentication', () => {
+  it('refuses a newer database schema without mutating the database file', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'balance-book-newer-schema-test-'));
+    temporaryDirectories.push(directory);
+    const databasePath = path.join(directory, 'balance-book.sqlite');
+    const database = new BetterSqlite3(databasePath);
+    database.exec(
+      'CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, applied_at TEXT NOT NULL)',
+    );
+    database
+      .prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
+      .run(latestSchemaVersion + 1, 'future-schema', '2026-07-23T00:00:00.000Z');
+    database.close();
+    const beforeHash = crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(databasePath))
+      .digest('hex');
+
+    expect(
+      () =>
+        new BalanceBookStore({
+          databasePath,
+          backupDirectory: path.join(directory, 'backups'),
+        }),
+    ).toThrow(
+      `This profile uses database schema ${latestSchemaVersion + 1}, but this Balance Book version supports only schema ${latestSchemaVersion}.`,
+    );
+
+    const afterHash = crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(databasePath))
+      .digest('hex');
+    expect(afterHash).toBe(beforeHash);
+    expect(fs.existsSync(path.join(directory, 'backups'))).toBe(false);
+  });
+
   it('applies a versioned migration and initializes profile shells idempotently', () => {
     const store = openStore();
     const initial = [
@@ -116,6 +152,64 @@ describe('local database and authentication', () => {
       store.raw.prepare('SELECT name FROM schema_migrations WHERE version = 30').get(),
     ).toMatchObject({ name: 'cash-account-overview-visibility' });
     expect(store.getManagedRecords('profile-a').accounts[0]!.showOnOverview).toBe(true);
+  });
+
+  it('reapplies investment forecast columns safely when the migration marker is missing', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
+    store.upsertManagedEntity('profile-a', 'asset', {
+      id: 'profile-a-401k',
+      name: 'Synthetic 401(k)',
+      type: 'investment',
+      valueCents: 100_000,
+      valuationDate: '2026-01-01',
+      annualGrowthRateBasisPoints: 1_000,
+      contributionGrossAnnualIncomeCents: 10_000_000,
+      contributionRateBasisPoints: 400,
+      employerMatchBasisPoints: 400,
+    });
+    store.raw.prepare('DELETE FROM schema_migrations WHERE version = 35').run();
+
+    expect(() =>
+      applyMigrations({
+        database: store.raw,
+        databasePath: store.raw.name,
+        backupDirectory: path.join(path.dirname(store.raw.name), 'investment-migration-backups'),
+      }),
+    ).not.toThrow();
+
+    expect(
+      store.raw.prepare('SELECT name FROM schema_migrations WHERE version = 35').get(),
+    ).toMatchObject({ name: 'investment-forecast-assumptions' });
+    expect(store.getManagedRecords('profile-a').assets[0]).toMatchObject({
+      annualGrowthRateBasisPoints: 1_000,
+      contributionGrossAnnualIncomeCents: 10_000_000,
+      contributionRateBasisPoints: 400,
+      employerMatchBasisPoints: 400,
+    });
+  });
+
+  it('reapplies card interest controls safely without enabling them for existing cards', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
+    store.saveVerticalSlice('profile-a', setup);
+    store.raw.prepare('DELETE FROM schema_migrations WHERE version = 36').run();
+
+    expect(() =>
+      applyMigrations({
+        database: store.raw,
+        databasePath: store.raw.name,
+        backupDirectory: path.join(path.dirname(store.raw.name), 'card-interest-migration-backups'),
+      }),
+    ).not.toThrow();
+
+    expect(
+      store.raw.prepare('SELECT name FROM schema_migrations WHERE version = 36').get(),
+    ).toMatchObject({ name: 'card-interest-forecast-controls' });
+    expect(store.getManagedRecords('profile-a').cards[0]).toMatchObject({
+      interestForecastEnabled: false,
+      promotionalCarryingBalance: false,
+    });
   });
 
   it('scopes a cash card-payment link to a card owned by the active profile', () => {
@@ -444,6 +538,13 @@ describe('local database and authentication', () => {
         )
         .get(),
     ).toEqual({ allocationOrder: null });
+    expect(
+      database
+        .prepare(
+          "SELECT applies_after_balance_snapshot AS appliesAfter FROM forecast_events WHERE id = 'legacy-forecast-event'",
+        )
+        .get(),
+    ).toEqual({ appliesAfter: 0 });
     for (const column of ['funding_type', 'card_id', 'purchase_date']) {
       expect(
         database
@@ -812,6 +913,7 @@ describe('local database and authentication', () => {
       paymentMethod: 'credit-card',
       cardId: card.id,
       cardActivityTreatment: 'additional',
+      appliesAfterBalanceSnapshot: true,
     });
     source.upsertManagedEntity('source-profile', 'receivable', {
       id: 'source-receivable',
@@ -877,6 +979,10 @@ describe('local database and authentication', () => {
     expect(portable.importBatches).toHaveLength(1);
     expect(portable.importLineage).toHaveLength(1);
     expect(portable.events.some((event) => event.paymentMethod === 'credit-card')).toBe(true);
+    expect(
+      portable.events.find((event) => event.id === 'source-card-activity')
+        ?.appliesAfterBalanceSnapshot,
+    ).toBe(true);
     expect(portable.events.filter((event) => event.transferId)).toHaveLength(2);
 
     const backupDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'balance-book-portable-test-'));
@@ -977,6 +1083,96 @@ describe('local database and authentication', () => {
     expect(after.cards.some((card) => card.id === cardId)).toBe(true);
     expect(after.cardCycles.some((cycle) => cycle.id === 'protected-cycle')).toBe(true);
     expect(after.accounts.some((account) => account.id === accountId)).toBe(true);
+  });
+
+  it('refuses to orphan loan and statement-cycle payment instructions during deletion', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
+    store.saveVerticalSlice('profile-a', setup);
+    const records = store.getManagedRecords('profile-a');
+    const accountId = records.accounts[0]!.id;
+    const cardId = records.cards[0]!.id;
+    const cycleId = 'cycle-with-linked-payment';
+    const cardPaymentId = 'cycle-linked-payment';
+    const loanId = 'loan-with-linked-payment';
+    const loanPaymentId = 'loan-linked-payment';
+
+    store.upsertManagedEntity('profile-a', 'card-cycle', {
+      id: cycleId,
+      cardId,
+      opensOn: '2026-01-01',
+      closesOn: '2026-01-31',
+      dueOn: '2026-02-15',
+      state: 'closed-statement',
+      defaultEstimateCents: 20_000,
+      actualActivityCents: 20_000,
+      plannedActivityCents: 0,
+      lockedStatementCents: 20_000,
+    });
+    store.upsertManagedEntity('profile-a', 'forecast-event', {
+      id: cardPaymentId,
+      accountId,
+      date: '2026-02-15',
+      kind: 'card-payment',
+      direction: 'outflow',
+      amountCents: 20_000,
+      certainty: 'confirmed',
+      status: 'scheduled',
+      label: 'Linked statement payment',
+      paymentMethod: 'cash-account',
+      cardId,
+      sourceRecordId: cycleId,
+    });
+    store.upsertManagedEntity('profile-a', 'loan', {
+      id: loanId,
+      name: 'Loan with linked payment',
+      principalCents: 100_000,
+      accruedInterestCents: 0,
+      balanceDate: '2026-01-01',
+      annualRateBasisPoints: 500,
+      accrualConvention: 'actual-365',
+      paymentCents: 10_000,
+      nextPaymentDate: '2026-02-01',
+      fundingAccountId: accountId,
+      paymentFrequency: 'monthly',
+      includeInCashForecast: true,
+      status: 'active',
+    });
+    store.upsertManagedEntity('profile-a', 'forecast-event', {
+      id: loanPaymentId,
+      accountId,
+      date: '2026-02-01',
+      kind: 'loan-payment',
+      direction: 'outflow',
+      amountCents: 10_000,
+      certainty: 'confirmed',
+      status: 'scheduled',
+      label: 'Linked installment payment',
+      paymentMethod: 'cash-account',
+      sourceRecordId: loanId,
+      loanPaymentTreatment: 'scheduled-draft-override',
+    });
+
+    expect(() => store.deleteManagedEntity('profile-a', 'card-cycle', cycleId)).toThrow(
+      /statement cycle.*linked payment history or instructions/i,
+    );
+    expect(() => store.deleteManagedEntity('profile-a', 'loan', loanId)).toThrow(
+      /loan.*linked payment history or instructions/i,
+    );
+    const protectedRecords = store.getManagedRecords('profile-a');
+    expect(protectedRecords.cardCycles.some((cycle) => cycle.id === cycleId)).toBe(true);
+    expect(protectedRecords.loans.some((loan) => loan.id === loanId)).toBe(true);
+    expect(protectedRecords.events.map((event) => event.id)).toEqual(
+      expect.arrayContaining([cardPaymentId, loanPaymentId]),
+    );
+
+    store.deleteManagedEntity('profile-a', 'forecast-event', cardPaymentId);
+    store.deleteManagedEntity('profile-a', 'forecast-event', loanPaymentId);
+    store.deleteManagedEntity('profile-a', 'card-cycle', cycleId);
+    store.deleteManagedEntity('profile-a', 'loan', loanId);
+    const deletedRecords = store.getManagedRecords('profile-a');
+    expect(deletedRecords.cardCycles.some((cycle) => cycle.id === cycleId)).toBe(false);
+    expect(deletedRecords.loans.some((loan) => loan.id === loanId)).toBe(false);
   });
 
   it('refuses to orphan recorded receivable settlements and allows deletion after history removal', () => {
@@ -1639,6 +1835,8 @@ describe('local database and authentication', () => {
       type: 'investment',
       valueCents: 1_000_000,
       valuationDate: '2026-01-01',
+      annualGrowthRateBasisPoints: 1_000,
+      contributionGrossAnnualIncomeCents: 12_000_000,
       contributionAmountCents: 25_000,
       contributionRateBasisPoints: 600,
       employerMatchBasisPoints: 300,
@@ -1674,6 +1872,8 @@ describe('local database and authentication', () => {
       originalDate: '2025-01-01',
     });
     expect(populated.assets[0]).toMatchObject({
+      annualGrowthRateBasisPoints: 1_000,
+      contributionGrossAnnualIncomeCents: 12_000_000,
       contributionAmountCents: 25_000,
       contributionRateBasisPoints: 600,
       employerMatchBasisPoints: 300,
@@ -1705,6 +1905,8 @@ describe('local database and authentication', () => {
     });
     store.upsertManagedEntity('profile-a', 'asset', {
       ...populated.assets[0]!,
+      annualGrowthRateBasisPoints: undefined,
+      contributionGrossAnnualIncomeCents: undefined,
       contributionAmountCents: undefined,
       contributionRateBasisPoints: undefined,
       employerMatchBasisPoints: undefined,
@@ -1725,6 +1927,8 @@ describe('local database and authentication', () => {
     expect(cleared.loans[0]?.lender).toBeUndefined();
     expect(cleared.loans[0]?.originalPrincipalCents).toBeUndefined();
     expect(cleared.assets[0]?.linkedLiabilityId).toBeUndefined();
+    expect(cleared.assets[0]?.annualGrowthRateBasisPoints).toBeUndefined();
+    expect(cleared.assets[0]?.contributionGrossAnnualIncomeCents).toBeUndefined();
     expect(cleared.assets[0]?.contributionRateBasisPoints).toBeUndefined();
     expect(cleared.receivables[0]?.relatedExpenseId).toBeUndefined();
     expect(cleared.receivables[0]?.paymentInstrument).toBeUndefined();
@@ -1786,6 +1990,63 @@ describe('local database and authentication', () => {
     expect(clearedCycle.lockedStatementCents).toBeUndefined();
     expect(clearedCycle.projectionOverrideCents).toBeUndefined();
     expect(clearedCycle.paymentOn).toBeUndefined();
+  });
+
+  it('round-trips the cash account used for a recorded statement payment', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
+    store.saveVerticalSlice('profile-a', setup);
+    const records = store.getManagedRecords('profile-a');
+    const primary = records.accounts[0]!;
+    const card = records.cards[0]!;
+    const alternateAccountId = 'profile-a-card-payment-account';
+    store.upsertManagedEntity('profile-a', 'cash-account', {
+      ...primary,
+      id: alternateAccountId,
+      name: 'Alternate payment checking',
+    });
+
+    store.upsertManagedEntity('profile-a', 'card-cycle', {
+      id: 'paid-with-account',
+      cardId: card.id,
+      opensOn: '2026-01-01',
+      closesOn: '2026-01-31',
+      dueOn: '2026-02-15',
+      paymentOn: '2026-02-14',
+      state: 'paid',
+      defaultEstimateCents: 0,
+      actualActivityCents: 0,
+      plannedActivityCents: 0,
+      lockedStatementCents: 20_000,
+      actualPaymentCents: 20_000,
+      actualPaymentAccountId: alternateAccountId,
+    });
+
+    expect(
+      store
+        .getManagedRecords('profile-a')
+        .cardCycles.find((cycle) => cycle.id === 'paid-with-account'),
+    ).toMatchObject({
+      actualPaymentCents: 20_000,
+      actualPaymentAccountId: alternateAccountId,
+    });
+    const portable = store.exportPortableProfile('profile-a', 'test-version');
+    expect(portable.cardCycles.find((cycle) => cycle.id === 'paid-with-account')).toMatchObject({
+      actualPaymentAccountId: alternateAccountId,
+    });
+    const destination = openStore();
+    destination.initializeProfiles([
+      { id: 'destination-profile', displayName: 'Destination', username: 'destination' },
+    ]);
+    destination.replacePortableProfile('destination-profile', portable);
+    expect(
+      destination
+        .getManagedRecords('destination-profile')
+        .cardCycles.find((cycle) => cycle.id === 'paid-with-account'),
+    ).toMatchObject({ actualPaymentAccountId: alternateAccountId });
+    expect(() =>
+      store.deleteManagedEntity('profile-a', 'cash-account', alternateAccountId),
+    ).toThrow(/recorded statement payments/i);
   });
 
   it('clears event overrides without dropping omitted lineage fields', () => {

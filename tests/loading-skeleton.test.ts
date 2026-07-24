@@ -68,7 +68,7 @@ describe('accessible loading skeleton', () => {
     expect(combined).toContain('LoadingSkeleton label="Opening Balance Book"');
     expect(combined).toContain('LoadingSkeleton label="Building your financial plan"');
     expect(combined).toContain('LoadingSkeleton label="Loading money owed to you"');
-    expect(combined).toContain("form.formState.isSubmitting ? 'Evaluating");
+    expect(combined).toContain("scenarioAction === 'evaluate-scenario' ? 'Evaluating");
     expect(combined).toContain("busy ? 'Saving");
   });
 });

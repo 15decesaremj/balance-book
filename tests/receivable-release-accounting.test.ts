@@ -681,4 +681,168 @@ describe('explicit receivable release accounting', () => {
       }),
     ]);
   });
+
+  it('records one unattributed receipt by atomically applying it to the oldest open balances', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
+    store.saveVerticalSlice('profile-a', {
+      balanceAsOf: '2026-07-30',
+      accountName: 'Primary checking',
+      openingBalanceCents: 100_000,
+      hardFloorCents: 0,
+    });
+    for (const input of [
+      {
+        id: 'older-balance',
+        description: 'Older shared purchase',
+        remainingAmountCents: 4_000,
+        expectedDate: '2026-07-20',
+      },
+      {
+        id: 'newer-balance',
+        description: 'Newer shared purchase',
+        remainingAmountCents: 3_000,
+        expectedDate: '2026-07-25',
+      },
+    ]) {
+      store.upsertManagedEntity('profile-a', 'receivable', {
+        id: input.id,
+        source: 'Synthetic partner',
+        description: input.description,
+        originalAmountCents: input.remainingAmountCents,
+        remainingAmountCents: input.remainingAmountCents,
+        expectedDate: input.expectedDate,
+        destinationAccountId: 'profile-a-primary-cash',
+        certainty: 'confirmed',
+        includeInCashForecast: false,
+      });
+    }
+
+    expect(() =>
+      store.recordUnattributedReceivableSettlement({
+        userId: 'profile-a',
+        amountCents: 7_001,
+        date: '2026-07-31',
+        asOfDate: '2026-07-31',
+        destinationAccountId: 'profile-a-primary-cash',
+      }),
+    ).toThrow(/cannot be more than the Money Owed balance/i);
+    expect(
+      store
+        .getManagedRecords('profile-a')
+        .events.filter((event) => event.kind === 'receivable-settlement'),
+    ).toHaveLength(0);
+
+    const eventIds = store.recordUnattributedReceivableSettlement({
+      userId: 'profile-a',
+      amountCents: 5_000,
+      date: '2026-07-31',
+      asOfDate: '2026-07-31',
+      destinationAccountId: 'profile-a-primary-cash',
+    });
+    expect(eventIds).toHaveLength(2);
+    const records = store.getManagedRecords('profile-a');
+    expect(
+      Object.fromEntries(
+        records.receivables.map((receivable) => [receivable.id, receivable.remainingAmountCents]),
+      ),
+    ).toEqual({
+      'older-balance': 0,
+      'newer-balance': 2_000,
+    });
+    const settlements = records.events
+      .filter((event) => event.kind === 'receivable-settlement')
+      .sort((left, right) => left.sourceRecordId!.localeCompare(right.sourceRecordId!));
+    expect(settlements).toEqual([
+      expect.objectContaining({
+        sourceRecordId: 'newer-balance',
+        amountCents: 1_000,
+        accountId: 'profile-a-primary-cash',
+        date: '2026-07-31',
+      }),
+      expect.objectContaining({
+        sourceRecordId: 'older-balance',
+        amountCents: 4_000,
+        accountId: 'profile-a-primary-cash',
+        date: '2026-07-31',
+      }),
+    ]);
+    const owed = projectRollingReceivableBalances({
+      receivables: records.receivables,
+      settlementEvents: records.events,
+      replayStartDate: '2026-07-30',
+      startDate: '2026-07-31',
+      endDate: '2026-07-31',
+      mode: 'expected',
+      includeConfirmedReceivablesConservatively: true,
+    })[0]!;
+    expect(owed.endingOutstandingCents).toBe(2_000);
+    const cash = buildForecastBundle({
+      accounts: records.accounts,
+      events: materializeForecastEvents({
+        accounts: records.accounts,
+        events: records.events,
+        cards: [],
+        cardCycles: [],
+        loans: [],
+        receivables: records.receivables,
+        startDate: '2026-07-30',
+        endDate: '2026-07-31',
+      }),
+      policy: records.policy!,
+      startDate: '2026-07-30',
+      endDate: '2026-07-31',
+    }).expected.days.at(-1)!;
+    expect(cash.consolidatedCashCents).toBe(105_000);
+  });
+
+  it('automatically applies an unattributed receipt to a newly accrued recurring occurrence', () => {
+    const store = openStore();
+    store.initializeProfiles([{ id: 'profile-a', displayName: 'Profile A', username: 'profilea' }]);
+    store.saveVerticalSlice('profile-a', {
+      balanceAsOf: '2026-07-31',
+      accountName: 'Primary checking',
+      openingBalanceCents: 100_000,
+      hardFloorCents: 0,
+    });
+    store.upsertManagedEntity('profile-a', 'receivable', {
+      id: 'monthly-contribution',
+      source: 'Synthetic partner',
+      description: 'Monthly contribution',
+      originalAmountCents: 0,
+      remainingAmountCents: 0,
+      expectedDate: '2026-08-01',
+      recurringAmountCents: 3_000,
+      recurrenceRule: { frequency: 'monthly', interval: 1, dayOfMonth: 1 },
+      destinationAccountId: 'profile-a-primary-cash',
+      certainty: 'confirmed',
+      includeInCashForecast: false,
+    });
+
+    store.recordUnattributedReceivableSettlement({
+      userId: 'profile-a',
+      amountCents: 3_000,
+      date: '2026-08-01',
+      asOfDate: '2026-08-01',
+      destinationAccountId: 'profile-a-primary-cash',
+    });
+    const records = store.getManagedRecords('profile-a');
+    expect(records.events.find((event) => event.kind === 'receivable-settlement')).toMatchObject({
+      sourceRecordId: 'monthly-contribution',
+      receivableOccurrenceDate: '2026-08-01',
+      amountCents: 3_000,
+      accountId: 'profile-a-primary-cash',
+    });
+    expect(
+      projectRollingReceivableBalances({
+        receivables: records.receivables,
+        settlementEvents: records.events,
+        replayStartDate: '2026-07-31',
+        startDate: '2026-08-01',
+        endDate: '2026-08-01',
+        mode: 'expected',
+        includeConfirmedReceivablesConservatively: true,
+      })[0]!.endingOutstandingCents,
+    ).toBe(0);
+  });
 });

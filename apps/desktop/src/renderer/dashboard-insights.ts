@@ -14,8 +14,8 @@ export type CardAdvisorResult = {
 export type AdvisorResultStatus = 'safe' | 'transfer-required' | 'income-dependent' | 'unsafe';
 
 export const advisorVerdictLabel: Record<ScenarioResponseDto['verdict'], string> = {
-  'affordable-under-current-assumptions': 'Within current guardrails',
-  'above-hard-floor-below-preferred-buffer': 'Above hard floor, below preferred buffer',
+  'affordable-under-current-assumptions': 'Within your safety settings',
+  'above-hard-floor-below-preferred-buffer': 'Above minimum, below preferred buffer',
   'dependent-on-expected-income': 'Depends on expected income',
   'underfunded-account': 'Funding account shortfall',
   'breaches-protected-floor': 'Breaches protected floor',

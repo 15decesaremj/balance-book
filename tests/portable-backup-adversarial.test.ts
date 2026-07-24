@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   BalanceBookStore,
@@ -18,10 +20,12 @@ import {
   type VerticalSliceInput,
 } from '@balance-book/database';
 import { createPasswordRequestSchema } from '../apps/desktop/src/shared/contracts';
+import { defaultProfilePreferences } from '@balance-book/domain';
 
 const temporaryDirectories: string[] = [];
 const stores: BalanceBookStore[] = [];
 const timestamp = '2026-07-15T12:00:00.000Z';
+const require = createRequire(import.meta.url);
 
 const makeTemporaryDirectory = (prefix: string): string => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -50,7 +54,7 @@ afterEach(() => {
 
 const emptyPortableProfile = (): PortableProfileBackup => ({
   format: 'balance-book-portable-profile',
-  version: 2,
+  version: 3,
   exportedAt: timestamp,
   sourceAppVersion: '1.0.0-test',
   sourceSchemaVersion: latestSchemaVersion,
@@ -59,6 +63,7 @@ const emptyPortableProfile = (): PortableProfileBackup => ({
     displayName: 'Synthetic source',
     username: 'synthetic-source',
     themePreference: 'dark',
+    preferences: defaultProfilePreferences,
     onboardingComplete: false,
   },
   onboardingDraft: null,
@@ -328,7 +333,7 @@ describe('portable backup adversarial validation', () => {
     };
     await expect(decryptBackup(serialized, password)).resolves.toMatchObject({
       format: 'balance-book-portable-profile',
-      version: 2,
+      version: 3,
     });
 
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -377,7 +382,7 @@ describe('portable backup adversarial validation', () => {
     expect(() =>
       parsePortableProfileBackup({ ...emptyPortableProfile(), unexpected: true }),
     ).toThrow();
-    expect(() => parsePortableProfileBackup({ ...emptyPortableProfile(), version: 3 })).toThrow();
+    expect(() => parsePortableProfileBackup({ ...emptyPortableProfile(), version: 4 })).toThrow();
   });
 
   it('rejects empty and oversized backup files before parsing their contents', async () => {
@@ -582,6 +587,109 @@ describe('portable backup adversarial validation', () => {
     ).toThrow(/duplicate import lineage fields/i);
 
     expect(destination.getManagedRecords('destination-profile')).toEqual(before);
+  });
+});
+
+describe('portable backup verification CLI', () => {
+  const verifyPortableWithCli = async (portable: PortableProfileBackup) => {
+    const directory = makeTemporaryDirectory('balance-book-portable-cli-');
+    const workRoot = path.join(directory, 'verification-work');
+    const backupPath = path.join(directory, 'synthetic.balancebook-backup');
+    const password = 'synthetic-cli-backup-password';
+    fs.writeFileSync(backupPath, await createEncryptedBackup(portable, password), {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        require.resolve('tsx/cli'),
+        path.resolve('tools/verify-portable-backup.mts'),
+        '--backup',
+        backupPath,
+        '--work-root',
+        workRoot,
+      ],
+      {
+        cwd: path.resolve('.'),
+        env: { ...process.env, BALANCE_BOOK_BACKUP_PASSWORD: password },
+        encoding: 'utf8',
+        timeout: 30_000,
+      },
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    const output = JSON.parse(result.stdout.trim()) as Record<string, unknown>;
+    expect(output).toMatchObject({
+      ok: true,
+      experiencePreferencesVerified: true,
+      restartLoginVerified: true,
+      sqliteIntegrity: 'ok',
+    });
+    expect(fs.readdirSync(workRoot)).toEqual([]);
+  };
+
+  const customizedPortableProfile = (): PortableProfileBackup => ({
+    ...emptyPortableProfile(),
+    sourceProfile: {
+      ...emptyPortableProfile().sourceProfile,
+      themePreference: 'light',
+      preferences: {
+        ...defaultProfilePreferences,
+        overviewForecastMode: 'conservative',
+        compactLayout: true,
+        reduceMotion: true,
+        showOverviewDailySummary: false,
+        showOverviewUpcomingEvents: false,
+        showOverviewWiderPicture: false,
+      },
+    },
+  });
+
+  it('verifies a policy-free V3 profile with non-default experience preferences across restart', async () => {
+    const portable: PortableProfileBackup = {
+      ...customizedPortableProfile(),
+      policy: undefined,
+    };
+    await verifyPortableWithCli(portable);
+  });
+
+  it('preserves an incomplete V3 onboarding state even when financial records exist', async () => {
+    const portable: PortableProfileBackup = {
+      ...customizedPortableProfile(),
+      accounts: [
+        {
+          id: 'portable-cli-account',
+          userId: 'source-profile',
+          name: 'Synthetic checking',
+          type: 'checking',
+          openingBalanceCents: 125_000,
+          balanceAsOf: '2026-07-15',
+          includedInLiquidity: true,
+          canFundOtherAccounts: true,
+          showOnOverview: true,
+          transferDelayDays: 0,
+        },
+      ],
+      recordTimestamps: [
+        {
+          entityType: 'cash-account',
+          entityId: 'portable-cli-account',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      ],
+      policy: {
+        hardConsolidatedFloorCents: 0,
+        horizonDays: 90,
+        includeConfirmedReceivablesConservatively: true,
+      },
+      policyUpdatedAt: timestamp,
+    };
+    await verifyPortableWithCli(portable);
   });
 });
 

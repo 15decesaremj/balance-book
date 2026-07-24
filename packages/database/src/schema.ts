@@ -17,6 +17,7 @@ export const profiles = sqliteTable(
     })
       .notNull()
       .default('dark'),
+    preferencesJson: text('preferences_json').notNull().default('{}'),
     failedLoginAttempts: integer('failed_login_attempts').notNull().default(0),
     lockedUntil: text('locked_until'),
     createdAt: text('created_at').notNull(),
@@ -126,6 +127,9 @@ export const forecastEvents = sqliteTable(
     receivableOccurrenceDate: text('receivable_occurrence_date'),
     receivableOccurrenceTargetCents: integer('receivable_occurrence_target_cents'),
     notes: text('notes'),
+    appliesAfterBalanceSnapshot: integer('applies_after_balance_snapshot', { mode: 'boolean' })
+      .notNull()
+      .default(false),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
@@ -186,6 +190,13 @@ export const creditCards = sqliteTable(
     fixedPaymentCents: integer('fixed_payment_cents'),
     minimumPaymentCents: integer('minimum_payment_cents'),
     aprBasisPoints: integer('apr_basis_points'),
+    interestForecastEnabled: integer('interest_forecast_enabled', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    promotionalCarryingBalance: integer('promotional_carrying_balance', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    promotionalAprBasisPoints: integer('promotional_apr_basis_points'),
     promotionEndDate: text('promotion_end_date'),
     paymentDayOfMonth: integer('payment_day_of_month').notNull().default(1),
     statementCloseDayOfMonth: integer('statement_close_day_of_month').notNull().default(1),
@@ -218,6 +229,29 @@ export const auditEvents = sqliteTable(
   (table) => [index('audit_events_user_created_idx').on(table.userId, table.createdAt)],
 );
 
+export const notificationPresentations = sqliteTable(
+  'notification_presentations',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => profiles.id, { onDelete: 'cascade' }),
+    notificationId: text('notification_id').notNull(),
+    conditionFingerprint: text('condition_fingerprint').notNull(),
+    readAt: text('read_at'),
+    snoozedUntil: text('snoozed_until'),
+    dismissedAt: text('dismissed_at'),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('notification_presentations_user_notification_unique').on(
+      table.userId,
+      table.notificationId,
+    ),
+    index('notification_presentations_user_updated_idx').on(table.userId, table.updatedAt),
+  ],
+);
+
 export const creditCardCycles = sqliteTable(
   'credit_card_cycles',
   {
@@ -239,6 +273,9 @@ export const creditCardCycles = sqliteTable(
     projectionOverrideCents: integer('projection_override_cents'),
     paymentOn: text('payment_on'),
     actualPaymentCents: integer('actual_payment_cents'),
+    actualPaymentAccountId: text('actual_payment_account_id').references(() => cashAccounts.id, {
+      onDelete: 'restrict',
+    }),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
@@ -422,6 +459,8 @@ export const assets = sqliteTable(
     type: text('type').notNull(),
     valueCents: integer('value_cents').notNull(),
     valuationDate: text('valuation_date').notNull(),
+    annualGrowthRateBasisPoints: integer('annual_growth_rate_basis_points'),
+    contributionGrossAnnualIncomeCents: integer('contribution_gross_annual_income_cents'),
     contributionAmountCents: integer('contribution_amount_cents'),
     contributionRateBasisPoints: integer('contribution_rate_basis_points'),
     employerMatchBasisPoints: integer('employer_match_basis_points'),
@@ -576,6 +615,7 @@ export const schema = {
   cashFloorPolicies,
   creditCards,
   auditEvents,
+  notificationPresentations,
   creditCardCycles,
   loans,
   committedRefinancePlans,

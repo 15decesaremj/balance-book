@@ -23,6 +23,7 @@ export interface RollingForecastInput {
   loans: Loan[];
   committedRefinancePlans?: CommittedRefinancePlan[];
   receivables: Receivable[];
+  includeCardInterest?: boolean;
   policy: CashFloorPolicy;
   requestedStartDate: PlainDateString;
   requiredEndDate?: PlainDateString;
@@ -65,6 +66,7 @@ export const prepareRollingForecastContext = (
       cardCycles: input.cardCycles,
       loans: input.loans,
       receivables: input.receivables,
+      includeCardInterest: input.includeCardInterest,
       startDate: replayStartDate,
       endDate: priorDate,
       plannedReceivableStartDate: startDate,

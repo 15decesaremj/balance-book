@@ -1,6 +1,6 @@
 # Installation
 
-Balance Book V1 is a self-contained, per-user Windows x64 desktop application. An end user does not need Node.js, pnpm, Python, Excel, a database server, or administrator access to run the installer.
+Balance Book is a self-contained, per-user Windows x64 desktop application. An end user does not need Node.js, pnpm, Python, Excel, a database server, or administrator access to run the installer.
 
 ## Release trust
 
@@ -8,13 +8,13 @@ A public release is expected to be Authenticode-signed and published with a SHA-
 
 A locally produced release candidate may be unsigned. Windows can display SmartScreen or **Unknown publisher** warnings for an unsigned file. Do not bypass a warning merely because an installer has the Balance Book name. Obtain the file from a trusted source, confirm its checksum, and understand who built it.
 
-## Install V1
+## Install
 
-When [Published Status](PUBLISHED_STATUS.md) is `READY`, a nontechnical installation starts from the [latest stable public release](https://github.com/15decesaremj/balance-book/releases/latest). Expand **Assets**, download all seven reviewed files listed in [Published Status](PUBLISHED_STATUS.md), and do not mistake GitHub's automatically generated source archives for the installer. Published Status opens the already verified downloads folder; users can independently confirm signature validity and the exact publisher certificate thumbprint using the README's click-by-click steps.
+When [Published Status](PUBLISHED_STATUS.md) is `READY`, a nontechnical installation starts from the [latest stable public release](https://github.com/15decesaremj/balance-book/releases/latest). Normal users download only the signed `Balance-Book-<version>-Setup.exe`; the other eight reviewed release assets are verification, legal, uninstall, and machine-update files. Do not mistake GitHub's automatically generated source archives or the `.nupkg` machine-update package for the installer. Published Status opens the already verified downloads folder; users can independently confirm signature validity and the exact publisher certificate thumbprint using the README's click-by-click steps.
 
 1. Keep the installer and any portable backup in a private folder. A backup can contain sensitive financial data even though it is encrypted.
 2. Run `Balance-Book-<version>-Setup.exe` from a verified public release. The numbered `1 - Install...` name is reserved for the separate private owner handoff described below.
-3. Finish the per-user Squirrel installation. The stable internal installation identity is `balance_book_mvp`; it intentionally remains unchanged across V1 upgrades.
+3. Finish the per-user Squirrel installation. The stable internal installation identity is `balance_book_mvp`; it intentionally remains unchanged across major-version upgrades.
 4. Launch Balance Book from the Start menu or desktop shortcut.
 5. Select an existing local profile or initialize one by choosing a display name, username, and sign-in password of at least 12 characters.
 6. If moving from another machine, restore the encrypted portable backup only after the new local identity and sign-in password have been created. See [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
@@ -32,7 +32,7 @@ The local sign-in password protects access through the application. The live dat
 1. Create and verify an encrypted portable backup.
 2. Close Balance Book.
 3. Run the newer installer under the same Windows account.
-4. Launch the application and confirm the 1.1.2 version, profile access, forecast, and recent records.
+4. Launch the application and confirm the 2.0.7 version, profile access, forecast, and recent records.
 5. Review Cards and Loans: existing cards should remain active unless a closure was saved, legacy loans should default to fully amortizing, and prior loan-payment records should retain regular-draft behavior until explicitly reclassified as additional principal.
 
 The stable Squirrel identity upgrades the existing application instead of installing a second copy. Database migrations run locally. Release validation must cover supported upgrade paths before publication.
@@ -49,14 +49,14 @@ To test a completely new setup, first create an encrypted backup and wait for **
 
 The maintained Windows release tool can assemble a private transfer folder containing exactly:
 
-1. `1 - Install Balance Book V1 (<version>).exe`
+1. `1 - Install Balance Book V<major> (<version>).exe`
 2. `2 - Uninstall Balance Book.exe`
-3. `3 - Balance Book V1 Private Backup.balancebook-backup`
+3. `3 - Balance Book V<major> Private Backup.balancebook-backup`
 
 There are two deliberately separate destinations:
 
-- `local-releases\Balance Book V1 - <version>\` is the strict handoff path. It requires a clean tree, every release gate, and valid Authenticode signatures.
-- `local-releases\candidates\Balance Book V1 - <version> - LOCAL UNSIGNED CANDIDATE\` is the explicit owner-testing path. It requires `-LocalUnsignedCandidate`, `-OfflineSquirrel`, and `-AllowUnsigned`; its external metadata records every skipped gate and marks it not production-ready.
+- `local-releases\Balance Book V<major> - <version>\` is the strict handoff path. It requires a clean tree, every release gate, and valid Authenticode signatures.
+- `local-releases\candidates\Balance Book V<major> - <version> - LOCAL UNSIGNED CANDIDATE\` is the explicit owner-testing path. It requires `-LocalUnsignedCandidate`, `-OfflineSquirrel`, and `-AllowUnsigned`; its external metadata records every skipped gate and marks it not production-ready.
 
 Both folders are ignored by Git. Neither complete three-file folder may be committed or attached to a public GitHub release because the third file contains user data. Public releases publish only reviewed application artifacts, notices, checksums, and release notes. Do not remove the `LOCAL UNSIGNED CANDIDATE` label or present that build as signed or production-ready.
 
@@ -65,6 +65,6 @@ Both folders are ignored by Git. Neither complete three-file folder may be commi
 - **The app opens with existing data after reinstall:** this is expected because uninstall preserves the app-data folder.
 - **A backup password does not work:** the backup password is separate from the local sign-in password. There is no password recovery mechanism.
 - **The installer shows Unknown publisher:** it is unsigned or its signature is invalid. Stop; public releases are required to pass signature verification.
-- **A second V1 copy appears:** stop and report the installer version and install path. V1 installers must retain the stable `balance_book_mvp` identity.
+- **A second copy appears:** stop and report the installer version and install path. Installers must retain the stable `balance_book_mvp` identity across major versions.
 
 For the complete uninstall-first owner test and publication checklist, see [Published Status](PUBLISHED_STATUS.md).

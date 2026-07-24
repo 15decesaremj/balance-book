@@ -36,7 +36,7 @@ import {
   receivableForSettlementSourceFromIndex,
   resolveRecordedReceivableOccurrenceDate,
 } from './receivable-occurrences';
-import { projectLoanPayoffAtDate } from './loans';
+import { isLoanPaymentEventCashEligible, projectLoanPayoffAtDate } from './loans';
 import { expandRecurrence } from './recurrence';
 import { summarizeRevolvingDebt } from './revolving-debt';
 
@@ -79,15 +79,8 @@ export const reconcileScheduledLoanDraftCash = (input: {
     (input.loanPaymentEvents ?? []).reduce((total, rawEvent) => {
       const event = forecastEventSchema.parse(rawEvent);
       if (
-        event.kind !== 'loan-payment' ||
+        !isLoanPaymentEventCashEligible(loan, event) ||
         (event.loanPaymentTreatment ?? 'scheduled-draft-override') !== 'scheduled-draft-override' ||
-        event.sourceRecordId !== loan.id ||
-        event.paymentMethod !== 'cash-account' ||
-        event.direction !== 'outflow' ||
-        event.accountId !== loan.fundingAccountId ||
-        event.status === 'cancelled' ||
-        event.status === 'skipped' ||
-        (event.hypothetical && !event.accepted) ||
         !occurrenceDates(event, date).includes(date)
       ) {
         return total;
@@ -361,6 +354,7 @@ export const calculateCardPurchaseCashImpact = (input: {
   card: CreditCard;
   cardCycles: CreditCardCycle[];
   cardActivities?: ForecastEvent[];
+  includeInterest?: boolean;
   purchaseDate: PlainDateString;
   amountCents: MoneyCents;
 }): CardPurchaseCashImpact => {
@@ -446,12 +440,14 @@ export const calculateCardPurchaseCashImpact = (input: {
     card,
     cardCycles: baselineCycles,
     asOfDate: purchaseDate,
+    includeInterest: input.includeInterest,
     scheduledPayments,
   });
   const afterPurchaseSchedule = projectCardDebtSchedule({
     card,
     cardCycles: afterPurchaseCycles,
     asOfDate: purchaseDate,
+    includeInterest: input.includeInterest,
     scheduledPayments,
   });
   const baselineEntry = baselineSchedule.find((entry) => entry.cycle.id === owningCycle.id);
@@ -482,6 +478,7 @@ const cardPaymentEvents = (input: {
   cardCycles: CreditCardCycle[];
   cardActivities: ForecastEvent[];
   explicitCardPayments: ForecastEvent[];
+  includeCardInterest?: boolean;
   startDate: PlainDateString;
   endDate: PlainDateString;
 }): ForecastEvent[] => {
@@ -538,6 +535,7 @@ const cardPaymentEvents = (input: {
         card,
         cardCycles,
         asOfDate: input.startDate,
+        includeInterest: input.includeCardInterest,
         ...(openingCarryingCents <= 0
           ? {}
           : {
@@ -549,7 +547,11 @@ const cardPaymentEvents = (input: {
         scheduledPayments,
       }).flatMap((entry) => {
         const cycle = entry.cycle;
-        const account = accountById.get(card.fundingAccountId);
+        const paymentAccountId =
+          cycle.state === 'paid'
+            ? (cycle.actualPaymentAccountId ?? card.fundingAccountId)
+            : card.fundingAccountId;
+        const account = accountById.get(paymentAccountId);
         if (!account) throw new Error(`Unknown funding account for card ${card.id}`);
         const date = cycle.paymentOn ?? cycle.dueOn;
         if (
@@ -572,7 +574,7 @@ const cardPaymentEvents = (input: {
           forecastEventSchema.parse({
             id: `card-payment-${cycle.id}`,
             userId: card.userId,
-            accountId: card.fundingAccountId,
+            accountId: paymentAccountId,
             date,
             kind: 'card-payment',
             direction: 'outflow',
@@ -741,6 +743,8 @@ const loanPaymentEvents = (input: {
     if (occurrence.paymentMethod !== 'cash-account') return [];
     const account = accountById.get(occurrence.accountId);
     if (!account || compareDates(occurrence.date, account.balanceAsOf) <= 0) return [];
+    const linkedLoan = source.sourceRecordId ? loanById.get(source.sourceRecordId) : undefined;
+    if (linkedLoan && !isLoanPaymentEventCashEligible(linkedLoan, occurrence)) return [];
     if ((source.loanPaymentTreatment ?? 'scheduled-draft-override') !== 'additional-principal') {
       return [occurrence];
     }
@@ -752,7 +756,7 @@ const loanPaymentEvents = (input: {
     ) {
       return [occurrence];
     }
-    const loan = source.sourceRecordId ? loanById.get(source.sourceRecordId) : undefined;
+    const loan = linkedLoan;
     if (!loan || occurrence.accountId !== loan.fundingAccountId) return [occurrence];
     const appliedCents = appliedAdditionalPrincipal.get(
       `${loan.id}|${source.id}|${occurrence.date}`,
@@ -901,6 +905,7 @@ export const materializeForecastEvents = (input: {
   cardCycles: CreditCardCycle[];
   loans: Loan[];
   receivables?: Receivable[];
+  includeCardInterest?: boolean;
   startDate: PlainDateString;
   endDate: PlainDateString;
   plannedReceivableStartDate?: PlainDateString;
@@ -937,6 +942,7 @@ export const materializeForecastEvents = (input: {
     cardCycles: input.cardCycles,
     cardActivities: parsedEvents,
     explicitCardPayments: recurring,
+    includeCardInterest: input.includeCardInterest,
     startDate: input.startDate,
     endDate: input.endDate,
   });

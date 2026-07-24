@@ -27,12 +27,14 @@ describe('data action lifecycle guard', () => {
     const guardSource = dataPageSource.slice(start, end);
 
     expect(guardSource).toContain('if (activeDataActionRef.current !== null) return');
+    expect(guardSource).toContain('if (!pageMutationLock.acquire(lockAction)) return');
     expect(guardSource).toContain('activeDataActionRef.current = action');
     expect(guardSource).toContain('await operation()');
     expect(guardSource).toContain('catch (caught)');
     expect(guardSource).toContain('finally');
     expect(guardSource).toContain('activeDataActionRef.current = null');
     expect(guardSource).toContain('setActiveDataAction(null)');
+    expect(guardSource).toContain('pageMutationLock.release(lockAction)');
     expect(guardSource.indexOf('if (activeDataActionRef.current')).toBeLessThan(
       guardSource.indexOf('activeDataActionRef.current = action'),
     );
@@ -41,7 +43,7 @@ describe('data action lifecycle guard', () => {
   it('routes all five operations through the same lock and disables their whole control area', () => {
     expect(dataPageSource).toContain('await performDataAction(action, async () =>');
     expect(dataPageSource).toContain("await performDataAction('reset', async () =>");
-    expect(dataPageSource).toContain('disabled={dataActionBusy}');
+    expect(dataPageSource).toContain('disabled={dataActionBusy || settingsMutationBusy}');
     expect(dataPageSource).toContain('aria-busy={dataActionBusy}');
     expect(dataPageSource).toContain(
       'aria-label="Backup, restore, export, import, and reset actions"',

@@ -24,8 +24,8 @@ $desktopPackagePath = Join-Path $repositoryRoot 'apps\desktop\package.json'
 $rootPackage = Get-Content -Raw -LiteralPath $rootPackagePath | ConvertFrom-Json
 $desktopPackage = Get-Content -Raw -LiteralPath $desktopPackagePath | ConvertFrom-Json
 if (-not $Version) { $Version = $rootPackage.version }
-if ($Version -notmatch '^1\.\d+\.\d+$') {
-  throw "The V1 release lane requires a 1.x.y version; received '$Version'."
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+  throw "The release lane requires a three-part numeric version; received '$Version'."
 }
 if ($rootPackage.version -ne $Version -or $desktopPackage.version -ne $Version) {
   throw "Root ($($rootPackage.version)) and desktop ($($desktopPackage.version)) versions must both equal $Version."
@@ -44,7 +44,8 @@ if (-not $OutputRoot) { $OutputRoot = Join-Path $repositoryRoot 'local-releases'
 if (-not $CandidateRoot) { $CandidateRoot = Join-Path $repositoryRoot 'out\release-candidates' }
 $OutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
 $CandidateRoot = [System.IO.Path]::GetFullPath($CandidateRoot)
-$baseHandoffName = "Balance Book V1 - $Version"
+$releaseLabel = 'V' + $Version.Split('.')[0]
+$baseHandoffName = "Balance Book $releaseLabel - $Version"
 $releaseClass = if ($LocalUnsignedCandidate) { 'local-unsigned-candidate' } else { 'public-production' }
 $handoffName = if ($LocalUnsignedCandidate) { "$baseHandoffName - LOCAL UNSIGNED CANDIDATE" } else { $baseHandoffName }
 $completeHandoffRoot = if ($LocalUnsignedCandidate) { Join-Path $OutputRoot 'candidates' } else { $OutputRoot }
@@ -75,7 +76,7 @@ if (-not $LocalUnsignedCandidate -and $BackupPath -and $AllowDirty) {
   throw 'A public-production handoff cannot use AllowDirty.'
 }
 if ($BackupPath -and $skippedReleaseGates.Count -gt 0 -and -not $LocalUnsignedCandidate) {
-  throw "A complete V1 handoff cannot skip release gates: $($skippedReleaseGates -join ', ')."
+  throw "A complete handoff cannot skip release gates: $($skippedReleaseGates -join ', ')."
 }
 
 $gitStatus = @(& git -C $repositoryRoot status --porcelain=v1 --untracked-files=all)
@@ -131,7 +132,7 @@ $packagePath = Join-Path $squirrelDirectory "balance_book_mvp-$Version-full.nupk
 $releasesPath = Join-Path $squirrelDirectory 'RELEASES'
 foreach ($artifact in @($setupSource, $packagePath, $releasesPath)) {
   if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
-    throw "Expected Squirrel V1 artifact was not found: $artifact"
+    throw "Expected Squirrel artifact was not found: $artifact"
   }
 }
 
@@ -167,9 +168,9 @@ if (-not $AllowUnsigned) {
   }
 }
 
-$installerName = "1 - Install Balance Book V1 ($Version).exe"
+$installerName = "1 - Install Balance Book $releaseLabel ($Version).exe"
 $uninstallerName = '2 - Uninstall Balance Book.exe'
-$backupName = '3 - Balance Book V1 Private Backup.balancebook-backup'
+$backupName = "3 - Balance Book $releaseLabel Private Backup.balancebook-backup"
 
 if (-not $BackupPath) {
   if (Test-Path -LiteralPath $candidateDirectory) {
@@ -188,7 +189,7 @@ if (-not $BackupPath) {
     productionReady = $false
     missing = $backupName
     product = 'Balance Book'
-    releaseLabel = 'V1'
+    releaseLabel = $releaseLabel
     version = $Version
     installerIdentity = 'balance_book_mvp'
     squirrelBuildMode = if ($OfflineSquirrel) { 'offline-direct-squirrel' } else { 'electron-forge' }
@@ -218,7 +219,7 @@ if (-not $BackupPath) {
   }
   $candidateMetadataDirectory = Join-Path $CandidateRoot 'metadata'
   New-Item -ItemType Directory -Path $candidateMetadataDirectory -Force | Out-Null
-  $candidateMetadataPath = Join-Path $candidateMetadataDirectory "Balance Book V1 - $Version.candidate.json"
+  $candidateMetadataPath = Join-Path $candidateMetadataDirectory "$baseHandoffName.candidate.json"
   [System.IO.File]::WriteAllText(
     $candidateMetadataPath,
     (($candidateMetadata | ConvertTo-Json -Depth 7) + [Environment]::NewLine),
@@ -241,19 +242,19 @@ if ([System.IO.Path]::GetExtension($BackupPath) -ine '.balancebook-backup') {
   throw 'BackupPath must use the .balancebook-backup extension.'
 }
 if (Test-Path -LiteralPath $finalHandoffDirectory) {
-  throw "Refusing to overwrite an existing V1 handoff: $finalHandoffDirectory"
+  throw "Refusing to overwrite an existing handoff: $finalHandoffDirectory"
 }
 
 $temporaryBase = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot 'out\release-staging'))
 New-Item -ItemType Directory -Path $temporaryBase -Force | Out-Null
 $temporaryDirectory = [System.IO.Path]::GetFullPath(
-  (Join-Path $temporaryBase ('BalanceBookV1-' + [guid]::NewGuid().ToString('N')))
+  (Join-Path $temporaryBase ("BalanceBook$releaseLabel-" + [guid]::NewGuid().ToString('N')))
 )
 if (
   -not $temporaryDirectory.StartsWith(($temporaryBase.TrimEnd('\') + '\'), [System.StringComparison]::OrdinalIgnoreCase) -or
-  -not (Split-Path -Leaf $temporaryDirectory).StartsWith('BalanceBookV1-')
+  -not (Split-Path -Leaf $temporaryDirectory).StartsWith("BalanceBook$releaseLabel-")
 ) {
-  throw 'Refusing to use an unsafe V1 staging directory.'
+  throw 'Refusing to use an unsafe release staging directory.'
 }
 
 try {
@@ -269,9 +270,9 @@ try {
 
   New-Item -ItemType Directory -Path $metadataDirectory -Force | Out-Null
   $metadataSuffix = if ($LocalUnsignedCandidate) { 'local-unsigned-candidate' } else { 'release' }
-  $metadataPath = Join-Path $metadataDirectory "Balance Book V1 - $Version.$metadataSuffix.json"
+  $metadataPath = Join-Path $metadataDirectory "$baseHandoffName.$metadataSuffix.json"
   $validation = & (Join-Path $PSScriptRoot 'validate-windows-release.ps1') -HandoffDirectory $finalHandoffDirectory -ExpectedVersion $Version -SquirrelArtifactDirectory $squirrelDirectory -MetadataPath $metadataPath -ReleaseClass $releaseClass -SkippedReleaseGates $skippedReleaseGates -AllowUnsigned:$AllowUnsigned
-  $hashManifestPath = Join-Path $metadataDirectory "Balance Book V1 - $Version.$metadataSuffix.sha256.txt"
+  $hashManifestPath = Join-Path $metadataDirectory "$baseHandoffName.$metadataSuffix.sha256.txt"
   $hashLines = Get-ChildItem -LiteralPath $finalHandoffDirectory -File | Sort-Object Name | ForEach-Object {
     '{0} *{1}' -f (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash, $_.Name
   }

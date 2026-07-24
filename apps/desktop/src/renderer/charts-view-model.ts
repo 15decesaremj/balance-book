@@ -14,6 +14,7 @@ import {
   enrichCardCyclesWithActivities,
   generateCardCyclesThroughHorizon,
   materializeCommittedRefinanceEvents,
+  projectAssetsAtDate,
   projectCardDebtSchedule,
   resolveCardCyclesAsOf,
   summarizeRevolvingDebt,
@@ -69,6 +70,7 @@ export interface BuildChartsViewModelInput {
   asOfDate?: PlainDateString;
   historyMonths?: number;
   futureMonths?: number;
+  experimentalCardInterestForecastEnabled?: boolean;
 }
 
 const toDate = (value: PlainDateString): Temporal.PlainDate => Temporal.PlainDate.from(value);
@@ -283,6 +285,7 @@ const projectCardDebtTimeline = (input: {
   materializedEvents: ManagedRecordsDto['events'];
   asOfDate: PlainDateString;
   endDate: PlainDateString;
+  includeCardInterest: boolean;
   currentDebtOverride?: { currentBalanceCents: number; carryingBalanceCents: number };
 }): CardDebtProjection => {
   const storedCycles = input.records.cardCycles.filter((cycle) => cycle.cardId === input.card.id);
@@ -350,6 +353,7 @@ const projectCardDebtTimeline = (input: {
     card: input.card,
     cardCycles: effectiveCycles,
     asOfDate: input.asOfDate,
+    includeInterest: input.includeCardInterest,
     ...(openingCarryingCents > 0
       ? {
           openingCarryingBalance: {
@@ -625,6 +629,7 @@ export const buildChartsViewModel = (input: BuildChartsViewModelInput): ChartsVi
     loans: input.records.loans,
     plans: input.records.committedRefinancePlans,
     receivables: input.records.receivables,
+    includeCardInterest: input.experimentalCardInterestForecastEnabled,
     startDate: asOfDate,
     endDate: actualEndDate,
   });
@@ -639,6 +644,7 @@ export const buildChartsViewModel = (input: BuildChartsViewModelInput): ChartsVi
           card,
           records: input.records,
           materializedEvents,
+          includeCardInterest: input.experimentalCardInterestForecastEnabled ?? false,
           asOfDate,
           endDate: actualEndDate,
           ...(forecastDebt === undefined
@@ -774,14 +780,14 @@ export const buildChartsViewModel = (input: BuildChartsViewModelInput): ChartsVi
       { date: asset.valuationDate, cents: asset.valueCents, provenance: 'valuation' },
       ...futureSampleDates
         .filter((date) => compareDates(date, asset.valuationDate) >= 0)
-        .map((date) => ({ date, cents: asset.valueCents, provenance: 'modeled' as const })),
+        .map((date) => ({
+          date,
+          cents: projectAssetsAtDate([asset], date)[0]?.valueCents ?? asset.valueCents,
+          provenance: 'modeled' as const,
+        })),
     ]);
   }
   if (input.records.assets.length > 0) {
-    const baselineAssetCents = input.records.assets.reduce(
-      (total, asset) => total + asset.valueCents,
-      0,
-    );
     const contributionBaseline = investmentContributionCentsOnOrBefore(asOfDate);
     addSeries(
       'assets:total',
@@ -790,7 +796,12 @@ export const buildChartsViewModel = (input: BuildChartsViewModelInput): ChartsVi
       futureSampleDates.map((date) => ({
         date,
         cents:
-          baselineAssetCents + investmentContributionCentsOnOrBefore(date) - contributionBaseline,
+          projectAssetsAtDate(input.records.assets, date).reduce(
+            (total, asset) => total + asset.valueCents,
+            0,
+          ) +
+          investmentContributionCentsOnOrBefore(date) -
+          contributionBaseline,
         provenance: 'modeled' as const,
       })),
     );
@@ -858,6 +869,11 @@ export const buildChartsViewModel = (input: BuildChartsViewModelInput): ChartsVi
   const baselineNetWorthCents =
     input.forecast.contractualNetWorthCents ?? input.forecast.economicNetWorthCents;
   const baselineInvestmentContributionCents = investmentContributionCentsOnOrBefore(asOfDate);
+  const projectedIncludedAssetsAt = (date: PlainDateString): number =>
+    projectAssetsAtDate(input.records.assets, date)
+      .filter((asset) => asset.includedInNetWorth)
+      .reduce((total, asset) => total + asset.valueCents, 0);
+  const baselineIncludedAssetCents = projectedIncludedAssetsAt(asOfDate);
   const netWorthPoints: ChartsPoint[] =
     baselineNetWorthCents === undefined || baselinePositionCents === undefined
       ? []
@@ -874,6 +890,7 @@ export const buildChartsViewModel = (input: BuildChartsViewModelInput): ChartsVi
               (position.cents - baselinePositionCents) -
               (baselineInvestmentContributionCents -
                 investmentContributionCentsOnOrBefore(position.date)) -
+              (baselineIncludedAssetCents - projectedIncludedAssetsAt(position.date)) -
               (loanCents - baselineLoanCents) -
               (cardCents - baselineCardCents),
             provenance: 'modeled' as const,
@@ -885,7 +902,7 @@ export const buildChartsViewModel = (input: BuildChartsViewModelInput): ChartsVi
     'Historical total position is shown only where dated evidence exists; the app does not backfill missing cash, owed, or net-worth history.',
     'Cash history uses account snapshots and reconciliations. Card history uses reported balances and locked or actual statement cycles.',
     'Future card balances follow the debt engine at statement close and on each modeled cash-payment date; projected carry clears or rolls on the same dated schedule, and excess payments remain credits in net worth.',
-    'Loan futures use the dated amortization, payment-override, and committed-refinance engine. Asset values remain flat between valuations because there is no market-return history; dated investment contributions increase only the aggregate asset series.',
+    'Loan futures use the dated amortization, payment-override, and committed-refinance engine. Investment futures use each asset’s explicit growth, gross-income contribution, employer-match, and fixed-contribution assumptions; assets without assumptions remain flat between valuations.',
   ];
   if (compareDates(actualEndDate, windowEndDate) < 0) {
     availabilityNotes.push(

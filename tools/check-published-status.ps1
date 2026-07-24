@@ -13,6 +13,8 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $ExpectedPublisherThumbprint,
   [string] $InstalledExecutable,
+  [ValidateSet('beta', 'stable')]
+  [string] $Channel = 'stable',
   [switch] $SkipSourceVerification,
   [switch] $SkipRemote
 )
@@ -239,8 +241,10 @@ try {
   $expectedPublicAssetNames = @(
     "Balance-Book-$version-Setup.exe",
     "Uninstall-Balance-Book-$version.exe",
+    "balance_book_mvp-$version-full.nupkg",
     'LICENSE.txt',
     'README-FIRST.txt',
+    'RELEASES',
     'RELEASE-METADATA.json',
     'SHA256SUMS.txt',
     'THIRD_PARTY_NOTICES.txt'
@@ -413,8 +417,9 @@ try {
           }
         }
 
+        $expectedTag = if ($Channel -eq 'beta') { "v$version-beta" } else { "v$version" }
         $releaseView = Invoke-Captured $gh.Source @(
-          'release', 'view', '--repo', $PublicRepository,
+          'release', 'view', $expectedTag, '--repo', $PublicRepository,
           '--json', 'tagName,name,body,isDraft,isPrerelease,assets,url,targetCommitish'
         )
         if ($releaseView.ExitCode -ne 0) {
@@ -422,11 +427,24 @@ try {
         }
         else {
           $remoteRelease = $releaseView.Output | ConvertFrom-Json
-          $expectedTag = "v$version"
           if ($remoteRelease.isDraft) { Add-Failure 'The latest GitHub release is still a draft.' }
-          if ($remoteRelease.isPrerelease) { Add-Failure 'READY requires a stable GitHub release, not a prerelease.' }
+          if ($Channel -eq 'stable' -and $remoteRelease.isPrerelease) {
+            Add-Failure 'READY on the Stable channel requires a non-prerelease GitHub release.'
+          }
+          if ($Channel -eq 'beta' -and -not $remoteRelease.isPrerelease) {
+            Add-Failure 'READY on the Beta channel requires a GitHub prerelease.'
+          }
           if ($remoteRelease.tagName -ne $expectedTag) {
             Add-Failure "Latest release tag is '$($remoteRelease.tagName)', not '$expectedTag'."
+          }
+          $immutableResult = Invoke-Captured $gh.Source @(
+            'api',
+            "repos/$PublicRepository/releases/tags/$expectedTag",
+            '-H', 'X-GitHub-Api-Version: 2026-03-10',
+            '--jq', '.immutable'
+          )
+          if ($immutableResult.ExitCode -ne 0 -or $immutableResult.Output -ne 'true') {
+            Add-Failure 'The public GitHub release is not immutable.'
           }
           if (
             [string]::IsNullOrWhiteSpace($remoteRelease.name) -or
@@ -434,7 +452,7 @@ try {
             [string]::IsNullOrWhiteSpace($remoteRelease.body) -or
             $remoteRelease.body -notmatch [regex]::Escape($version)
           ) {
-            Add-Failure 'The stable GitHub release name and reviewed release-note body must both identify the exact version.'
+            Add-Failure 'The GitHub release name and reviewed release-note body must both identify the exact version.'
           }
           if ($head) {
             $tagHead = Invoke-Captured $gh.Source @('api', "repos/$PublicRepository/commits/$($remoteRelease.tagName)", '--jq', '.sha')
@@ -480,7 +498,8 @@ try {
     $releaseFiles = @(Get-ChildItem -LiteralPath $releasePath -File | Sort-Object Name)
     $privateAssets = @(
       $releaseFiles | Where-Object {
-        $_.Name -match '\.(balancebook-backup|xlsx?|xlsm|sqlite3?|sqlite-wal|sqlite-shm|sqlite-journal|db|db-wal|db-shm|backup|pfx|p12|pem|key|nupkg|zip|7z|asar|pak|dll|node|log|pdf|csv)$' -or
+        $_.Name -match '\.(balancebook-backup|xlsx?|xlsm|sqlite3?|sqlite-wal|sqlite-shm|sqlite-journal|db|db-wal|db-shm|backup|pfx|p12|pem|key|zip|7z|asar|pak|dll|node|log|pdf|csv)$' -or
+        ($_.Extension -ieq '.nupkg' -and $_.Name -ne "balance_book_mvp-$version-full.nupkg") -or
         $_.Name -match '(?i)private|database|workbook|export'
       }
     )
@@ -492,10 +511,14 @@ try {
     $uninstallers = @($releaseFiles | Where-Object { $_.Extension -ieq '.exe' -and $_.Name -match '(?i)uninstall' })
     $manifests = @($releaseFiles | Where-Object { $_.Name -ieq 'SHA256SUMS.txt' })
     $metadataFiles = @($releaseFiles | Where-Object { $_.Name -ieq 'RELEASE-METADATA.json' })
+    $squirrelPackages = @($releaseFiles | Where-Object { $_.Name -eq "balance_book_mvp-$version-full.nupkg" })
+    $releaseFeeds = @($releaseFiles | Where-Object { $_.Name -ceq 'RELEASES' })
     if ($setups.Count -ne 1) { Add-Failure 'Release directory must contain exactly one Setup executable.' }
     if ($uninstallers.Count -ne 1) { Add-Failure 'Release directory must contain exactly one uninstall helper.' }
     if ($manifests.Count -ne 1) { Add-Failure 'Release directory must contain exactly one SHA256SUMS.txt.' }
     if ($metadataFiles.Count -ne 1) { Add-Failure 'Release directory must contain exactly one RELEASE-METADATA.json.' }
+    if ($squirrelPackages.Count -ne 1) { Add-Failure 'Release directory must contain exactly one versioned Squirrel package.' }
+    if ($releaseFeeds.Count -ne 1) { Add-Failure 'Release directory must contain exactly one Squirrel RELEASES feed.' }
 
     $localNames = @($releaseFiles.Name | Sort-Object)
     if (($localNames -join "`n") -ne ($expectedPublicAssetNames -join "`n")) {
@@ -561,8 +584,35 @@ try {
         if ($releaseMetadata.format -ne 'balance-book-public-release' -or $releaseMetadata.metadataVersion -ne 1) {
           Add-Failure 'RELEASE-METADATA.json has an unsupported format or metadata version.'
         }
+        if ($squirrelPackages.Count -eq 1) {
+          $packageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $squirrelPackages[0].FullName).Hash
+          if (
+            $releaseMetadata.squirrelPackage.name -ne $squirrelPackages[0].Name -or
+            $releaseMetadata.squirrelPackage.sha256 -ne $packageHash
+          ) {
+            Add-Failure 'Release metadata does not match the exact Squirrel update package.'
+          }
+        }
+        if (
+          $releaseFeeds.Count -eq 1 -and
+          [string] (Get-Content -Raw -LiteralPath $releaseFeeds[0].FullName).Trim() -ne
+            [string] $releaseMetadata.squirrelPackage.publicReleasesLine
+        ) {
+          Add-Failure 'The public RELEASES feed does not match release metadata.'
+        }
         if ($releaseMetadata.version -ne $version -or $releaseMetadata.sourceCommit -ne $head -or $releaseMetadata.sourceTree -ne $publicTreeResult.Output) {
           Add-Failure 'Release metadata is not bound to the exact version, commit, and tree under review.'
+        }
+        $expectedMetadataTag = if ($Channel -eq 'beta') { "v$version-beta" } else { "v$version" }
+        if ($releaseMetadata.releaseTag -ne $expectedMetadataTag) {
+          Add-Failure 'Release metadata does not match the requested update channel tag.'
+        }
+        if ($releaseMetadata.updateChannel -ne $Channel) {
+          Add-Failure 'Release metadata does not match the requested update channel.'
+        }
+        $expectedPackageUrl = "https://github.com/$PublicRepository/releases/download/$expectedMetadataTag/balance_book_mvp-$version-full.nupkg"
+        if ($releaseMetadata.squirrelPackage.immutableAssetUrl -cne $expectedPackageUrl) {
+          Add-Failure 'Release metadata does not point to the exact immutable Squirrel package asset.'
         }
         if ($releaseMetadata.lockfileSha256 -ne $lockfileHash) {
           Add-Failure 'Release metadata lockfile hash does not match the reviewed source tree.'

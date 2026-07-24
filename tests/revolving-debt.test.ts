@@ -123,7 +123,7 @@ describe('revolving debt summary', () => {
     });
   });
 
-  it('keeps the unpaid residual after an actual partial payment', () => {
+  it('keeps financed carry after a recorded partial payment without calling it past due', () => {
     const summary = summarizeRevolvingDebt({
       card: makeCard({ paymentPolicy: 'minimum', minimumPaymentCents: 25_000 }),
       cycles: [makeCycle({ state: 'paid', paymentOn: '2026-06-20', actualPaymentCents: 25_000 })],
@@ -136,7 +136,7 @@ describe('revolving debt summary', () => {
       currentBalanceCents: 75_000,
       carryingBalanceCents: 75_000,
       projectedCarryingBalanceCents: 75_000,
-      overdue: true,
+      overdue: false,
     });
   });
 
@@ -187,6 +187,7 @@ describe('revolving debt summary', () => {
           date: '2026-06-18',
           kind: 'card-payment',
           amountCents: 120_000,
+          status: 'confirmed',
           paymentMethod: 'cash-account',
           cardActivityTreatment: undefined,
         }),
@@ -268,7 +269,7 @@ describe('revolving debt summary', () => {
       amountCurrentlyDueCents: 100_000,
       currentBalanceCents: 88_000,
       carryingBalanceCents: 7_000,
-      overdue: true,
+      overdue: false,
       source: 'reported',
     });
   });
@@ -448,7 +449,7 @@ describe('revolving debt summary', () => {
     expect(summary.projectedOpenCycleCents).toBe(1_500);
   });
 
-  it('applies a generated same-day statement payment once', () => {
+  it('does not treat a generated same-day payment instruction as completed debt payment', () => {
     const statement = makeCycle({ state: 'scheduled-payment', paymentOn: '2026-06-20' });
     const payment = makeEvent({
       id: `card-payment-${statement.id}`,
@@ -468,10 +469,75 @@ describe('revolving debt summary', () => {
     });
 
     expect(summary.latestStatementCents).toBe(100_000);
+    expect(summary.amountCurrentlyDueCents).toBe(100_000);
+    expect(summary.currentBalanceCents).toBe(100_000);
+    expect(summary.carryingBalanceCents).toBe(0);
+  });
+
+  it('can explicitly include a projected same-day payment on a matching cash-ledger basis', () => {
+    const statement = makeCycle({ state: 'scheduled-payment', paymentOn: '2026-06-20' });
+    const payment = makeEvent({
+      id: `card-payment-${statement.id}`,
+      sourceRecordId: statement.id,
+      date: '2026-06-20',
+      kind: 'card-payment',
+      amountCents: 100_000,
+      status: 'scheduled',
+      paymentMethod: 'cash-account',
+      cardActivityTreatment: undefined,
+    });
+    const summary = summarizeRevolvingDebt({
+      card: makeCard(),
+      cycles: [statement],
+      events: [payment],
+      asOfDate: '2026-06-20',
+      paymentEvidenceMode: 'include-projected-payments',
+    });
+
+    expect(summary.latestStatementCents).toBe(100_000);
     expect(summary.amountCurrentlyDueCents).toBe(0);
     expect(summary.currentBalanceCents).toBe(0);
     expect(summary.carryingBalanceCents).toBe(0);
   });
+
+  it.each(['confirmed', 'paid'] as const)(
+    'subtracts only a partial $status payment while ignoring its scheduled remainder',
+    (status) => {
+      const statement = makeCycle({ state: 'scheduled-payment', paymentOn: '2026-06-20' });
+      const partialPayment = makeEvent({
+        id: `partial-${status}-payment`,
+        sourceRecordId: statement.id,
+        date: '2026-06-20',
+        kind: 'card-payment',
+        amountCents: 25_000,
+        status,
+        paymentMethod: 'cash-account',
+        cardActivityTreatment: undefined,
+      });
+      const scheduledRemainder = makeEvent({
+        id: `card-payment-${statement.id}`,
+        sourceRecordId: statement.id,
+        date: '2026-06-20',
+        kind: 'card-payment',
+        amountCents: 75_000,
+        status: 'scheduled',
+        paymentMethod: 'cash-account',
+        cardActivityTreatment: undefined,
+      });
+
+      const summary = summarizeRevolvingDebt({
+        card: makeCard(),
+        cycles: [statement],
+        events: [partialPayment, scheduledRemainder],
+        asOfDate: '2026-06-20',
+      });
+
+      expect(summary.latestStatementCents).toBe(100_000);
+      expect(summary.amountCurrentlyDueCents).toBe(75_000);
+      expect(summary.currentBalanceCents).toBe(75_000);
+      expect(summary.carryingBalanceCents).toBe(0);
+    },
+  );
 
   it('rolls a linked payment against later reported total and carrying snapshots', () => {
     const statement = makeCycle({
@@ -497,6 +563,7 @@ describe('revolving debt summary', () => {
           date: '2026-06-10',
           kind: 'card-payment',
           amountCents: 25_000,
+          status: 'confirmed',
           paymentMethod: 'cash-account',
           cardActivityTreatment: undefined,
         }),
@@ -556,6 +623,7 @@ describe('revolving debt summary', () => {
           date: '2026-06-18',
           kind: 'card-payment',
           amountCents: 120_000,
+          status: 'confirmed',
           paymentMethod: 'cash-account',
           cardActivityTreatment: undefined,
         }),

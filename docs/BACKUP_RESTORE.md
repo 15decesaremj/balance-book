@@ -14,11 +14,11 @@ The local sign-in password and encrypted-backup password serve different purpose
 
 They may be different and should be stored securely. Balance Book cannot recover either forgotten password.
 
-## What portable backup V2 contains
+## What portable backup V3 contains
 
-Portable backup V2 preserves the selected profile's managed financial records, settings and guardrails, onboarding state, theme preference, audit events, import batches and lineage, source schema metadata, and record timestamps required for a faithful restore. Managed debt state includes card issuer snapshots and lifecycle dates, statement/payment history, loan amortization structure, contractual balloon, calculated-field lineage, classified regular/extra-principal payments, and committed refinance lineage. Money Owed state includes its received date, destination account, fixed recurrence or recurring-bill timing anchor and offset, accrual schedule, and linked settlement history.
+Portable backup V3 preserves the selected profile's managed financial records, settings and guardrails, onboarding state, theme and experience preferences, audit events, import batches and lineage, source schema metadata, and record timestamps required for a faithful restore. Strict V2 portable payloads remain readable and adopt current experience defaults. Managed debt state includes card issuer snapshots and lifecycle dates, statement/payment history, loan amortization structure, contractual balloon, calculated-field lineage, classified regular/extra-principal payments, and committed refinance lineage. Money Owed state includes its received date, destination account, fixed recurrence or recurring-bill timing anchor and offset, accrual schedule, and linked settlement history.
 
-It deliberately excludes sign-in password hashes and salts, failed-login state, reusable credentials, application binaries, and data belonging to another local profile. A restore therefore does not overwrite the destination profile's display name, username, or sign-in password.
+It deliberately excludes sign-in password hashes and salts, failed-login state, reusable credentials, application binaries, data belonging to another local profile, and device-local notification presentation metadata such as read, snoozed, or dismissed timestamps. A restore therefore does not overwrite the destination profile's display name, username, or sign-in password; actionable notification conditions regenerate deterministically from the restored canonical financial records.
 
 The file is encrypted with AES-256-GCM using a key derived with scrypt from the supplied backup password. Each backup has a random salt and initialization vector. Creation uses an atomic temporary file, flush, decrypt-and-verify readback, and rename sequence. These controls reduce corruption risk but do not replace keeping multiple verified copies.
 
@@ -56,7 +56,7 @@ This design lets the destination use a new local sign-in password while retainin
 
 ## Compatibility
 
-- V2 is the current portable format.
+- V3 is the current portable format. Strict V2 backups remain readable and adopt current experience defaults during restore.
 - Legacy encrypted V1 backups remain readable, but they contain only the earlier core record set and cannot recreate metadata that was never stored.
 - A current application may reject backups from a newer database or backup schema. Upgrade the application instead of modifying the backup.
 - There is no supported partial merge between two independently active profiles.

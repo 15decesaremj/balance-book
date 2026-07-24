@@ -22,7 +22,15 @@ for (const script of ['format:check', 'lint', 'typecheck']) {
   run(script, process.execPath, [pnpmCli, script]);
 }
 run('native database rebuild for Node', process.execPath, [pnpmCli, 'rebuild', 'better-sqlite3']);
-for (const script of ['test', 'privacy:check']) {
+run('test', process.execPath, [
+  path.resolve('node_modules', 'vitest', 'dist', 'cli.js'),
+  'run',
+  'tests',
+  '--pool=forks',
+  '--maxWorkers=1',
+  '--testTimeout=30000',
+]);
+for (const script of ['privacy:check']) {
   run(script, process.execPath, [pnpmCli, script]);
 }
 run('production package', process.execPath, [

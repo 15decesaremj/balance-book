@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { forecastEventSchema } from '@balance-book/domain';
 import {
+  billPlanRequestSchema,
   cancelRefinancePlanRequestSchema,
   commitRefinancePlanRequestSchema,
   dailyCashPointSchema,
@@ -8,6 +9,7 @@ import {
   forecastDailyEventSchema,
   forecastRequestSchema,
   forecastSnapshotSchema,
+  overviewExpenseRequestSchema,
   scenarioRequestSchema,
   upsertManagedEntityRequestSchema,
   verticalSliceInputSchema,
@@ -40,6 +42,54 @@ describe('desktop request contracts', () => {
     expect(forecastRequestSchema.parse({ requiredEndDate: '2027-07-20' })).toEqual({
       requiredEndDate: '2027-07-20',
     });
+  });
+
+  it('requires a named counterparty only when an Overview expense creates Money Owed', () => {
+    const expense = {
+      paymentSource: { kind: 'credit-card' as const, cardId: 'synthetic-card' },
+      amountCents: 12_345,
+      date: '2026-07-14',
+      label: 'Synthetic expense',
+      owedTreatment: 'shared' as const,
+      owedBy: 'Synthetic counterparty',
+    };
+    expect(overviewExpenseRequestSchema.parse(expense)).toEqual(expense);
+    expect(() => overviewExpenseRequestSchema.parse({ ...expense, owedBy: undefined })).toThrow(
+      /who owes/i,
+    );
+    expect(() =>
+      overviewExpenseRequestSchema.parse({
+        ...expense,
+        owedTreatment: 'none',
+      }),
+    ).toThrow(/only valid/i);
+  });
+
+  it('validates recurring bill card treatment and linked Money Owed settings together', () => {
+    const bill = {
+      eventId: 'synthetic-bill',
+      paymentSource: {
+        kind: 'credit-card' as const,
+        cardId: 'synthetic-card',
+        addToCardBalance: false,
+      },
+      amountCents: 12_345,
+      firstBillDate: '2026-08-01',
+      label: 'Synthetic utility',
+      recurrenceRule: { frequency: 'monthly' as const, dayOfMonth: 1, interval: 1 },
+      certainty: 'expected' as const,
+      active: true,
+      owedTreatment: 'shared' as const,
+      owedBy: 'Synthetic counterparty',
+    };
+    expect(billPlanRequestSchema.parse(bill)).toEqual(bill);
+    expect(() => billPlanRequestSchema.parse({ ...bill, owedBy: undefined })).toThrow(/who owes/i);
+    expect(() =>
+      billPlanRequestSchema.parse({
+        ...bill,
+        recurrenceEndDate: '2026-07-31',
+      }),
+    ).toThrow(/end cannot precede/i);
   });
 
   it('accepts a first forecast without fabricated optional records', () => {
@@ -279,6 +329,8 @@ describe('desktop request contracts', () => {
       expectedReceivableCents: 0,
       conservativePositionCents: 10_000,
       expectedPositionCents: 10_000,
+      conservativeNetWorthCents: 120_000,
+      expectedNetWorthCents: 125_000,
       accountBalances: [
         {
           accountId: 'later-account',
@@ -291,6 +343,10 @@ describe('desktop request contracts', () => {
       events: [],
     };
 
+    expect(dailyCashPointSchema.parse(point)).toMatchObject({
+      conservativeNetWorthCents: 120_000,
+      expectedNetWorthCents: 125_000,
+    });
     expect(dailyCashPointSchema.parse(point).accountBalances[0]?.available).toBe(false);
     expect(() =>
       dailyCashPointSchema.parse({
@@ -344,6 +400,7 @@ describe('desktop request contracts', () => {
       fundingAccountLowCents: -750,
       fundingAccountLowDate: '2026-08-12',
       nextDueOn: '2026-08-13',
+      purchaseAdvisorEligible: true,
     };
 
     const parsedCardPower = forecastSnapshotSchema.parse({
