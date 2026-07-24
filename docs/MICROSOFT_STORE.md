@@ -14,14 +14,22 @@ self-signed MSIX as if it were a trusted public release.
 ## Account and policy gate
 
 Microsoft currently charges no registration fee for either a new Individual or Company developer
-account. Balance Book nonetheless requires a **Company** account: Store policy 10.8.3 requires it
-when an application's primary functionality requires financial account information, and policy
-10.14 prohibits that behavior in an Individual account. Do not misclassify the product to follow an
-older Individual-account plan.
+account. The first submission uses the owner's verified **Individual** account as a deliberate,
+good-faith attempt. Balance Book is a local-only manual planning tool: it does not connect to
+financial institutions; request or store account numbers, card numbers, PINs, banking credentials,
+tax IDs, API keys, private keys, or recovery phrases; initiate transactions; process payments; or
+transmit financial information. Users create arbitrary labels and manually enter amounts, dates,
+and planning assumptions. Data remains on the device unless the user explicitly creates an export.
 
-Enrollment starts at <https://storedeveloper.microsoft.com/>. Microsoft login, MFA, company identity
-and business verification, and legal declarations are owner-only gates. Stop if Partner Center
-shows a charge; this project is intended to remain free.
+This distinction is represented accurately in Partner Center; it must not be used to evade or
+misstate Microsoft's rules. If Microsoft explicitly determines that policies 10.8.3 or 10.14
+require a Company account for this application, treat that decision as authoritative and retain
+Azure Artifact Signing as the documented fallback. Do not create paid Azure resources without the
+owner's explicit direction.
+
+Enrollment starts at <https://storedeveloper.microsoft.com/>. Microsoft login, MFA, identity
+verification, age rating, legal declarations, and submission certification are owner-only gates.
+Stop if Partner Center shows a charge; this project is intended to remain free.
 
 Official references:
 
@@ -103,9 +111,9 @@ recoverable after the first Store migration.
 The first application and listing are a Partner Center bootstrap and are not performed by the
 automated update workflow:
 
-1. Complete compliant Company enrollment.
+1. Complete the owner's Individual enrollment and identity verification.
 2. Reserve `Balance Book`.
-3. Copy the exact product and package identity into the build configuration.
+3. Copy the exact Partner Center product and package identity into the ignored build configuration.
 4. Use the verified text in `store/listing` and synthetic-only screenshots generated under
    `out\store\listing\screenshots`.
 5. Confirm the product is free.

@@ -38,17 +38,22 @@ The account owner must make the final age-rating declaration in Partner Center.
 
 ## Account-policy constraint
 
-Microsoft Store policy 10.8.3 and the individual-account limitation in policy 10.14 require a
-Company developer account when an application's primary functionality requires financial account
-information. Balance Book must not be enrolled or described as an Individual-account financial
-app merely to follow an older enrollment assumption.
+The first submission uses the owner's verified Individual account as an acknowledged, good-faith
+policy interpretation. Balance Book does not request or store financial account numbers, card
+numbers, banking credentials, PINs, tax IDs, keys, or recovery phrases; connect to institutions;
+initiate transactions; process payments; or transmit financial information. It calculates local
+forecasts from arbitrary labels, amounts, dates, and assumptions entered manually by the user.
+
+These facts must be stated accurately rather than used to evade Microsoft Store policies. If
+Microsoft explicitly rejects the submission under policies 10.8.3 or 10.14 or requires a Company
+account, treat that result as authoritative and preserve the documented Azure Artifact Signing
+fallback. Do not create a paid Azure resource without explicit owner direction.
 
 ## Owner-only fields
 
 The account owner must personally complete or confirm:
 
-- Company developer-account identity and business verification
-- Microsoft login and MFA
+- Individual developer-account identity verification, Microsoft login, and MFA
 - Legal declarations and submission certification
 - Final age-rating questionnaire
 - Availability markets and any export/compliance attestations presented by Partner Center

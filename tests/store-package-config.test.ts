@@ -23,6 +23,7 @@ describe('Microsoft Store package configuration', () => {
     expect(manifest).toContain('ProcessorArchitecture="x64"');
     expect(manifest).toContain('MinVersion="10.0.17763.0"');
     expect(manifest).toContain('EntryPoint="Windows.FullTrustApplication"');
+    expect(manifest).toContain('<Resource Language="en-us" />');
     expect(manifest).toContain('<rescap:Capability Name="runFullTrust" />');
     expect(manifest.match(/<(?:rescap:)?Capability\b/gu)).toHaveLength(1);
     expect(manifest).not.toContain('broadFileSystemAccess');
