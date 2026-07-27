@@ -124,6 +124,18 @@ automated update workflow:
 The repository privacy gate intentionally rejects committed PNG/JPG files. Never weaken it for
 Store images; upload only reviewed synthetic screenshots directly to Partner Center.
 
+## Current production listing
+
+Balance Book 2.0.8 was published on 2026-07-27 at
+<https://apps.microsoft.com/detail/9PNHMXS2VV1S>. The Store-delivered x64 package registers as
+`MatthewJDeCesare.BalanceBook` version `2.0.8.0` with `SignatureKind: Store`.
+
+The first production installation was acquired from the `msstore` source without removing the
+direct edition. Its first launch completed the copy-first profile migration with matching table,
+row, credential, financial-record, recovery-hash, and SQLite-integrity evidence. The direct 2.0.7
+profile and application remained installed and unchanged. Exact nonprivate verification evidence is
+recorded in [PROJECT_STATE.md](PROJECT_STATE.md); databases and other owner data remain ignored.
+
 ## Future one-action publication
 
 The protected GitHub environment is `microsoft-store`. Configure these encrypted secrets:

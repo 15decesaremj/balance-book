@@ -4,7 +4,9 @@ Balance Book processes sensitive financial-planning data locally. Protecting tha
 
 ## Supported versions
 
-See [docs/SUPPORTED_VERSIONS.md](docs/SUPPORTED_VERSIONS.md). Pre-release 0.x builds are unsupported. No signed public binary is claimed until a signed release is actually published and verified.
+See [docs/SUPPORTED_VERSIONS.md](docs/SUPPORTED_VERSIONS.md). Pre-release 0.x builds are
+unsupported. Version 2.0.8 is the first supported Microsoft Store release; unsigned local or direct
+channel candidates are not supported public distributions.
 
 ## Report a vulnerability privately
 

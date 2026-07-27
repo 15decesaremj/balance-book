@@ -4,11 +4,30 @@ Balance Book is a self-contained, per-user Windows x64 desktop application. An e
 
 ## Release trust
 
-A public release is expected to be Authenticode-signed and published with a SHA-256 checksum. No signed public release is claimed until the installer, installed executable, and uninstall helper report a valid signature from the expected publisher.
+The production Microsoft Store edition is signed, delivered, and updated by Microsoft. Install it
+only from the [official Balance Book listing](https://apps.microsoft.com/detail/9PNHMXS2VV1S),
+which identifies Matthew J DeCesare as the publisher.
 
-A locally produced release candidate may be unsigned. Windows can display SmartScreen or **Unknown publisher** warnings for an unsigned file. Do not bypass a warning merely because an installer has the Balance Book name. Obtain the file from a trusted source, confirm its checksum, and understand who built it.
+A separate public direct-download release is expected to be Authenticode-signed and published with a
+SHA-256 checksum. A locally produced direct-channel candidate may be unsigned. Windows can display
+SmartScreen or **Unknown publisher** warnings for an unsigned file. Do not bypass a warning merely
+because an installer has the Balance Book name.
 
-## Install
+## Install from Microsoft Store
+
+1. Open the [official Microsoft Store listing](https://apps.microsoft.com/detail/9PNHMXS2VV1S).
+2. Select **Download** or **View in Store**, then install **Balance Book** published by
+   **Matthew J DeCesare**.
+3. Launch Balance Book from the Start menu.
+4. Select an existing migrated local profile or initialize one with a display name, username, and
+   sign-in password of at least 12 characters.
+5. If moving from another machine, restore the encrypted portable backup only after creating the
+   new local identity. See [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
+
+The Store edition updates through Microsoft Store. It does not use the direct channel's GitHub
+updater.
+
+## Install from a future signed direct release
 
 When [Published Status](PUBLISHED_STATUS.md) is `READY`, a nontechnical installation starts from the [latest stable public release](https://github.com/15decesaremj/balance-book/releases/latest). Normal users download only the signed `Balance-Book-<version>-Setup.exe`; the other eight reviewed release assets are verification, legal, uninstall, and machine-update files. Do not mistake GitHub's automatically generated source archives or the `.nupkg` machine-update package for the installer. Published Status opens the already verified downloads folder; users can independently confirm signature validity and the exact publisher certificate thumbprint using the README's click-by-click steps.
 
@@ -23,11 +42,19 @@ Windows owns taskbar pinning. Pin the running application from its taskbar conte
 
 ## Where data is stored
 
-The program is installed for the current Windows user beneath `%LOCALAPPDATA%\balance_book_mvp`. The live database and local profile state are stored beneath `%APPDATA%\Balance Book`.
+The Store edition uses package-private application data managed by Windows. On first Store launch it
+copies a verified existing direct profile into its separate Store profile without moving or editing
+the direct source. The direct edition is installed beneath `%LOCALAPPDATA%\balance_book_mvp` and
+stores its profile beneath `%APPDATA%\Balance Book`.
 
 The local sign-in password protects access through the application. The live database is not encrypted at rest, so an operating-system administrator, malware, or another process running as the same Windows user may still read it. Use Windows account security and disk encryption for device-level protection.
 
 ## Upgrade
+
+Microsoft Store updates preserve the Store edition's package-private profile. Create and verify an
+encrypted portable backup before a package reset or uninstall.
+
+For a direct-channel upgrade:
 
 1. Create and verify an encrypted portable backup.
 2. Close Balance Book.
@@ -39,11 +66,22 @@ The stable Squirrel identity upgrades the existing application instead of instal
 
 ## Uninstall and reinstall
 
-Uninstall with Windows **Installed apps** or the public release helper `Uninstall-Balance-Book-<version>.exe`. The private owner handoff uses the equivalent numbered name `2 - Uninstall Balance Book.exe`. The helper explains what will remain and then invokes the installed Squirrel uninstaller.
+Uninstall the Store edition with Windows **Installed apps**. Store uninstall or package reset can
+remove the package-private Store profile, so create and verify an encrypted portable backup first.
+An existing direct profile remains separate.
 
-Normal uninstall removes the application and its shortcuts but deliberately preserves `%APPDATA%\Balance Book`. Reinstalling under the same Windows account therefore preserves local profiles, sign-in passwords, and financial data.
+Uninstall the direct edition with Windows **Installed apps** or the public release helper
+`Uninstall-Balance-Book-<version>.exe`. The private owner handoff uses the equivalent numbered name
+`2 - Uninstall Balance Book.exe`. Direct uninstall removes the application and shortcuts but
+deliberately preserves `%APPDATA%\Balance Book`.
 
-To test a completely new setup, first create an encrypted backup and wait for **“Encrypted portable profile created and read-back verified.”** Then uninstall the application, open `%APPDATA%` in File Explorer, and rename the retained `Balance Book` folder to `Balance Book - saved before onboarding test - YYYY-MM-DD` while Balance Book is closed. Renaming is reversible and makes the next launch behave like a new customer without destroying the prior profile. To restore later, close Balance Book, move the newly created test folder aside, and rename the saved original folder back to exactly `Balance Book`; do not merge the folders. Do not move app data merely to reinstall or upgrade.
+To test a completely new direct-channel setup, first create an encrypted backup and wait for
+**“Encrypted portable profile created and read-back verified.”** Then uninstall the direct edition,
+open `%APPDATA%` in File Explorer, and rename the retained `Balance Book` folder to
+`Balance Book - saved before onboarding test - YYYY-MM-DD` while Balance Book is closed. Renaming is
+reversible and makes the next launch behave like a new customer without destroying the prior
+profile. To restore later, close Balance Book, move the newly created test folder aside, and rename
+the saved original folder back to exactly `Balance Book`; do not merge the folders.
 
 ## Private three-file handoff
 
@@ -65,6 +103,11 @@ Both folders are ignored by Git. Neither complete three-file folder may be commi
 - **The app opens with existing data after reinstall:** this is expected because uninstall preserves the app-data folder.
 - **A backup password does not work:** the backup password is separate from the local sign-in password. There is no password recovery mechanism.
 - **The installer shows Unknown publisher:** it is unsigned or its signature is invalid. Stop; public releases are required to pass signature verification.
-- **A second copy appears:** stop and report the installer version and install path. Installers must retain the stable `balance_book_mvp` identity across major versions.
+- **Two Start entries appear after installing from Store:** this is expected when the existing
+  direct edition is intentionally retained during the transition. Store and direct profiles remain
+  separate.
+- **A second copy appears within the same channel:** stop and report the installer version and
+  install path. Direct installers must retain the stable `balance_book_mvp` identity across major
+  versions.
 
 For the complete uninstall-first owner test and publication checklist, see [Published Status](PUBLISHED_STATUS.md).

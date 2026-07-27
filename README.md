@@ -14,12 +14,17 @@ Balance Book is planning software, not a bank, lender, credit decision, or subst
 
 ## Download for Windows
 
-The reviewed public source is published at [github.com/15decesaremj/balance-book](https://github.com/15decesaremj/balance-book). The signed Windows beta download will appear on the [Releases page](https://github.com/15decesaremj/balance-book/releases) only after the trusted publisher certificate and fresh-install gates pass. Until then, there is no endorsed public installer; do not download an unsigned copy from another location.
+Install the production Windows edition from the
+[official Microsoft Store listing](https://apps.microsoft.com/detail/9PNHMXS2VV1S). Microsoft
+delivers and updates the signed x64 package; version 2.0.8 is the first public Store release.
 
-Microsoft Store packaging and the future Store-managed update lane are documented in
-[Microsoft Store release channel](docs/MICROSOFT_STORE.md). The existing direct-download channel
-remains separate and supported until the Store listing is approved and its data transition is
-proven.
+The reviewed public source is published at
+[github.com/15decesaremj/balance-book](https://github.com/15decesaremj/balance-book). The separate
+direct-download channel will appear on the
+[Releases page](https://github.com/15decesaremj/balance-book/releases) only after its own publisher
+certificate and fresh-install gates pass. Do not download an unsigned copy from another location.
+Channel boundaries, Store-managed updates, and local data migration are documented in
+[Microsoft Store release channel](docs/MICROSOFT_STORE.md).
 
 ## Local-first by design
 
@@ -56,15 +61,22 @@ The local sign-in password is an application privacy boundary. The live database
 
 ## Install
 
-The 2.0.8 feature line targets Windows 11 x64 and supports Windows 10 version 1809 or later. The
-installer is self-contained; end users do not need development tools or a separate database
-server.
+The 2.0.8 Store edition targets Windows x64 and supports Windows 10 version 1809 or later. It is
+self-contained; end users do not need development tools or a separate database server.
 
-No signed public binary is claimed yet. Local unsigned Squirrel candidates have been built and tested on the owner's Windows profile, but they remain owner-testing artifacts rather than public releases. An unsigned installer may trigger Windows SmartScreen or **Unknown publisher**. Public distribution remains gated on valid Authenticode signing, fresh-disposable-profile lifecycle testing, and the checklist in [PUBLIC_RELEASE_READINESS.md](docs/PUBLIC_RELEASE_READINESS.md).
+The Microsoft Store is the endorsed public binary channel. Local unsigned Squirrel candidates
+remain owner-testing artifacts rather than public releases and may trigger Windows SmartScreen or
+**Unknown publisher**. Direct-download publication remains gated on valid Authenticode signing,
+fresh-disposable-profile lifecycle testing, and the checklist in
+[PUBLIC_RELEASE_READINESS.md](docs/PUBLIC_RELEASE_READINESS.md).
 
 Read [INSTALLATION.md](docs/INSTALLATION.md) before installing or upgrading. Read [BACKUP_RESTORE.md](docs/BACKUP_RESTORE.md) before moving data to another machine.
 
-The project uses [Published Status](docs/PUBLISHED_STATUS.md) as its repeatable publication handoff. It covers repository synchronization, the sanitized public mirror, release artifacts, independent download verification, a safe File Explorer handoff, and uninstall-first instructions for testing blank onboarding. Until that workflow reports `READY`, do not treat a local installer as a current public download.
+The project uses [Published Status](docs/PUBLISHED_STATUS.md) as its repeatable direct-download
+publication handoff. It covers repository synchronization, the sanitized public mirror, release
+artifacts, independent download verification, a safe File Explorer handoff, and uninstall-first
+instructions for testing blank onboarding. Until that workflow reports `READY`, do not treat a
+local direct-channel installer as a current public download.
 
 ## Development
 
