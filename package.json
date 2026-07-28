@@ -51,7 +51,7 @@
     "@fluentui/react-components": "9.74.3",
     "@hookform/resolvers": "5.4.0",
     "@js-temporal/polyfill": "0.5.1",
-    "better-sqlite3": "12.11.1",
+    "better-sqlite3": "13.0.1",
     "decimal.js": "10.6.0",
     "drizzle-orm": "0.45.2",
     "exceljs": "4.4.0",
