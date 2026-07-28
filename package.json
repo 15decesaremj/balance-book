@@ -48,7 +48,7 @@
     "@balance-book/database": "workspace:*",
     "@balance-book/domain": "workspace:*",
     "@balance-book/financial-engine": "workspace:*",
-    "@fluentui/react-components": "9.74.3",
+    "@fluentui/react-components": "9.74.4",
     "@hookform/resolvers": "5.4.0",
     "@js-temporal/polyfill": "0.5.1",
     "better-sqlite3": "12.11.1",
