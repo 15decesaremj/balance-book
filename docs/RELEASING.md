@@ -16,7 +16,10 @@ package identity, data directory, signing claims, or update feed described below
 
 - Use a clean, reviewed source tree and the exact committed lock file.
 - Confirm the root and desktop package versions match the intended SemVer version.
-- Refuse to reuse a version or tag for different bytes. The current feature-release candidate is 2.0.8 and must not overwrite or rebuild an earlier artifact identity.
+- Refuse to reuse a version or tag for different bytes. The current direct-channel beta candidate is
+  2.0.9 and must not overwrite or rebuild an earlier artifact identity. Local beta status is carried
+  by the candidate lane and metadata because the established Windows release tooling requires a
+  three-part numeric package version.
 - Use the documented Node.js 24 and pnpm 11 toolchain.
 - Update project state, supported versions, third-party notices, changelog/release notes, and any changed backup or migration documentation.
 - Review dependency advisories and generate a production dependency-license inventory. Retain the exact result in [DEPENDENCY_REVIEW.md](DEPENDENCY_REVIEW.md).

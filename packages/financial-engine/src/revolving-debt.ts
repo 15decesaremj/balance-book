@@ -225,6 +225,7 @@ const datedCardPayments = (input: {
   cardId: string;
   asOfDate: PlainDateString;
   paymentEvidenceMode: RevolvingDebtPaymentEvidenceMode;
+  occurrences?: DatedCardEventOccurrence[];
 }): DatedCardPayment[] => {
   const cyclePayments = input.cycles.flatMap((cycle): DatedCardPayment[] => {
     const amount = actualPaymentThrough(cycle, input.asOfDate);
@@ -238,12 +239,15 @@ const datedCardPayments = (input: {
       },
     ];
   });
-  const eventPayments = datedCardEventOccurrences({
-    events: input.events,
-    card: input.card,
-    cardId: input.cardId,
-    endDate: input.asOfDate,
-  }).flatMap((occurrence) => {
+  const eventPayments = (
+    input.occurrences ??
+    datedCardEventOccurrences({
+      events: input.events,
+      card: input.card,
+      cardId: input.cardId,
+      endDate: input.asOfDate,
+    })
+  ).flatMap((occurrence) => {
     const event = occurrence.event;
     return event.kind === 'card-payment' &&
       event.paymentMethod === 'cash-account' &&
@@ -377,12 +381,13 @@ export const summarizeRevolvingDebt = (input: {
     .filter((cycle) => cycle.cardId === card.id);
   const events = input.events ?? [];
   const paymentEvidenceMode = input.paymentEvidenceMode ?? 'actual-only';
-  const uncoveredEventStartDate = datedCardEventOccurrences({
+  const occurrences = datedCardEventOccurrences({
     events,
     card,
     cardId: card.id,
     endDate: asOfDate,
-  })
+  });
+  const uncoveredEventStartDate = occurrences
     .filter(
       (occurrence) =>
         occurrence.event.paymentMethod === 'credit-card' &&
@@ -417,6 +422,7 @@ export const summarizeRevolvingDebt = (input: {
     cardId: card.id,
     asOfDate,
     paymentEvidenceMode,
+    occurrences,
   });
   const statement = latestLockedStatement(storedCycles, asOfDate);
   const latestStatementCents = nonnegativeCents(statement?.lockedStatementCents ?? 0);
@@ -433,7 +439,7 @@ export const summarizeRevolvingDebt = (input: {
       (!activityAfter || compareDates(cycle.closesOn, activityAfter) > 0),
   );
   const unassignedActualActivityCents = nonnegativeCents(
-    datedCardEventOccurrences({ events, card, cardId: card.id, endDate: asOfDate })
+    occurrences
       .filter(
         (occurrence) =>
           occurrence.event.paymentMethod === 'credit-card' &&
@@ -499,7 +505,7 @@ export const summarizeRevolvingDebt = (input: {
         .reduce((total, cycle) => total + cycle.actualActivityCents, 0)
     : 0;
   const exactSameCycleActivityAfterReportedBalanceCents = hasReportedBalance
-    ? datedCardEventOccurrences({ events, card, cardId: card.id, endDate: asOfDate })
+    ? occurrences
         .filter((occurrence) => {
           const activity = occurrence.event;
           if (
@@ -615,4 +621,90 @@ export const summarizeRevolvingDebt = (input: {
     source: useReportedBalance ? 'reported' : 'cycle-derived',
     reportedBalanceHasUnresolvedSameCycleActivity,
   };
+};
+
+/**
+ * Projects the total revolving balance on a date series without rebuilding an
+ * identical card state on every quiet day. Revolving debt can change only when
+ * a cycle boundary, reported snapshot, lifecycle boundary, purchase, credit, or
+ * payment occurrence is crossed. Each change point still delegates to
+ * `summarizeRevolvingDebt`, keeping this read model identical to the canonical
+ * single-date calculation.
+ */
+export const projectRevolvingDebtBalancesByDate = (input: {
+  cards: CreditCard[];
+  cycles: CreditCardCycle[];
+  dates: PlainDateString[];
+  events?: ForecastEvent[];
+  paymentEvidenceMode?: RevolvingDebtPaymentEvidenceMode;
+}): Map<PlainDateString, MoneyCents> => {
+  const requestedDates = [...new Set(input.dates.map((date) => plainDateSchema.parse(date)))].sort(
+    compareDates,
+  );
+  const totals = new Map<PlainDateString, MoneyCents>(
+    requestedDates.map((date) => [date, moneyCentsSchema.parse(0)]),
+  );
+  if (requestedDates.length === 0) return totals;
+
+  const startDate = requestedDates[0]!;
+  const endDate = requestedDates.at(-1)!;
+  const paymentEvidenceMode = input.paymentEvidenceMode ?? 'actual-only';
+  for (const rawCard of input.cards) {
+    const card = creditCardSchema.parse(rawCard);
+    const cycles = input.cycles
+      .map((cycle) => creditCardCycleSchema.parse(cycle))
+      .filter((cycle) => cycle.cardId === card.id);
+    const events = (input.events ?? [])
+      .map((event) => forecastEventSchema.parse(event))
+      .filter((event) => event.cardId === card.id);
+    const projectedCycles = generateCardCyclesThroughHorizon({
+      card,
+      cardCycles: cycles,
+      startDate,
+      endDate,
+    });
+    const changeDates = new Set<PlainDateString>([startDate]);
+    for (const cycle of projectedCycles) {
+      changeDates.add(cycle.opensOn);
+      changeDates.add(cycle.closesOn);
+      changeDates.add(cycle.dueOn);
+      changeDates.add(cycle.paymentOn ?? cycle.dueOn);
+    }
+    if (card.reportedBalanceDate) changeDates.add(card.reportedBalanceDate);
+    if (card.reportedCarryingBalanceDate) changeDates.add(card.reportedCarryingBalanceDate);
+    if (card.closedOn) changeDates.add(card.closedOn);
+    for (const occurrence of datedCardEventOccurrences({
+      events,
+      card,
+      cardId: card.id,
+      endDate,
+    })) {
+      changeDates.add(occurrence.date);
+    }
+    const orderedChangeDates = [...changeDates].sort(compareDates);
+
+    let previousRequestedDate: PlainDateString | undefined;
+    let currentBalanceCents: MoneyCents = moneyCentsSchema.parse(0);
+    for (const date of requestedDates) {
+      const crossedChange =
+        previousRequestedDate === undefined ||
+        orderedChangeDates.some(
+          (changeDate) =>
+            compareDates(changeDate, previousRequestedDate!) > 0 &&
+            compareDates(changeDate, date) <= 0,
+        );
+      if (crossedChange) {
+        currentBalanceCents = summarizeRevolvingDebt({
+          card,
+          cycles,
+          asOfDate: date,
+          events,
+          paymentEvidenceMode,
+        }).currentBalanceCents;
+      }
+      totals.set(date, moneyCentsSchema.parse((totals.get(date) ?? 0) + currentBalanceCents));
+      previousRequestedDate = date;
+    }
+  }
+  return totals;
 };

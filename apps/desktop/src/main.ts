@@ -56,6 +56,7 @@ import {
   pendingRefinanceEconomicSettlementCentsForDate,
   prepareRollingForecastContext,
   projectAssetsAtDate,
+  projectRevolvingDebtBalancesByDate,
   projectRollingReceivableBalances,
   roundInterestToCents,
   summarizeRevolvingDebt,
@@ -111,6 +112,7 @@ import {
 } from './shared/contracts';
 import { handleSquirrelStartupEvent } from './squirrel-startup';
 import { buildReceivableAccrualDailyEvents } from './receivable-accrual-events';
+import { ForecastSnapshotCache } from './forecast-snapshot-cache';
 import { BalanceBookUpdateService } from './update-service';
 import { pendingUpdateMetadataSchema, postUpdateNoticeFromMetadata } from './update-metadata';
 import { createVerifiedUpdateRecoverySnapshot } from './update-recovery';
@@ -141,6 +143,13 @@ let auth: LocalAuthService;
 let activeUserId: string | null = null;
 let updateService: BalanceBookUpdateService;
 let postUpdateNotice: PostUpdateNoticeDto | null = null;
+const forecastSnapshotCache = new ForecastSnapshotCache<ForecastSnapshotDto>();
+let forecastDataRevision = 0;
+
+const invalidateForecastSnapshots = (): void => {
+  forecastDataRevision += 1;
+  forecastSnapshotCache.clear();
+};
 
 const privacyPolicyUrl = 'https://github.com/15decesaremj/balance-book/blob/main/PRIVACY.md';
 
@@ -690,47 +699,84 @@ const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): Forec
   const sourceAccountById = new Map(records.accounts.map((account) => [account.id, account]));
   const expectedExcludedEventIds = new Set(bundle.expected.excludedEventIds);
   const conservativeExcludedEventIds = new Set(bundle.conservative.excludedEventIds);
+  const expectedDebtEvents = revolvingDebtEvents.filter(
+    (event) => event.cardId && !expectedExcludedEventIds.has(event.id),
+  );
+  const conservativeDebtEvents = revolvingDebtEvents.filter(
+    (event) => event.cardId && !conservativeExcludedEventIds.has(event.id),
+  );
+  const expectedRevolvingDebtByDate = projectRevolvingDebtBalancesByDate({
+    cards: records.cards,
+    cycles: records.cardCycles,
+    dates: bundle.expected.days.map((day) => day.date),
+    events: expectedDebtEvents,
+    paymentEvidenceMode: 'include-projected-payments',
+  });
+  const sameDebtEventsInBothModes =
+    expectedDebtEvents.length === conservativeDebtEvents.length &&
+    expectedDebtEvents.every((event, index) => event === conservativeDebtEvents[index]);
+  const conservativeRevolvingDebtByDate = sameDebtEventsInBothModes
+    ? expectedRevolvingDebtByDate
+    : projectRevolvingDebtBalancesByDate({
+        cards: records.cards,
+        cycles: records.cardCycles,
+        dates: bundle.conservative.days.map((day) => day.date),
+        events: conservativeDebtEvents,
+        paymentEvidenceMode: 'include-projected-payments',
+      });
+  const dailyNetWorthStaticInputs = new Map(
+    [
+      ...new Set([
+        ...bundle.expected.days.map((day) => day.date),
+        ...bundle.conservative.days.map((day) => day.date),
+      ]),
+    ].map((date) => [
+      date,
+      {
+        loans: activeLoansForDate({
+          accounts,
+          loans: records.loans,
+          plans: records.committedRefinancePlans,
+          loanPaymentEvents: records.events,
+          date,
+        }),
+        assets: projectAssetsAtDate(
+          effectiveAssetsForDate({
+            assets: records.assets,
+            plans: records.committedRefinancePlans,
+            date,
+          }),
+          date,
+        ),
+        restrictedRefinanceSettlementCents: pendingRefinanceSettlementCentsForDate({
+          plans: records.committedRefinancePlans,
+          date,
+        }),
+        economicRestrictedRefinanceSettlementCents: pendingRefinanceEconomicSettlementCentsForDate({
+          plans: records.committedRefinancePlans,
+          loans: records.loans,
+          date,
+        }),
+      },
+    ]),
+  );
   const projectDailyNetWorth = (mode: 'expected' | 'conservative'): number[] => {
     const modeBundle = bundle[mode];
     const modeReceivables = mode === 'expected' ? expectedReceivables : conservativeReceivables;
-    const excludedEventIds =
-      mode === 'expected' ? expectedExcludedEventIds : conservativeExcludedEventIds;
-    const debtEvents = revolvingDebtEvents.filter((event) => !excludedEventIds.has(event.id));
+    const revolvingDebtByDate =
+      mode === 'expected' ? expectedRevolvingDebtByDate : conservativeRevolvingDebtByDate;
     return modeBundle.days.map((day, index) => {
-      const loans = activeLoansForDate({
-        accounts,
-        loans: records.loans,
-        plans: records.committedRefinancePlans,
-        loanPaymentEvents: records.events,
-        date: day.date,
-      });
-      const assets = projectAssetsAtDate(
-        effectiveAssetsForDate({
-          assets: records.assets,
-          plans: records.committedRefinancePlans,
-          date: day.date,
-        }),
-        day.date,
-      );
-      const revolvingDebtCents = moneyCentsSchema.parse(
-        records.cards.reduce(
-          (total, card) =>
-            total +
-            summarizeRevolvingDebt({
-              card,
-              cycles: records.cardCycles,
-              asOfDate: day.date,
-              events: debtEvents,
-              paymentEvidenceMode: 'include-projected-payments',
-            }).currentBalanceCents,
-          0,
-        ),
-      );
+      const staticInputs = dailyNetWorthStaticInputs.get(day.date);
+      if (!staticInputs) throw new Error(`Net-worth inputs are unavailable for ${day.date}`);
+      const revolvingDebtCents = revolvingDebtByDate.get(day.date);
+      if (revolvingDebtCents === undefined) {
+        throw new Error(`Revolving debt projection is unavailable for ${day.date}`);
+      }
       return calculateNetWorth({
         cashAccounts: records.accounts,
-        assets,
+        assets: staticInputs.assets,
         receivables: records.receivables,
-        loans,
+        loans: staticInputs.loans,
         revolvingDebtCents,
         allCashCentsOverride: moneyCentsSchema.parse(
           day.accounts.reduce(
@@ -740,15 +786,9 @@ const buildSnapshot = (userId: string, requiredEndDate?: PlainDateString): Forec
         ),
         liquidCashCentsOverride: day.consolidatedCashCents,
         receivablesCentsOverride: modeReceivables[index]!.endingOutstandingCents,
-        restrictedRefinanceSettlementCents: pendingRefinanceSettlementCentsForDate({
-          plans: records.committedRefinancePlans,
-          date: day.date,
-        }),
-        economicRestrictedRefinanceSettlementCents: pendingRefinanceEconomicSettlementCentsForDate({
-          plans: records.committedRefinancePlans,
-          loans: records.loans,
-          date: day.date,
-        }),
+        restrictedRefinanceSettlementCents: staticInputs.restrictedRefinanceSettlementCents,
+        economicRestrictedRefinanceSettlementCents:
+          staticInputs.economicRestrictedRefinanceSettlementCents,
       }).contractualNetWorthCents;
     });
   };
@@ -1009,6 +1049,7 @@ const registerIpc = (): void => {
         : undefined,
     );
     activeUserId = profile.id;
+    forecastSnapshotCache.clear();
     const nextSession = sessionFor(profile);
     updateService.setChannel(nextSession.preferences.updateChannel);
     updateService.start();
@@ -1017,6 +1058,7 @@ const registerIpc = (): void => {
   handle('auth:login', loginRequestSchema, sessionSchema, async (request) => {
     const profile = await auth.login(request.username, request.password);
     activeUserId = profile.id;
+    forecastSnapshotCache.clear();
     const nextSession = sessionFor(profile);
     updateService.setChannel(nextSession.preferences.updateChannel);
     updateService.start();
@@ -1024,6 +1066,7 @@ const registerIpc = (): void => {
   });
   handle('auth:logout', emptyRequestSchema, successSchema, () => {
     activeUserId = null;
+    forecastSnapshotCache.clear();
     return { success: true as const };
   });
   handle('auth:session', emptyRequestSchema, sessionSchema.nullable(), () => {
@@ -1031,9 +1074,18 @@ const registerIpc = (): void => {
     const profile = store.getCredentialsById(activeUserId);
     return profile ? sessionFor(profile) : null;
   });
-  handle('forecast:get', forecastRequestSchema, forecastSnapshotSchema, (request) =>
-    buildSnapshot(requireUser(), request.requiredEndDate),
-  );
+  handle('forecast:get', forecastRequestSchema, forecastSnapshotSchema, (request) => {
+    const userId = requireUser();
+    return forecastSnapshotCache.getOrCreate(
+      {
+        userId,
+        financialDate: currentFinancialDate(),
+        requiredEndDate: request.requiredEndDate,
+        databaseRevision: String(forecastDataRevision),
+      },
+      () => buildSnapshot(userId, request.requiredEndDate),
+    );
+  });
   handle(
     'setup:save-vertical-slice',
     verticalSliceInputSchema,
@@ -1041,6 +1093,7 @@ const registerIpc = (): void => {
     (request) => {
       const userId = requireUser();
       store.saveVerticalSlice(userId, request);
+      invalidateForecastSnapshots();
       return buildSnapshot(userId);
     },
   );
@@ -1361,6 +1414,7 @@ const registerIpc = (): void => {
   handle('scenario:convert', scenarioActionRequestSchema, managedRecordsSchema, (request) => {
     const userId = requireUser();
     store.convertScenarioToCommitment(userId, request.scenarioId);
+    invalidateForecastSnapshots();
     return managedRecordsFor(userId);
   });
   handle(
@@ -1370,6 +1424,7 @@ const registerIpc = (): void => {
     (request) => {
       const userId = requireUser();
       store.recordReceivableSettlement({ userId, ...request, asOfDate: currentFinancialDate() });
+      invalidateForecastSnapshots();
       return managedRecordsFor(userId);
     },
   );
@@ -1384,6 +1439,7 @@ const registerIpc = (): void => {
         ...request,
         asOfDate: currentFinancialDate(),
       });
+      invalidateForecastSnapshots();
       return managedRecordsFor(userId);
     },
   );
@@ -1398,17 +1454,20 @@ const registerIpc = (): void => {
         ...request,
         asOfDate: currentFinancialDate(),
       });
+      invalidateForecastSnapshots();
       return managedRecordsFor(userId);
     },
   );
   handle('bills:upsert', billPlanRequestSchema, managedRecordsSchema, (request) => {
     const userId = requireUser();
     store.upsertBillPlan({ userId, ...request, asOfDate: currentFinancialDate() });
+    invalidateForecastSnapshots();
     return managedRecordsFor(userId);
   });
   handle('transfer:create', internalTransferRequestSchema, managedRecordsSchema, (request) => {
     const userId = requireUser();
     store.createInternalTransfer({ userId, ...request });
+    invalidateForecastSnapshots();
     return managedRecordsFor(userId);
   });
   handle('theme:set', setThemeRequestSchema, sessionSchema, (request) => {
@@ -1418,7 +1477,14 @@ const registerIpc = (): void => {
   });
   handle('preferences:set', setPreferencesRequestSchema, sessionSchema, (request) => {
     const userId = requireUser();
+    const previousPreferences = store.getCredentialsById(userId)?.preferences;
     store.setPreferences(userId, request);
+    if (
+      previousPreferences?.experimentalCardInterestForecastEnabled !==
+      request.experimentalCardInterestForecastEnabled
+    ) {
+      invalidateForecastSnapshots();
+    }
     updateService.setChannel(request.updateChannel);
     return sessionFor(store.getCredentialsById(userId)!);
   });
@@ -1479,16 +1545,19 @@ const registerIpc = (): void => {
   handle('policy:update', updateCashPolicyRequestSchema, managedRecordsSchema, (request) => {
     const userId = requireUser();
     store.updateCashFloorPolicy(userId, request);
+    invalidateForecastSnapshots();
     return managedRecordsFor(userId);
   });
   handle('refinance:commit', commitRefinancePlanRequestSchema, managedRecordsSchema, (request) => {
     const userId = requireUser();
     store.commitRefinancePlan(userId, request, currentFinancialDate());
+    invalidateForecastSnapshots();
     return managedRecordsFor(userId);
   });
   handle('refinance:cancel', cancelRefinancePlanRequestSchema, managedRecordsSchema, (request) => {
     const userId = requireUser();
     store.cancelCommittedRefinancePlan(userId, request.planId, currentFinancialDate());
+    invalidateForecastSnapshots();
     return managedRecordsFor(userId);
   });
   handle('records:list', emptyRequestSchema, managedRecordsSchema, () =>
@@ -1499,16 +1568,19 @@ const registerIpc = (): void => {
     store.upsertManagedEntity(userId, request.entityType, request.payload, {
       asOfDate: currentFinancialDate(),
     });
+    invalidateForecastSnapshots();
     return managedRecordsFor(userId);
   });
   handle('income-plan:upsert', upsertIncomePlanRequestSchema, managedRecordsSchema, (request) => {
     const userId = requireUser();
     store.upsertIncomePlan(userId, request.events, request.replacePlanId);
+    invalidateForecastSnapshots();
     return managedRecordsFor(userId);
   });
   handle('records:delete', deleteManagedEntityRequestSchema, managedRecordsSchema, (request) => {
     const userId = requireUser();
     store.deleteManagedEntity(userId, request.entityType, request.entityId);
+    invalidateForecastSnapshots();
     return managedRecordsFor(userId);
   });
   handle('data:backup', backupRequestSchema, fileActionResultSchema, async (request) => {
@@ -1559,6 +1631,7 @@ const registerIpc = (): void => {
     } else {
       store.replaceUserData(userId, data);
     }
+    invalidateForecastSnapshots();
     return { canceled: false, itemCount: 1 };
   });
   handle('data:export', emptyRequestSchema, fileActionResultSchema, async () => {
@@ -1592,10 +1665,12 @@ const registerIpc = (): void => {
       throw new Error('Import file is too large');
     const untrusted: unknown = JSON.parse(fs.readFileSync(selectedPath, 'utf8'));
     store.replaceUserData(userId, parseUserDataExport(untrusted));
+    invalidateForecastSnapshots();
     return { canceled: false, itemCount: 1 };
   });
   handle('data:reset-user', resetUserDataRequestSchema, successSchema, () => {
     store.resetUserData(requireUser());
+    invalidateForecastSnapshots();
     return { success: true as const };
   });
   handle('import:review', emptyRequestSchema, importReviewSchema, () =>

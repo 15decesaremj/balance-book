@@ -10,6 +10,9 @@ Balance Book uses semantic versioning for public releases.
 
 Version 2.0.8 is the first supported public Microsoft Store release. A locally built or unsigned
 direct-channel installer remains a release candidate and is not a supported public distribution.
+Version 2.0.9 is the current unsigned direct-channel owner beta: it is installed only for local
+stability testing beside Store 2.0.8 and is not published as a binary or offered through an update
+feed.
 
 After public launch, fixes will target the newest 2.x release. Older builds may be supported only long enough to install the next compatible update; the release notes will identify any exception or required migration path. Pre-release 0.x builds do not receive security fixes.
 

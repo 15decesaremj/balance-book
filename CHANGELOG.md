@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 2.0.9 - 2026-07-27
+
+- Replaced repeated per-day revolving-debt reconstruction with an exact change-point projection
+  that continues to delegate every balance change to the canonical single-date debt model.
+- Reused date-invariant loan, asset, and refinance inputs across expected and conservative
+  net-worth series without changing either forecast mode's cash, receivable, or debt values.
+- Added revision-aware forecast snapshot reuse across Overview, Forecast, notifications, and other
+  route mounts. Financial writes invalidate the cache before downstream refreshes, while
+  presentation-only notification and appearance changes no longer force a full forecast rebuild.
+- Reduced the copied owner-profile forecast build from about 22.4 seconds to about 3.5 seconds and
+  eliminated duplicate authenticated builds; cached route switches no longer rebuild the forecast.
+- Added canonical-versus-optimized debt-series parity coverage plus cache isolation, horizon,
+  financial-revision, date-boundary, and explicit-clear regression coverage.
+- Advanced React Router to 8.3.0 and forced vulnerable transitive `brace-expansion` versions to
+  5.0.8 after the release audit identified newly disclosed production advisories. A narrow tracked
+  compatibility patch preserves the legacy CommonJS function export required by ExcelJS's older
+  minimatch paths while retaining 5.0.8's bounded expansion implementation.
+
 ## 2.0.8 - 2026-07-24
 
 - Added a separate Microsoft Store MSIX channel with exact Partner Center identity inputs,

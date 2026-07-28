@@ -12,7 +12,7 @@ describe('Microsoft Store package configuration', () => {
     const desktopPackage = JSON.parse(read('apps/desktop/package.json')) as { version: string };
     expect(desktopPackage.version).toBe(rootPackage.version);
     expect(rootPackage.version).toMatch(/^[1-9]\d{0,4}\.\d{1,5}\.\d{1,5}$/);
-    expect(`${rootPackage.version}.0`).toBe('2.0.8.0');
+    expect(`${rootPackage.version}.0`).toBe('2.0.9.0');
     for (const segment of rootPackage.version.split('.')) {
       expect(Number(segment)).toBeLessThanOrEqual(65_535);
     }

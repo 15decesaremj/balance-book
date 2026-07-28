@@ -1,0 +1,17 @@
+diff --git a/dist/commonjs/index.js b/dist/commonjs/index.js
+index be9df86be09c7655787a65c55ae6da01858894c3..72785da7dd770c3579ffab0a06f1cddd21a73106 100644
+--- a/dist/commonjs/index.js
++++ b/dist/commonjs/index.js
+@@ -260,4 +260,12 @@ function expand_(str, max, maxLength, isTop) {
+     }
+     return acc;
+ }
++// brace-expansion 1.x and 2.x exported the expansion function directly.
++// Older minimatch versions still call require('brace-expansion')(pattern),
++// while current consumers use the named `expand` export. Preserve both
++// interfaces so the patched 5.0.8 implementation can safely replace the
++// vulnerable transitive versions in a mixed dependency graph.
++const legacyExpand = Object.assign(expand, exports);
++Object.defineProperty(legacyExpand, "__esModule", { value: true });
++module.exports = legacyExpand;
+ //# sourceMappingURL=index.js.map

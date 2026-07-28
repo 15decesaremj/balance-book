@@ -753,9 +753,9 @@ describe('Overview card runway presentation', () => {
 
     render(createElement(MemoryRouter, null, createElement(DashboardPage)));
     const card = await screen.findByLabelText('Atlas Card safe spending summary');
-    fireEvent.click(within(card).getByRole('button', { name: 'Open quick update for Atlas Card' }));
-    const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Last statement' }));
+    fireEvent.click(
+      within(card).getByRole('button', { name: 'Edit last statement for Atlas Card' }),
+    );
 
     const warning = await screen.findByRole('note');
     const activeDialog = warning.closest<HTMLElement>('[role="dialog"]');

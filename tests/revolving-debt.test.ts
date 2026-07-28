@@ -9,6 +9,7 @@ import {
 } from '@balance-book/domain';
 import {
   enrichCardCyclesWithActivities,
+  projectRevolvingDebtBalancesByDate,
   summarizeRevolvingDebt,
 } from '@balance-book/financial-engine';
 
@@ -734,5 +735,119 @@ describe('revolving debt summary', () => {
 
     expect(summary.currentBalanceCents).toBe(100_000);
     expect(summary.projectedCarryingBalanceCents).toBe(90_000);
+  });
+});
+
+describe('revolving debt date-series projection', () => {
+  it('matches the canonical daily summary across cycle, report, activity, and payment changes', () => {
+    const cards = [
+      makeCard({
+        reportedBalanceCents: 112_000,
+        reportedBalanceDate: '2026-06-12',
+      }),
+      makeCard({
+        id: 'card-two',
+        name: 'Second card',
+        estimatePolicy: 'baseline-guardrail',
+        defaultFutureStatementCents: 24_000,
+      }),
+    ];
+    const cycles = [
+      makeCycle(),
+      makeOpenCycle({ actualActivityCents: 8_000 }),
+      makeCycle({
+        id: 'card-two-statement',
+        cardId: 'card-two',
+        lockedStatementCents: 25_000,
+        state: 'scheduled-payment',
+        paymentOn: '2026-06-20',
+      }),
+      makeOpenCycle({
+        id: 'card-two-open',
+        cardId: 'card-two',
+        actualActivityCents: 4_000,
+      }),
+    ];
+    const events = [
+      makeEvent({
+        id: 'reported-card-purchase',
+        date: '2026-06-18',
+        amountCents: 3_500,
+      }),
+      makeEvent({
+        id: 'reported-card-payment',
+        date: '2026-06-20',
+        kind: 'card-payment',
+        amountCents: 100_000,
+        status: 'confirmed',
+        paymentMethod: 'cash-account',
+        cardActivityTreatment: undefined,
+      }),
+      makeEvent({
+        id: 'recurring-card-two-purchase',
+        cardId: 'card-two',
+        date: '2026-06-05',
+        amountCents: 1_200,
+        recurrenceRule: { frequency: 'monthly', dayOfMonth: 5, interval: 1 },
+      }),
+    ];
+    const dates = Array.from({ length: 61 }, (_, offset) => {
+      const date = new Date(Date.UTC(2026, 5, 1 + offset));
+      return date.toISOString().slice(0, 10);
+    });
+
+    const projected = projectRevolvingDebtBalancesByDate({
+      cards,
+      cycles,
+      dates,
+      events,
+      paymentEvidenceMode: 'include-projected-payments',
+    });
+    const canonical = dates.map((date) =>
+      cards.reduce(
+        (total, card) =>
+          total +
+          summarizeRevolvingDebt({
+            card,
+            cycles,
+            asOfDate: date,
+            events,
+            paymentEvidenceMode: 'include-projected-payments',
+          }).currentBalanceCents,
+        0,
+      ),
+    );
+
+    expect(dates.map((date) => projected.get(date))).toEqual(canonical);
+  });
+
+  it('recomputes when a change falls between sparse requested dates', () => {
+    const dates = ['2026-06-01', '2026-06-25', '2026-07-25'];
+    const card = makeCard();
+    const cycles = [
+      makeCycle({
+        state: 'paid',
+        paymentOn: '2026-06-20',
+        actualPaymentCents: 100_000,
+      }),
+      makeOpenCycle({ actualActivityCents: 8_000 }),
+    ];
+
+    const projected = projectRevolvingDebtBalancesByDate({
+      cards: [card],
+      cycles,
+      dates,
+    });
+
+    expect(dates.map((date) => projected.get(date))).toEqual(
+      dates.map(
+        (date) =>
+          summarizeRevolvingDebt({
+            card,
+            cycles,
+            asOfDate: date,
+          }).currentBalanceCents,
+      ),
+    );
   });
 });
